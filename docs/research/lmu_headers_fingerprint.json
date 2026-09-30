@@ -1,0 +1,37 @@
+{
+    "schema":  "lmu-headers-fingerprint/1",
+    "generated_utc":  "2026-09-30T10:58:42Z",
+    "sdk_dir":  "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Le Mans Ultimate\\Support\\SharedMemoryInterface",
+    "note":  "Headers are referenced from the LMU install at build time and never copied (their license forbids redistribution or modification).",
+    "headers":  {
+                    "SharedMemoryInterface.hpp":  {
+                                                      "sha256":  "a82833d5e9e277a7c3af8802518e35ea62f4ec7c7c7c9083650282e4edf1f8bf",
+                                                      "bytes":  12695,
+                                                      "last_write_time":  "2026-09-22T17:21:41.877+05:30",
+                                                      "last_write_utc":  "2026-09-22T11:51:41.877Z"
+                                                  },
+                    "InternalsPlugin.hpp":  {
+                                                "sha256":  "9b6ee8cf610fa5049b18df580a9a9bc9ebb91346fc466584d576a6442abcf68f",
+                                                "bytes":  57621,
+                                                "last_write_time":  "2026-03-31T18:52:53.700+05:30",
+                                                "last_write_utc":  "2026-03-31T13:22:53.700Z"
+                                            },
+                    "PluginObjects.hpp":  {
+                                              "sha256":  "f65f1d2226af1acb277f8337fb10d8955db384118fc36eef95ea446be058e247",
+                                              "bytes":  3551,
+                                              "last_write_time":  "2025-12-20T13:41:39.658+05:30",
+                                              "last_write_utc":  "2025-12-20T08:11:39.658Z"
+                                          }
+                },
+    "game":  {
+                 "exe_file_version":  "1.4.2.0",
+                 "steam_app_id":  2399420,
+                 "steam_buildid":  "25513257"
+             },
+    "layout_json":  {
+                        "file":  "lmu_abi_layout.json",
+                        "sha256":  "f7728c96077a8352a04c83c51787c5feb967e5bf79a4e3aed04f853bb4638d0a",
+                        "toolchain":  "msvc",
+                        "build":  "cl.exe /nologo /std:c++17 /EHsc /W4 /I C:\\Program Files (x86)\\Steam\\steamapps\\common\\Le Mans Ultimate\\Support\\SharedMemoryInterface /Fo:%TEMP%\\lmu-layout-probe-build\\probe.obj /Fe:%TEMP%\\lmu-layout-probe-build\\probe.exe <repo>\\tools\\layout-probe\\probe.cpp   [env: C:\\Program Files (x86)\\Microsoft Visual Studio\\18\\BuildTools\\VC\\Auxiliary\\Build\\vcvars64.bat]"
+                    }
+}
