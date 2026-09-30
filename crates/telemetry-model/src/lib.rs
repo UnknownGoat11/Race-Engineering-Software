@@ -1,8 +1,9 @@
-//! Canonical telemetry model for LMU Race Engineering.
+﻿//! Canonical telemetry model for LMU Race Engineering.
 //!
-//! One schema for live, recorded and replayed data (spec §11, §272, addendum §11).
+//! One schema for live, recorded and replayed data (spec Â§11, Â§272, addendum Â§11).
 
 pub mod channel;
+pub mod codec;
 pub mod units;
 pub mod value;
 
