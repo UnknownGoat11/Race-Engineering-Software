@@ -1,0 +1,80 @@
+/*
+ * Design tokens — the only place raw colours, font stacks, sizes and spacing values are defined.
+ * Professional dark theme: flat surfaces, high contrast, compact type, no gradients, no decorative motion.
+ * Fonts are system fonts only (no remote font loading; the CSP is default-src 'self').
+ */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --color-bg: #0b0d10;
+  --color-surface: #12151a;
+  --color-surface-raised: #181c22;
+  --color-surface-hover: #1f242c;
+  --color-border: #272c34;
+  --color-border-strong: #3b424d;
+
+  /* Text (WCAG contrast on --color-bg: text 16.4:1, muted 8.5:1, dim 5.1:1 — all ≥ AA) */
+  --color-text: #e9ecf0;
+  --color-text-muted: #a3acb8;
+  --color-text-dim: #7a8492;
+  --color-text-inverse: #0b0d10;
+
+  /* Interaction */
+  --color-accent: #4c9dff;
+  --color-accent-strong: #7ab6ff;
+  --color-selected-bg: #16263b;
+  --color-focus: #ffd34d;
+
+  /* Status (used for state, never for decoration) */
+  --color-ok: #3fcf73;
+  --color-warn: #f5b83d;
+  --color-error: #ff5f5f;
+  --color-info: #4c9dff;
+  --color-warn-bg: #2a2110;
+  --color-error-bg: #2b1414;
+
+  /* Environment badges */
+  --color-env-development: var(--color-warn);
+  --color-env-staging: var(--color-info);
+  --color-env-production: var(--color-text-muted);
+
+  /* Typography */
+  --font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
+  --font-size-2xs: 10px;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 13px;
+  --font-size-lg: 15px;
+  --font-size-xl: 18px;
+  --font-size-display: 26px;
+  --font-weight-regular: 400;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.45;
+  --letter-spacing-caps: 0.08em;
+  --letter-spacing-display: 0.18em;
+
+  /* Spacing (4 px grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Shape */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --border-width: 1px;
+  --focus-ring-width: 2px;
+
+  /* Layout */
+  --header-height: 40px;
+  --control-height: 28px;
+  --control-height-lg: 48px;
+  --content-max-width: 1200px;
+}

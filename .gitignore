@@ -1,0 +1,13 @@
+/target
+node_modules/
+dist/
+*.log
+.env
+.env.*
+!.env.example
+/apps/desktop/src-tauri/target
+/apps/desktop/src-tauri/gen/schemas
+*.lmurec
+*.pdb
+tools/layout-probe/*.exe
+tools/layout-probe/*.obj

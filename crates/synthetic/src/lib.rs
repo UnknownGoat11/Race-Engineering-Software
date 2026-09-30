@@ -1,0 +1,1 @@
+//! synthetic (scaffold)
