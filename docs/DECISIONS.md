@@ -183,6 +183,51 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
     live.
 - **Date:** 2026-10-02
 
+## D-021 Driver ↔ engineer pairing (owner requirement: "a way or code to connect the engineer with the specific driver")
+- **Model:** pairing is a *standing grant* from one driver account to one engineer account, stored on the
+  relay (Postgres). Codes only create or locate grants. They are never credentials by themselves: every
+  action also requires the logged-in account (spec §52, §130).
+- **Two codes, two jobs:**
+
+  | Code | Example | Who makes it | Purpose | Properties |
+  |------|---------|--------------|---------|------------|
+  | **Pairing invite code** | `PAIR-7KQ4-MZ9T-2XWD` | Driver, via "Invite engineer" | One-time pairing of an engineer account to this driver | 12 random Crockford-base32 chars (60 bits); single use; expires (default 24 h, configurable); stored hashed; driver can cancel it; works while the driver is offline (pair before race day) |
+  | **Session code** | `8F3A2C` | Relay, per live session | Identify which live session is shown, and request access during a session | 6 chars, human-readable, not secret; joining still needs a grant or live driver approval |
+- **Flow A (normal, no driver action during a race):**
+  1. Driver: *Engineers → Invite engineer* shows the invite code and a Copy button. The driver sends it to
+     their engineer, e.g. over Discord.
+  2. Engineer: *My drivers → Add driver → enter code*. The relay validates it and creates the standing
+     grant. The driver app shows "Alice (alice) can now see your telemetry".
+  3. From then on the engineer's *My drivers* list shows that driver with LIVE / ONLINE (no LMU) / OFFLINE
+     status. Clicking a driver shows an identity confirmation card (driver, car, class, track, session,
+     started; spec §247), then the engineer is monitoring. The engineer app auto-rejoins its last driver
+     on restart (D-020).
+- **Flow B (ad-hoc during a live session):** the engineer enters the session code. The driver app shows
+  "Alice (alice) requests access — [Allow this session] [Always allow] [Deny]". "Always allow" creates the
+  standing grant. Requests expire after 2 minutes and are rate-limited per requester.
+- **Management:**
+  - Driver *Engineers* page: authorized engineers (display name, username, added, last connected) with
+    **Revoke** (immediately disconnects that engineer), pending invites with **Cancel**, and pending
+    requests.
+  - Engineer *My drivers* page: paired drivers with live status, **Connect**, **Remove**.
+  - Grants are per account, so they follow the user to any PC they log into.
+- **Security:**
+  - Invite redemption is limited per engineer account and per IP, and failed attempts are logged without
+    the code.
+  - Only accounts with the ENGINEER role can redeem. A driver can pair at most a configurable number of
+    engineers (default 5).
+  - Concurrent engineers per live session: configurable, default 1 (spec §51). A second engineer gets a
+    clear "session already being monitored by …" error.
+  - Engineers can never discover drivers they are not paired with.
+- **Protocol additions (control messages, postcard):**
+  - PAIR_INVITE_CREATE / PAIR_INVITE (code, expiry)
+  - PAIR_INVITE_CANCEL
+  - PAIR_REDEEM (code) / PAIR_RESULT
+  - GRANT_LIST / GRANT_REVOKE
+  - DRIVER_LIST (an engineer's paired drivers with live status, replacing an open-ended session list)
+  - Existing JOIN_REQUEST / JOIN_DECISION (with `remember`) for Flow B
+- **Date:** 2026-10-02
+
 ## D-017 Channel IDs and schema versioning
 - **Chosen:** A single registry in `telemetry-model::registry` defines every channel (id, canonical name,
   MoTeC-style export name, unit, type, source, priority P0/P1/P2, frequency class, capability). IDs are
