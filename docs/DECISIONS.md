@@ -150,6 +150,39 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
 - **Why:** Explicit product-owner requirement (2026-09-30); also minimizes anti-cheat and patch-day risk.
 - **Date:** 2026-09-30
 
+## D-019 Minimal, trouble-free installation on the driver PC (owner requirement)
+- **Requirement (2026-10-02):** the driver PC must not need lots of installs or system edits; setup may be
+  minimal (not necessarily zero) but must work without issues.
+- **Chosen:**
+  - One per-user NSIS installer; no admin rights; no developer tools.
+  - No extra runtimes: the MSVC C runtime is statically linked (`.cargo/config.toml`
+    `+crt-static`, verified with `dumpbin /dependents`). WebView2 ships with Windows 11; the installer
+    embeds the bootstrapper as a fallback.
+  - No system configuration: outbound TLS only (port 443), so no port forwarding, firewall rules, VPN or
+    elevation. The app runs at the same integrity level as LMU (a normal user).
+  - LMU is never edited (D-018). If something LMU-side is required (e.g. LMU's shared memory not present),
+    the app detects it and shows one clear, actionable instruction instead of failing silently.
+  - Robust start order: works whether LMU starts before or after the app, and survives LMU restarts,
+    network changes, sleep/resume and relay restarts without user action.
+- **Date:** 2026-10-02
+
+## D-020 Settings and identity persist; nothing is set up twice (owner requirement)
+- **Requirement (2026-10-02):** settings must not need re-entering after the app is closed and reopened.
+- **Chosen:**
+  - **Preferences:** mode, relay endpoint, units, layouts, graph presets, fuel/alert configuration,
+    recording directory, window geometry and similar live in the versioned per-user JSON config (atomic
+    writes, validated, safe defaults).
+  - **Login:** done once. The rotating refresh token (sliding 90-day lifetime) and the driver's session
+    resume token are kept in Windows Credential Manager, and every start re-authenticates silently. Only
+    logout or revocation asks for a password again.
+  - **Engineer access:** authorization is a standing, per-driver-account grant stored on the relay. Once
+    granted, the engineer sees that driver's live sessions automatically (no new code). Grants are revocable.
+  - **Driver restarts:** restarting within the grace window resumes the same session. Driver mode can
+    auto-start (or resume) streaming when LMU telemetry appears, so the driver only opens the app.
+  - **Engineer restarts:** the engineer app remembers the last driver and auto-rejoins when that driver is
+    live.
+- **Date:** 2026-10-02
+
 ## D-017 Channel IDs and schema versioning
 - **Chosen:** A single registry in `telemetry-model::registry` defines every channel (id, canonical name,
   MoTeC-style export name, unit, type, source, priority P0/P1/P2, frequency class, capability). IDs are
