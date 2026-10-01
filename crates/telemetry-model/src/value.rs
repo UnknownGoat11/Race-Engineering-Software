@@ -127,16 +127,36 @@ pub struct Sample {
 
 impl Sample {
     pub fn valid(value: Value) -> Self {
-        Self { value, quality: Quality::Valid }
+        Self {
+            value,
+            quality: Quality::Valid,
+        }
     }
     pub fn unavailable() -> Self {
-        Self { value: Value::None, quality: Quality::Unavailable }
+        Self {
+            value: Value::None,
+            quality: Quality::Unavailable,
+        }
     }
     pub fn invalid() -> Self {
-        Self { value: Value::None, quality: Quality::Invalid }
+        Self {
+            value: Value::None,
+            quality: Quality::Invalid,
+        }
     }
     pub fn not_supported() -> Self {
-        Self { value: Value::None, quality: Quality::NotSupported }
+        Self {
+            value: Value::None,
+            quality: Quality::NotSupported,
+        }
+    }
+    /// Previously valid but not refreshed within its staleness budget. Carries no value (a stale value
+    /// must never be mistaken for a measurement downstream).
+    pub fn stale() -> Self {
+        Self {
+            value: Value::None,
+            quality: Quality::Stale,
+        }
     }
     pub fn is_valid(&self) -> bool {
         self.quality == Quality::Valid && self.value != Value::None

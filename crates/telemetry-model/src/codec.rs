@@ -79,7 +79,11 @@ impl<'a> TlvEncoder<'a> {
         buf.extend_from_slice(&header.source_et_s.to_le_bytes());
         let count_offset = buf.len();
         buf.extend_from_slice(&0u16.to_le_bytes());
-        Self { buf, count_offset, count: 0 }
+        Self {
+            buf,
+            count_offset,
+            count: 0,
+        }
     }
 
     /// Appends one record. Non-valid samples are encoded without a value (type NONE) regardless of the
@@ -88,7 +92,11 @@ impl<'a> TlvEncoder<'a> {
         if self.count >= MAX_RECORDS {
             return Err(CodecError::TooManyRecords(self.count + 1));
         }
-        let value = if sample.quality == Quality::Valid { &sample.value } else { &Value::None };
+        let value = if sample.quality == Quality::Valid {
+            &sample.value
+        } else {
+            &Value::None
+        };
         if let Value::Str(s) = value
             && s.len() > MAX_STR_VALUE_BYTES
         {
@@ -139,9 +147,15 @@ struct Cursor<'b> {
 
 impl<'b> Cursor<'b> {
     fn take(&mut self, n: usize) -> Result<&'b [u8], CodecError> {
-        let end = self.pos.checked_add(n).ok_or(CodecError::Truncated { offset: self.pos, needed: n })?;
+        let end = self.pos.checked_add(n).ok_or(CodecError::Truncated {
+            offset: self.pos,
+            needed: n,
+        })?;
         if end > self.data.len() {
-            return Err(CodecError::Truncated { offset: self.pos, needed: end - self.data.len() });
+            return Err(CodecError::Truncated {
+                offset: self.pos,
+                needed: end - self.data.len(),
+            });
         }
         let s = &self.data[self.pos..end];
         self.pos = end;
@@ -192,11 +206,18 @@ pub fn decode(data: &[u8]) -> Result<(TlvHeader, Vec<TlvRecord>), CodecError> {
                     return Err(CodecError::StringTooLong(len));
                 }
                 let bytes = c.take(len)?;
-                Value::Str(std::str::from_utf8(bytes).map_err(|_| CodecError::InvalidUtf8)?.to_owned())
+                Value::Str(
+                    std::str::from_utf8(bytes)
+                        .map_err(|_| CodecError::InvalidUtf8)?
+                        .to_owned(),
+                )
             }
             ValueType::U64 => Value::U64(u64::from_le_bytes(c.array()?)),
         };
-        records.push(TlvRecord { channel, sample: Sample { value, quality } });
+        records.push(TlvRecord {
+            channel,
+            sample: Sample { value, quality },
+        });
     }
     if c.pos != data.len() {
         return Err(CodecError::TrailingBytes(data.len() - c.pos));
@@ -227,7 +248,10 @@ mod tests {
             (ChannelId(5), Sample::valid(Value::Bool(true))),
             (ChannelId(6), Sample::valid(Value::U8(250))),
             (ChannelId(7), Sample::valid(Value::I8(-5))),
-            (ChannelId(8), Sample::valid(Value::Str("Porsche 963".into()))),
+            (
+                ChannelId(8),
+                Sample::valid(Value::Str("Porsche 963".into())),
+            ),
             (ChannelId(9), Sample::valid(Value::U64(u64::MAX))),
             (ChannelId(10), Sample::unavailable()),
             (ChannelId(11), Sample::not_supported()),
@@ -251,7 +275,14 @@ mod tests {
     fn invalid_sample_never_carries_value() {
         let mut buf = Vec::new();
         let mut enc = TlvEncoder::begin(&mut buf, &header());
-        enc.push(ChannelId(1), &Sample { value: Value::F32(999.0), quality: Quality::Invalid }).expect("push");
+        enc.push(
+            ChannelId(1),
+            &Sample {
+                value: Value::F32(999.0),
+                quality: Quality::Invalid,
+            },
+        )
+        .expect("push");
         enc.finish();
         let (_, recs) = decode(&buf).expect("decode");
         assert_eq!(recs[0].sample, Sample::invalid());
@@ -261,11 +292,16 @@ mod tests {
     fn truncation_is_detected_at_every_length() {
         let mut buf = Vec::new();
         let mut enc = TlvEncoder::begin(&mut buf, &header());
-        enc.push(ChannelId(1), &Sample::valid(Value::F64(1.0))).expect("push");
-        enc.push(ChannelId(2), &Sample::valid(Value::Str("abc".into()))).expect("push");
+        enc.push(ChannelId(1), &Sample::valid(Value::F64(1.0)))
+            .expect("push");
+        enc.push(ChannelId(2), &Sample::valid(Value::Str("abc".into())))
+            .expect("push");
         enc.finish();
         for len in 0..buf.len() {
-            assert!(decode(&buf[..len]).is_err(), "prefix of length {len} must not decode");
+            assert!(
+                decode(&buf[..len]).is_err(),
+                "prefix of length {len} must not decode"
+            );
         }
         let mut extra = buf.clone();
         extra.push(0);
