@@ -20,7 +20,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
 license = "LicenseRef-Proprietary"
-repository = "https://github.com/ManvikKapoor1/race-engineering-software"
+repository = "https://github.com/UnknownGoat11/Race-Engineering-Software"
 authors = ["LMU Race Engineering contributors"]
 
 [workspace.dependencies]
