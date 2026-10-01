@@ -1,11 +1,26 @@
 [package]
 name = "lmu-reader"
+description = "Read-only acquisition of LMU's native LMU_Data shared memory (D-002, D-003, D-018)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Exposes `testutil::LayoutBuilder` (synthetic `LMU_Data` images) to other crates' tests.
+# Never enable it in production builds.
+test-support = []
+
 [dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

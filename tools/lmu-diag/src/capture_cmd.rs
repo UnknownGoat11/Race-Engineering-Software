@@ -1,0 +1,93 @@
+//! `lmu-diag capture --seconds N --out file.lmuraw`: records the raw copied blocks and timestamps
+//! (format documented in `lmu_reader::capture`) for offline normalizer tests.
+
+use std::io::BufWriter;
+use std::path::Path;
+use std::process::ExitCode;
+use std::sync::mpsc::RecvTimeoutError;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use lmu_reader::compat::{LAYOUT_SOURCE, PROBED_LMU_BUILD};
+use lmu_reader::{CaptureWriter, FrameInfo, ReaderConfig, ReaderState};
+
+use crate::live::create_output;
+use crate::stop::STOP;
+use crate::worker::{Msg, Worker};
+use crate::{COMPONENT, DiagError};
+
+/// How often progress is printed and the file flushed.
+const PROGRESS_EVERY: Duration = Duration::from_secs(1);
+/// Status cadence requested from the reader thread.
+const STATUS_EVERY: Duration = Duration::from_millis(500);
+
+/// Records for `duration` into `out`.
+pub(crate) fn run(duration: Duration, out: &Path, force: bool) -> Result<ExitCode, DiagError> {
+    let file = create_output(out, force)?;
+    eprintln!(
+        "lmu-diag: WARNING {} will contain driver names, the player name and server names from LMU (PII). \
+         Keep it private; do not commit it or share it publicly.",
+        out.display()
+    );
+    let config = ReaderConfig::default();
+    let created_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let meta = format!(
+        "tool: lmu-diag {}\ncreated_unix_ms: {created_unix_ms}\nlayout_source: {LAYOUT_SOURCE}\nprobed_build: {PROBED_LMU_BUILD}\n\
+         clock: capture_mono_ns = nanoseconds since lmu-diag started (monotonic)\n\
+         privacy: contains driver, player and server names (PII)\n",
+        env!("CARGO_PKG_VERSION"),
+    );
+    let mut writer = CaptureWriter::new(BufWriter::new(file), &meta)?;
+    let worker = Worker::spawn(config, true, STATUS_EVERY)?;
+    let started = Instant::now();
+    let mut next_progress = started + PROGRESS_EVERY;
+    let mut state = ReaderState::WaitingForLmu;
+    let mut first_error: Option<String> = None;
+
+    let end = started.checked_add(duration).unwrap_or(started);
+    while started.elapsed() < duration && !STOP.is_requested() {
+        let wait = next_progress
+            .min(end)
+            .saturating_duration_since(Instant::now());
+        match worker.recv_timeout(wait) {
+            Ok(Msg::Frame(frame)) => {
+                if let Some(raw) = &frame.raw {
+                    writer.write_frame(&FrameInfo::of(&frame.snapshot), &raw.blocks())?;
+                }
+            }
+            Ok(Msg::Status(status)) => state = status.diagnostics.state,
+            Ok(Msg::Error(e)) => {
+                tracing::warn!(component = COMPONENT, error = %e, "reader error during capture");
+                eprintln!("lmu-diag: reader error: {e}");
+                first_error.get_or_insert(e);
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(DiagError::Worker("the reader thread stopped".to_owned()));
+            }
+        }
+        if Instant::now() >= next_progress {
+            next_progress += PROGRESS_EVERY;
+            writer.flush()?;
+            eprintln!(
+                "lmu-diag: {:>4.0} s / {} s | state {state} | {} frames",
+                started.elapsed().as_secs_f64(),
+                duration.as_secs(),
+                writer.frames()
+            );
+        }
+    }
+    worker.stop()?;
+    let frames = writer.frames();
+    writer.finish()?;
+    println!("lmu-diag: wrote {frames} frames to {}", out.display());
+    if frames == 0 {
+        eprintln!(
+            "lmu-diag: no frames were captured (state {state}{}). Is LMU running and are you on track?",
+            first_error.map_or_else(String::new, |e| format!(", error: {e}"))
+        );
+        return Ok(ExitCode::from(crate::EXIT_NOT_CHECKED));
+    }
+    Ok(ExitCode::SUCCESS)
+}
