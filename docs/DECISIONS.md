@@ -82,11 +82,12 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
 ## D-008 Authentication & session authorization
 - **Chosen:** Accounts with Argon2id password hashes. Short-lived access tokens (JWT, EdDSA/Ed25519 signed by
   the relay, 15 min) + opaque refresh tokens (random 256-bit, stored hashed, rotating). Clients keep the
-  refresh token in Windows Credential Manager. Session code (6 chars, Crockford base32) is only a pairing
-  identifier. An engineer may join only if (a) authenticated, (b) role ENGINEER, and (c) the driver has
-  authorized that engineer account for the session (driver's authorized-engineer list, or live approval of a
-  join request in the driver app). Unauthorized joins are rejected and rate-limited.
-- **Date:** 2026-09-30
+  refresh token in Windows Credential Manager. Session authorization is defined in **D-022**:
+  - An engineer may join only if (a) authenticated, (b) role ENGINEER, and (c) presenting a valid, unused,
+    unexpired one-time connection code that the driver issued for that live session, with a free engineer
+    slot (maximum 2).
+  - Unauthorized joins are rejected and rate-limited.
+- **Date:** 2026-09-30 (authorization rule revised 2026-10-02 → D-022)
 
 ## D-009 Live queue policy: bounded, latest-wins for live data; lossless only for recording
 - **Chosen:** Every inter-task and per-connection queue is bounded. For live telemetry, when a consumer
@@ -175,57 +176,71 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
   - **Login:** done once. The rotating refresh token (sliding 90-day lifetime) and the driver's session
     resume token are kept in Windows Credential Manager, and every start re-authenticates silently. Only
     logout or revocation asks for a password again.
-  - **Engineer access:** authorization is a standing, per-driver-account grant stored on the relay. Once
-    granted, the engineer sees that driver's live sessions automatically (no new code). Grants are revocable.
   - **Driver restarts:** restarting within the grace window resumes the same session. Driver mode can
     auto-start (or resume) streaming when LMU telemetry appears, so the driver only opens the app.
-  - **Engineer restarts:** the engineer app remembers the last driver and auto-rejoins when that driver is
-    live.
+  - **Engineer connections are the deliberate exception (D-022):** the engineer app never remembers or
+    auto-connects to a previous driver. Every new connection needs a fresh one-time code from the driver.
 - **Date:** 2026-10-02
 
-## D-021 Driver ↔ engineer pairing (owner requirement: "a way or code to connect the engineer with the specific driver")
-- **Model:** pairing is a *standing grant* from one driver account to one engineer account, stored on the
-  relay (Postgres). Codes only create or locate grants. They are never credentials by themselves: every
-  action also requires the logged-in account (spec §52, §130).
-- **Two codes, two jobs:**
+## D-021 Driver ↔ engineer pairing via standing grants — SUPERSEDED by D-022
+- The owner revised the requirement on 2026-10-02: no standing grants, no "My drivers" list, no
+  auto-connect to the last driver, and at most 2 engineers. See D-022. Do not implement D-021.
+- **Date:** 2026-10-02
 
-  | Code | Example | Who makes it | Purpose | Properties |
-  |------|---------|--------------|---------|------------|
-  | **Pairing invite code** | `PAIR-7KQ4-MZ9T-2XWD` | Driver, via "Invite engineer" | One-time pairing of an engineer account to this driver | 12 random Crockford-base32 chars (60 bits); single use; expires (default 24 h, configurable); stored hashed; driver can cancel it; works while the driver is offline (pair before race day) |
-  | **Session code** | `8F3A2C` | Relay, per live session | Identify which live session is shown, and request access during a session | 6 chars, human-readable, not secret; joining still needs a grant or live driver approval |
-- **Flow A (normal, no driver action during a race):**
-  1. Driver: *Engineers → Invite engineer* shows the invite code and a Copy button. The driver sends it to
-     their engineer, e.g. over Discord.
-  2. Engineer: *My drivers → Add driver → enter code*. The relay validates it and creates the standing
-     grant. The driver app shows "Alice (alice) can now see your telemetry".
-  3. From then on the engineer's *My drivers* list shows that driver with LIVE / ONLINE (no LMU) / OFFLINE
-     status. Clicking a driver shows an identity confirmation card (driver, car, class, track, session,
-     started; spec §247), then the engineer is monitoring. The engineer app auto-rejoins its last driver
-     on restart (D-020).
-- **Flow B (ad-hoc during a live session):** the engineer enters the session code. The driver app shows
-  "Alice (alice) requests access — [Allow this session] [Always allow] [Deny]". "Always allow" creates the
-  standing grant. Requests expire after 2 minutes and are rate-limited per requester.
-- **Management:**
-  - Driver *Engineers* page: authorized engineers (display name, username, added, last connected) with
-    **Revoke** (immediately disconnects that engineer), pending invites with **Cancel**, and pending
-    requests.
-  - Engineer *My drivers* page: paired drivers with live status, **Connect**, **Remove**.
-  - Grants are per account, so they follow the user to any PC they log into.
+## D-022 One-time connection codes; every connection needs a new code; max 2 engineers (owner requirement)
+- **Requirement (2026-10-02, owner):** "don't let the app connect to last driver, it should be a new code,
+  then connection. always" and "a maximum of 2 engineers per driver for now, to avoid any overloading".
+- **Connection code:**
+  - Shown in the driver app while its session exists, e.g. `7KQ4-MZ9T`: 8 random Crockford-base32 chars
+    (40 bits, unambiguous alphabet).
+  - Issued by the relay and stored only as a hash.
+  - Single use. It expires 10 minutes after issue if unused (configurable).
+  - The driver can press **New code** at any time, which invalidates the unused one.
+  - A code is never reusable. Every new engineer connection needs a fresh code: first connection, after an
+    engineer app restart, after an explicit disconnect, and after being disconnected by the driver.
+- **Flow:**
+  1. Driver: the app shows "Connection code `7KQ4-MZ9T` · Engineers 0/2" with a **Copy** button. The driver
+     sends the code to the engineer, e.g. over Discord.
+  2. Engineer: Engineer mode → **Connect to driver** → enter code. The relay checks all of these:
+     - the account is logged in with the ENGINEER role;
+     - the code is valid, unused and unexpired;
+     - the driver session is live;
+     - an engineer slot is free.
+  3. Engineer: an identity confirmation card shows driver, car, class, track, session type and start time
+     (spec §247). **Confirm** receives the snapshot and live stream. **Cancel** disconnects.
+  4. Driver: "Alice (alice) connected · Engineers 1/2". The app then shows a fresh code automatically for a
+     possible second engineer. At 2/2 no code is shown and new joins get "Driver already has 2 engineers
+     connected".
+- **Network blips are not new connections:** if an engineer's connection drops while the engineer app keeps
+  running, it reconnects by itself so the race view isn't lost.
+  - It uses an in-memory, connection-bound resume ticket: random 256-bit, never written to disk, valid up to
+    10 minutes after the drop (configurable on the relay).
+  - The ticket dies when the engineer app closes, when the engineer clicks Disconnect, when the driver
+    disconnects them, or when the session ends.
+  - After that, only a new code connects. Driver-side app restarts within the session grace window do not
+    disconnect engineers.
+- **Limits:**
+  - At most 2 concurrent engineers per driver session (relay config `max_engineers_per_session`, default 2)
+    to avoid overload. The engineer side does not discover or list drivers at all.
+- **Driver controls:** a list of connected engineers (display name, username, connected since, link
+  health) with **Disconnect**, which closes that engineer's connection and kills its ticket immediately.
 - **Security:**
-  - Invite redemption is limited per engineer account and per IP, and failed attempts are logged without
-    the code.
-  - Only accounts with the ENGINEER role can redeem. A driver can pair at most a configurable number of
-    engineers (default 5).
-  - Concurrent engineers per live session: configurable, default 1 (spec §51). A second engineer gets a
-    clear "session already being monitored by …" error.
-  - Engineers can never discover drivers they are not paired with.
-- **Protocol additions (control messages, postcard):**
-  - PAIR_INVITE_CREATE / PAIR_INVITE (code, expiry)
-  - PAIR_INVITE_CANCEL
-  - PAIR_REDEEM (code) / PAIR_RESULT
-  - GRANT_LIST / GRANT_REVOKE
-  - DRIVER_LIST (an engineer's paired drivers with live status, replacing an open-ended session list)
-  - Existing JOIN_REQUEST / JOIN_DECISION (with `remember`) for Flow B
+  - A code alone grants nothing without an authenticated ENGINEER account, and accounts alone grant nothing
+    without a code. The 40-bit, 10-minute, single-use codes plus rate limits make guessing infeasible.
+  - Redemption is rate-limited per account (5/min, 20/hour) and per IP.
+  - Codes are compared in constant time and never logged.
+  - The engineer→driver direction stays limited to session control and snapshot requests (spec §140).
+- **Protocol (control messages, postcard), replacing the D-021 set and the old SESSION_LIST / JOIN_REQUEST
+  / JOIN_DECISION / ENGINEER_GRANT:**
+  - CONNECT_CODE_REQUEST (D→R): issue or rotate the code.
+  - CONNECT_CODE (R→D): code, expires_at, engineers_connected, engineers_max.
+  - SESSION_JOIN {code} (E→R): the existing message, now carrying the connection code.
+  - SESSION_RESUME {ticket} (E→R): reconnect after a blip.
+  - ENGINEER_LIST (R→D): connected engineers.
+  - ENGINEER_KICK (D→R).
+  - SESSION_FULL / CODE_INVALID / CODE_EXPIRED as ErrorMsg codes.
+- **Unchanged from D-020:** login once (refresh token in Credential Manager), all preferences persist, and
+  the driver session auto-resumes after a driver app restart.
 - **Date:** 2026-10-02
 
 ## D-017 Channel IDs and schema versioning
