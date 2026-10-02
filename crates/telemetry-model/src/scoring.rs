@@ -38,6 +38,18 @@ pub fn lmu_max_laps(raw: i32) -> Option<u32> {
     }
 }
 
+/// Session time remaining from `mEndET − mCurrentET`, at least 0 once a timed session has run out
+/// (LMU_CHANNEL_MAP §18 `session.time_remaining_calc_s`). `None` when `mEndET` is not a real end time (not
+/// finite or ≤ 0, e.g. the UNVERIFIED lap-race sentinel) or the result is not finite: never a fabricated
+/// "0 remaining". The single implementation for every producer and consumer of this value.
+pub fn lmu_session_time_remaining(end_et_s: f64, current_et_s: f64) -> Option<f64> {
+    if !(end_et_s.is_finite() && end_et_s > 0.0) {
+        return None;
+    }
+    let remaining = end_et_s - current_et_s;
+    remaining.is_finite().then(|| remaining.max(0.0))
+}
+
 /// Decodes the raw `mSector` (0 = S3, 1 = S1, 2 = S2) into a 1-based sector number.
 pub fn lmu_sector(raw: i8) -> Option<u8> {
     match raw {
@@ -85,7 +97,7 @@ pub struct SessionScoring {
     pub num_vehicles: Option<u32>,
     /// Elapsed session time at this scoring update (`mCurrentET`).
     pub current_et_s: Option<f64>,
-    /// Session end time (`mEndET`).
+    /// Session end time (`mEndET`); not a real end time when ≤ 0 (lap-race sentinel, UNVERIFIED).
     pub end_et_s: Option<f64>,
     /// Time remaining as reported by LMU (`mSessionTimeRemaining`, unit assumed seconds, A-LMU-035).
     pub time_remaining_s: Option<f64>,
@@ -103,10 +115,10 @@ pub struct SessionScoring {
 }
 
 impl SessionScoring {
-    /// `max(0, end − current)` when both are known (cross-check for `time_remaining_s`).
+    /// `max(0, end − current)` (cross-check for `time_remaining_s`), `None` unless both are known and the end
+    /// time is real; see [`lmu_session_time_remaining`].
     pub fn time_remaining_calc_s(&self) -> Option<f64> {
-        let remaining = self.end_et_s? - self.current_et_s?;
-        remaining.is_finite().then(|| remaining.max(0.0))
+        lmu_session_time_remaining(self.end_et_s?, self.current_et_s?)
     }
 }
 
@@ -299,6 +311,9 @@ pub enum CapabilityStatus {
     Calculated,
 }
 
+/// Capability note of [`Availability::Experimental`] channels in a fresh [`CapabilityMap`].
+pub const NOTE_EXPERIMENTAL: &str = "experimental: not published until verified live";
+
 /// Capability of one channel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelCapability {
@@ -317,16 +332,23 @@ pub struct CapabilityMap {
 }
 
 impl CapabilityMap {
-    /// Initial map from the registry: channels no source provides are `NotSupported`, calculated channels
-    /// `Calculated`, everything else `Unavailable` until observed.
+    /// Initial map from the registry, before anything is observed: channels no source provides are
+    /// `NotSupported`; every other channel, calculated ones included, is `Unavailable` until a valid sample
+    /// is seen (the producer then reports `Available` or `Calculated`). Experimental channels carry
+    /// [`NOTE_EXPERIMENTAL`]: they are not published until verified live.
     pub fn from_registry() -> Self {
         let channels = registry::all()
             .iter()
             .map(|def| {
-                let status = match (def.availability, def.source) {
-                    (Availability::NotProvided, _) => CapabilityStatus::NotSupported,
-                    (_, Source::Calculated) => CapabilityStatus::Calculated,
-                    _ => CapabilityStatus::Unavailable,
+                let (status, note) = match def.availability {
+                    Availability::NotProvided => (CapabilityStatus::NotSupported, None),
+                    Availability::Experimental => (
+                        CapabilityStatus::Unavailable,
+                        Some(NOTE_EXPERIMENTAL.to_owned()),
+                    ),
+                    Availability::Always | Availability::VehicleDependent => {
+                        (CapabilityStatus::Unavailable, None)
+                    }
                 };
                 (
                     def.id,
@@ -334,7 +356,7 @@ impl CapabilityMap {
                         status,
                         source: def.source,
                         native_rate_hz: None,
-                        note: None,
+                        note,
                     },
                 )
             })
@@ -443,6 +465,8 @@ mod tests {
         assert_eq!(lmu_sector(1), Some(1));
         assert_eq!(lmu_sector(2), Some(2));
         assert_eq!(lmu_sector(3), None);
+        assert_eq!(lmu_session_time_remaining(3_600.0, 100.0), Some(3_500.0));
+        assert_eq!(lmu_session_time_remaining(0.0, 100.0), None);
     }
 
     #[test]
@@ -511,7 +535,30 @@ mod tests {
         assert_eq!(s.time_remaining_calc_s(), None);
         s.end_et_s = Some(3_600.0);
         s.current_et_s = Some(3_700.0);
-        assert_eq!(s.time_remaining_calc_s(), Some(0.0));
+        assert_eq!(
+            s.time_remaining_calc_s(),
+            Some(0.0),
+            "expired timed session"
+        );
+        s.current_et_s = Some(100.0);
+        assert_eq!(s.time_remaining_calc_s(), Some(3_500.0));
+    }
+
+    /// LMU_CHANNEL_MAP §18: no data when `mEndET` is not finite or ≤ 0 (the lap-race sentinel), never a
+    /// fabricated "0:00 remaining".
+    #[test]
+    fn time_remaining_needs_a_real_end_time() {
+        let mut s = SessionScoring {
+            current_et_s: Some(1_234.5),
+            ..SessionScoring::default()
+        };
+        for end in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            s.end_et_s = Some(end);
+            assert_eq!(s.time_remaining_calc_s(), None, "mEndET {end}");
+        }
+        s.end_et_s = Some(3_600.0);
+        s.current_et_s = Some(f64::NAN);
+        assert_eq!(s.time_remaining_calc_s(), None, "unknown current time");
     }
 
     #[test]
@@ -552,10 +599,18 @@ mod tests {
             caps.get(ch::TC_INTERVENTION).map(|c| c.status),
             Some(CapabilityStatus::NotSupported)
         );
+        // Nothing is advertised before it has been observed: calculated channels start unavailable, and
+        // experimental ones say why they will not be published.
         assert_eq!(
             caps.get(ch::SPEED).map(|c| c.status),
-            Some(CapabilityStatus::Calculated)
+            Some(CapabilityStatus::Unavailable)
         );
+        for id in [ch::SLIP_RATIO_FL, ch::SLIP_ANGLE_RR, ch::LOCAL_YELLOW_S1] {
+            let cap = caps.get(id).expect("experimental channel");
+            assert_eq!(cap.status, CapabilityStatus::Unavailable, "{id:?}");
+            assert_eq!(cap.note.as_deref(), Some(NOTE_EXPERIMENTAL), "{id:?}");
+        }
+        assert_eq!(caps.count(CapabilityStatus::Calculated), 0);
         assert_eq!(
             caps.get(ch::RPM).map(|c| c.status),
             Some(CapabilityStatus::Unavailable)

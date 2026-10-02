@@ -12,7 +12,15 @@
 //!   checked against `docs/research/lmu_abi_layout.json` by `tests/registry_docs.rs`.
 //! - Validation ranges are conservative: they reject physically impossible values (garbage, torn reads,
 //!   unit mix-ups) but never real extremes such as crashes, spins or lock-ups. Where LMU_CHANNEL_MAP gives a
-//!   tighter range that a real car can exceed (spins, reversing at speed), the range here is wider.
+//!   tighter range that a real car can exceed (spins, reversing at speed), the range here is wider. Where the
+//!   map requires a value above 0 (0 is LMU's sentinel or an unfilled field), the lower bound is a named
+//!   positive minimum, so a zero can never pass as a VALID measurement (`tests/registry_docs.rs` checks every
+//!   such map rule).
+//! - Channels that restart every lap, stint or day (lap time, fuel used this lap, time of day…) are
+//!   `Discrete`: a value interpolated across the restart was never measured.
+//! - `formula:` channels are versioned (D-010): `app.normalizer_formula_version` covers the formulas computed
+//!   by `lmu-normalizer`, `app.calculation_engine_version` those of `race-engines`; each component publishes
+//!   its own version channel.
 //! - `value_type` is the wire/storage type. LMU doubles are stored as F32 only where f32 resolution is far
 //!   finer than the physical resolution that matters (temperatures, pressures, forces, inputs…); times,
 //!   world positions and distances stay F64. The raw snapshot recorder keeps the original doubles.
@@ -62,6 +70,10 @@ const PEDAL_MAX: f64 = 1.01;
 const STEERING_MAX: f64 = 1.01;
 /// Physical steering wheel range bound: 1440° lock-to-lock (A-LMU-037).
 const MAX_STEERING_RANGE_RAD: f64 = 1_440.0 * RAD_PER_DEG;
+/// Steering wheel range lower bound: a quarter turn lock-to-lock. LMU_CHANNEL_MAP requires a range above 0
+/// (0 is an unfilled field); no car or wheel turns less, and a range reported in radians but converted as
+/// degrees (an A-LMU-037 unit mix-up) lands below it.
+const MIN_STEERING_RANGE_RAD: f64 = 90.0 * RAD_PER_DEG;
 /// Steering wheel angle bound: half the maximum range.
 const MAX_STEERING_ANGLE_RAD: f64 = MAX_STEERING_RANGE_RAD / 2.0;
 /// Highest forward gear accepted.
@@ -100,6 +112,10 @@ const BRAKE_TEMP_MAX_C: f64 = 1_500.0;
 const BRAKE_TEMP_RATE_C_PER_S: f64 = 3_000.0;
 /// Fraction with 1 % tolerance above full scale (brake pressure, fuel level fraction).
 const FRACTION_TOLERANT_MAX: f64 = 1.01;
+/// Rear brake bias bounds (share of braking on the rear axle, LMU_CHANNEL_MAP §8). No race car runs outside
+/// 20–80 % rear; 0 (all front) or 1 (all rear) is an unfilled field or garbage, never a measurement.
+const BRAKE_BIAS_REAR_MIN: f64 = 0.2;
+const BRAKE_BIAS_REAR_MAX: f64 = 0.8;
 /// Ride height bounds (m).
 const RIDE_HEIGHT_MIN_M: f64 = -0.05;
 const RIDE_HEIGHT_MAX_M: f64 = 0.3;
@@ -118,10 +134,18 @@ const MAX_VE_PER_LAP_FRAC: f64 = 0.5;
 /// Lap and session time bounds (s).
 const MAX_LAP_TIME_S: f64 = 3_600.0;
 const MAX_SESSION_TIME_S: f64 = 1.0e7;
+/// Smallest plausible lap or sector time (s). LMU_CHANNEL_MAP requires these to be above 0 (≤ 0 is LMU's
+/// "no time yet" sentinel); 1 ms is three orders of magnitude below one sector of the shortest accepted track
+/// at the speed bound (≈ 1.1 s).
+const MIN_LAP_OR_SECTOR_TIME_S: f64 = 1.0e-3;
 /// Delta-to-best bound (s).
 const MAX_DELTA_S: f64 = 600.0;
 /// Physics update interval bound (s).
 const MAX_UPDATE_DELTA_S: f64 = 0.5;
+/// Physics update interval lower bound (s; 2⁻¹³ ≈ 0.12 ms, an 8192 Hz update rate). LMU_CHANNEL_MAP requires
+/// an interval above 0 (0 would mean an infinite update rate); no simulation or telemetry update is this
+/// fast. A power of two, so the f32 storage type holds the bound exactly.
+const MIN_UPDATE_DELTA_S: f64 = 1.0 / 8_192.0;
 /// Seconds per day (time-of-day channels).
 const SECONDS_PER_DAY: f64 = 86_400.0;
 /// Lap count bound.
@@ -139,8 +163,16 @@ const MAX_TRACK_LENGTH_M: f64 = 30_000.0;
 const LAP_DIST_SLACK_M: f64 = 50.0;
 /// Total race distance bound (m).
 const MAX_TOTAL_DISTANCE_M: f64 = 1.0e8;
-/// Wheel rotation bound (rad/s): ~1100 km/h at a 0.33 m radius, so wheelspin at top speed never trips it.
-const MAX_WHEEL_ROT_RADPS: f64 = 1_000.0;
+/// Static tyre radius bounds (m; LMU_CHANNEL_MAP §11: 20..60 cm raw).
+const MIN_TYRE_RADIUS_M: f64 = 0.2;
+const MAX_TYRE_RADIUS_M: f64 = 0.6;
+/// Wheel surface speed bound (m/s): an open differential can spin an unloaded wheel at up to twice the
+/// carrier speed, so wheelspin at the vehicle speed bound stays valid. The derived wheel speed enforces it.
+const MAX_WHEEL_SURFACE_SPEED_MPS: f64 = 2.0 * MAX_SPEED_MPS;
+/// Wheel rotation bound (rad/s): the surface speed bound on the smallest accepted tyre, i.e. the fastest any
+/// accepted wheel can turn. The size-aware check is the derived wheel speed (rotation × radius), so every
+/// wheel state whose surface speed is plausible is valid in both channels.
+const MAX_WHEEL_ROT_RADPS: f64 = MAX_WHEEL_SURFACE_SPEED_MPS / MIN_TYRE_RADIUS_M;
 /// Wind speed bound (m/s).
 const MAX_WIND_MPS: f64 = 60.0;
 /// Largest positive `long` (game version).
@@ -443,8 +475,8 @@ registry! {
     CLUTCH_FILTERED = 0x0016, "inputs.clutch_filtered_frac", "ClutchFiltered" => tel("Clutch after aids", U::Fraction, T::F32, tp!("mFilteredClutch")).p2().range(PEDAL_MIN, PEDAL_MAX);
     STEERING_FILTERED = 0x0017, "inputs.steering_filtered", "SteeringFiltered" => tel("Steering after aids", U::Fraction, T::F32, tp!("mFilteredSteering")).range(-STEERING_MAX, STEERING_MAX);
     STEERING_TORQUE = 0x0018, "inputs.steering_shaft_torque_nm", "SteeringTorque" => tel("Steering shaft torque", U::NewtonMetre, T::F32, tp!("mSteeringShaftTorque")).p2().range(-500.0, 500.0);
-    STEERING_RANGE_PHYSICAL = 0x0019, "inputs.steering_wheel_range_physical", "SteeringRangePhysical" => tel("Steering wheel range (physical)", U::Radian, T::F32, tp!("mPhysicalSteeringWheelRange")).p2().stat().range(0.0, MAX_STEERING_RANGE_RAD);
-    STEERING_RANGE_VISUAL = 0x001A, "inputs.steering_wheel_range_visual", "SteeringRangeVisual" => tel("Steering wheel range (visual)", U::Radian, T::F32, tp!("mVisualSteeringWheelRange")).p2().stat().range(0.0, MAX_STEERING_RANGE_RAD);
+    STEERING_RANGE_PHYSICAL = 0x0019, "inputs.steering_wheel_range_physical", "SteeringRangePhysical" => tel("Steering wheel range (physical)", U::Radian, T::F32, tp!("mPhysicalSteeringWheelRange")).p2().stat().range(MIN_STEERING_RANGE_RAD, MAX_STEERING_RANGE_RAD);
+    STEERING_RANGE_VISUAL = 0x001A, "inputs.steering_wheel_range_visual", "SteeringRangeVisual" => tel("Steering wheel range (visual)", U::Radian, T::F32, tp!("mVisualSteeringWheelRange")).p2().stat().range(MIN_STEERING_RANGE_RAD, MAX_STEERING_RANGE_RAD);
     STEERING_ANGLE = 0x001B, "inputs.steering_wheel_angle_rad", "SteeringAngle" => calc("Steering wheel angle", U::Radian, T::F32, "formula:steering_wheel_angle").range(-MAX_STEERING_ANGLE_RAD, MAX_STEERING_ANGLE_RAD);
     FFB_TORQUE = 0x001C, "inputs.ffb_torque", "FFBTorque" => generic("Force-feedback torque (raw scale)", U::None, T::F32, "generic.FFBTorque").p2();
 
@@ -603,10 +635,10 @@ registry! {
     TYRE_DEFLECTION_FR = 0x0349, "tyres.fr.vertical_deflection_m", "TyreDeflection_FR" => tel("Tyre vertical deflection FR", U::Metre, T::F32, tp!("mWheel[1].mVerticalTireDeflection")).p2().range(-0.2, 0.2);
     TYRE_DEFLECTION_RL = 0x034A, "tyres.rl.vertical_deflection_m", "TyreDeflection_RL" => tel("Tyre vertical deflection RL", U::Metre, T::F32, tp!("mWheel[2].mVerticalTireDeflection")).p2().range(-0.2, 0.2);
     TYRE_DEFLECTION_RR = 0x034B, "tyres.rr.vertical_deflection_m", "TyreDeflection_RR" => tel("Tyre vertical deflection RR", U::Metre, T::F32, tp!("mWheel[3].mVerticalTireDeflection")).p2().range(-0.2, 0.2);
-    TYRE_RADIUS_FL = 0x034C, "tyres.fl.static_radius_m", "TyreRadius_FL" => tel("Tyre static radius FL (1 cm resolution)", U::Metre, T::F32, tp!("mWheel[0].mStaticUndeflectedRadius")).p2().stat().range(0.2, 0.6);
-    TYRE_RADIUS_FR = 0x034D, "tyres.fr.static_radius_m", "TyreRadius_FR" => tel("Tyre static radius FR (1 cm resolution)", U::Metre, T::F32, tp!("mWheel[1].mStaticUndeflectedRadius")).p2().stat().range(0.2, 0.6);
-    TYRE_RADIUS_RL = 0x034E, "tyres.rl.static_radius_m", "TyreRadius_RL" => tel("Tyre static radius RL (1 cm resolution)", U::Metre, T::F32, tp!("mWheel[2].mStaticUndeflectedRadius")).p2().stat().range(0.2, 0.6);
-    TYRE_RADIUS_RR = 0x034F, "tyres.rr.static_radius_m", "TyreRadius_RR" => tel("Tyre static radius RR (1 cm resolution)", U::Metre, T::F32, tp!("mWheel[3].mStaticUndeflectedRadius")).p2().stat().range(0.2, 0.6);
+    TYRE_RADIUS_FL = 0x034C, "tyres.fl.static_radius_m", "TyreRadius_FL" => tel("Tyre static radius FL (1 cm resolution)", U::Metre, T::F32, tp!("mWheel[0].mStaticUndeflectedRadius")).p2().stat().range(MIN_TYRE_RADIUS_M, MAX_TYRE_RADIUS_M);
+    TYRE_RADIUS_FR = 0x034D, "tyres.fr.static_radius_m", "TyreRadius_FR" => tel("Tyre static radius FR (1 cm resolution)", U::Metre, T::F32, tp!("mWheel[1].mStaticUndeflectedRadius")).p2().stat().range(MIN_TYRE_RADIUS_M, MAX_TYRE_RADIUS_M);
+    TYRE_RADIUS_RL = 0x034E, "tyres.rl.static_radius_m", "TyreRadius_RL" => tel("Tyre static radius RL (1 cm resolution)", U::Metre, T::F32, tp!("mWheel[2].mStaticUndeflectedRadius")).p2().stat().range(MIN_TYRE_RADIUS_M, MAX_TYRE_RADIUS_M);
+    TYRE_RADIUS_RR = 0x034F, "tyres.rr.static_radius_m", "TyreRadius_RR" => tel("Tyre static radius RR (1 cm resolution)", U::Metre, T::F32, tp!("mWheel[3].mStaticUndeflectedRadius")).p2().stat().range(MIN_TYRE_RADIUS_M, MAX_TYRE_RADIUS_M);
     TYRE_COMPOUND_INDEX_FL = 0x0350, "tyres.fl.compound_index", "TyreCompoundIndex_FL" => tel("Tyre compound index FL", U::Count, T::U8, tp!("mWheel[0].mCompoundIndex")).stat();
     TYRE_COMPOUND_INDEX_FR = 0x0351, "tyres.fr.compound_index", "TyreCompoundIndex_FR" => tel("Tyre compound index FR", U::Count, T::U8, tp!("mWheel[1].mCompoundIndex")).stat();
     TYRE_COMPOUND_INDEX_RL = 0x0352, "tyres.rl.compound_index", "TyreCompoundIndex_RL" => tel("Tyre compound index RL", U::Count, T::U8, tp!("mWheel[2].mCompoundIndex")).stat();
@@ -686,7 +718,7 @@ registry! {
     BRAKE_AIR_TEMP_FR = 0x0419, "brakes.fr.temp_air_c", "BrakeAirTemp_FR" => missing("Brake air temp FR", U::Celsius, T::F32, Source::LmuDuckDb, "unavailable: DuckDB recordings only (Brakes Air Temp)").p2();
     BRAKE_AIR_TEMP_RL = 0x041A, "brakes.rl.temp_air_c", "BrakeAirTemp_RL" => missing("Brake air temp RL", U::Celsius, T::F32, Source::LmuDuckDb, "unavailable: DuckDB recordings only (Brakes Air Temp)").p2();
     BRAKE_AIR_TEMP_RR = 0x041B, "brakes.rr.temp_air_c", "BrakeAirTemp_RR" => missing("Brake air temp RR", U::Celsius, T::F32, Source::LmuDuckDb, "unavailable: DuckDB recordings only (Brakes Air Temp)").p2();
-    BRAKE_BIAS_REAR = 0x0480, "brakes.bias_rear_frac", "BrakeBiasRear" => tel("Brake bias (rear share)", U::Fraction, T::F32, tp!("mRearBrakeBias")).range(0.0, 1.0);
+    BRAKE_BIAS_REAR = 0x0480, "brakes.bias_rear_frac", "BrakeBiasRear" => tel("Brake bias (rear share)", U::Fraction, T::F32, tp!("mRearBrakeBias")).range(BRAKE_BIAS_REAR_MIN, BRAKE_BIAS_REAR_MAX);
     BRAKE_MIGRATION = 0x0481, "brakes.migration", "BrakeMigration" => tel("Brake migration setting", U::Count, T::U8, tp!("mMigration")).p2().vd();
     BRAKE_MIGRATION_MAX = 0x0482, "brakes.migration_max", "BrakeMigrationMax" => tel("Brake migration setting max", U::Count, T::U8, tp!("mMigrationMax")).p2().stat().vd();
 
@@ -760,10 +792,10 @@ registry! {
     WHEEL_DETACHED_FR = 0x055D, "wheels.fr.detached", "WheelDetached_FR" => tel("Wheel detached FR", U::None, T::Bool, tp!("mWheel[1].mDetached"));
     WHEEL_DETACHED_RL = 0x055E, "wheels.rl.detached", "WheelDetached_RL" => tel("Wheel detached RL", U::None, T::Bool, tp!("mWheel[2].mDetached"));
     WHEEL_DETACHED_RR = 0x055F, "wheels.rr.detached", "WheelDetached_RR" => tel("Wheel detached RR", U::None, T::Bool, tp!("mWheel[3].mDetached"));
-    WHEEL_SPEED_FL = 0x0560, "wheels.fl.speed_mps", "WheelSpeed_FL" => calc("Wheel speed FL", U::MetrePerSecond, T::F32, "formula:wheel_speed_from_rotation_radius").estimated().range(0.0, MAX_SPEED_MPS);
-    WHEEL_SPEED_FR = 0x0561, "wheels.fr.speed_mps", "WheelSpeed_FR" => calc("Wheel speed FR", U::MetrePerSecond, T::F32, "formula:wheel_speed_from_rotation_radius").estimated().range(0.0, MAX_SPEED_MPS);
-    WHEEL_SPEED_RL = 0x0562, "wheels.rl.speed_mps", "WheelSpeed_RL" => calc("Wheel speed RL", U::MetrePerSecond, T::F32, "formula:wheel_speed_from_rotation_radius").estimated().range(0.0, MAX_SPEED_MPS);
-    WHEEL_SPEED_RR = 0x0563, "wheels.rr.speed_mps", "WheelSpeed_RR" => calc("Wheel speed RR", U::MetrePerSecond, T::F32, "formula:wheel_speed_from_rotation_radius").estimated().range(0.0, MAX_SPEED_MPS);
+    WHEEL_SPEED_FL = 0x0560, "wheels.fl.speed_mps", "WheelSpeed_FL" => calc("Wheel speed FL", U::MetrePerSecond, T::F32, "formula:wheel_speed_from_rotation_radius").estimated().range(0.0, MAX_WHEEL_SURFACE_SPEED_MPS);
+    WHEEL_SPEED_FR = 0x0561, "wheels.fr.speed_mps", "WheelSpeed_FR" => calc("Wheel speed FR", U::MetrePerSecond, T::F32, "formula:wheel_speed_from_rotation_radius").estimated().range(0.0, MAX_WHEEL_SURFACE_SPEED_MPS);
+    WHEEL_SPEED_RL = 0x0562, "wheels.rl.speed_mps", "WheelSpeed_RL" => calc("Wheel speed RL", U::MetrePerSecond, T::F32, "formula:wheel_speed_from_rotation_radius").estimated().range(0.0, MAX_WHEEL_SURFACE_SPEED_MPS);
+    WHEEL_SPEED_RR = 0x0563, "wheels.rr.speed_mps", "WheelSpeed_RR" => calc("Wheel speed RR", U::MetrePerSecond, T::F32, "formula:wheel_speed_from_rotation_radius").estimated().range(0.0, MAX_WHEEL_SURFACE_SPEED_MPS);
     SLIP_RATIO_FL = 0x0564, "tyres.fl.slip_ratio", "SlipRatio_FL" => calc("Slip ratio FL (experimental)", U::Fraction, T::F32, "formula:slip_ratio_patch_over_ground").p2().range(-2.0, 2.0).experimental();
     SLIP_RATIO_FR = 0x0565, "tyres.fr.slip_ratio", "SlipRatio_FR" => calc("Slip ratio FR (experimental)", U::Fraction, T::F32, "formula:slip_ratio_patch_over_ground").p2().range(-2.0, 2.0).experimental();
     SLIP_RATIO_RL = 0x0566, "tyres.rl.slip_ratio", "SlipRatio_RL" => calc("Slip ratio RL (experimental)", U::Fraction, T::F32, "formula:slip_ratio_patch_over_ground").p2().range(-2.0, 2.0).experimental();
@@ -787,34 +819,34 @@ registry! {
 
     // ===== 0x0700 timing ===========================================================================================
     ELAPSED_TIME = 0x0700, "time.source_et_s", "Time" => tel("Elapsed session time (telemetry)", U::Second, T::F64, tp!("mElapsedTime")).p0().range(0.0, MAX_SESSION_TIME_S);
-    UPDATE_DELTA_TIME = 0x0701, "time.delta_s", "UpdateDeltaTime" => tel("Physics update interval", U::Second, T::F32, tp!("mDeltaTime")).p2().range(0.0, MAX_UPDATE_DELTA_S);
+    UPDATE_DELTA_TIME = 0x0701, "time.delta_s", "UpdateDeltaTime" => tel("Physics update interval", U::Second, T::F32, tp!("mDeltaTime")).p2().range(MIN_UPDATE_DELTA_S, MAX_UPDATE_DELTA_S);
     LAP_NUMBER = 0x0702, "lap.number", "Lap" => tel("Lap number", U::Count, T::I32, tp!("mLapNumber")).p0().range(0.0, MAX_LAPS);
     LAP_START_TIME = 0x0703, "lap.start_et_s", "LapStartTime" => tel("Lap start time", U::Second, T::F64, tp!("mLapStartET")).discrete().range(0.0, MAX_SESSION_TIME_S);
     LAP_INVALID = 0x0704, "lap.invalidated", "LapInvalid" => tel("Lap invalidated", U::None, T::Bool, tp!("mLapInvalidated")).p0();
-    DELTA_BEST = 0x0705, "timing.delta_best_s", "DeltaBest" => tel("Delta to best lap (LMU)", U::Second, T::F64, tp!("mDeltaBest")).p0().range(-MAX_DELTA_S, MAX_DELTA_S);
+    DELTA_BEST = 0x0705, "timing.delta_best_s", "DeltaBest" => tel("Delta to best lap (LMU)", U::Second, T::F64, tp!("mDeltaBest")).p0().discrete().range(-MAX_DELTA_S, MAX_DELTA_S);
     GAP_CAR_AHEAD = 0x0706, "timing.gap_car_ahead_s", "GapCarAhead" => tel("Gap to car ahead on track", U::Second, T::F32, tp!("mTimeGapCarAhead")).p0().range(0.0, MAX_LAP_TIME_S);
     GAP_CAR_BEHIND = 0x0707, "timing.gap_car_behind_s", "GapCarBehind" => tel("Gap to car behind on track", U::Second, T::F32, tp!("mTimeGapCarBehind")).p0().range(0.0, MAX_LAP_TIME_S);
     GAP_PLACE_AHEAD = 0x0708, "timing.gap_place_ahead_s", "GapPlaceAhead" => tel("Gap to the next place", U::Second, T::F32, tp!("mTimeGapPlaceAhead")).p0().range(0.0, MAX_LAP_TIME_S);
     GAP_PLACE_BEHIND = 0x0709, "timing.gap_place_behind_s", "GapPlaceBehind" => tel("Gap to the previous place", U::Second, T::F32, tp!("mTimeGapPlaceBehind")).p0().range(0.0, MAX_LAP_TIME_S);
-    BEST_LAP_TIME = 0x070A, "timing.best_lap_s", "BestLapTime" => sco("Best lap time", U::Second, T::F64, sp!("mBestLapTime")).p0().discrete().range(0.0, MAX_LAP_TIME_S);
-    LAST_LAP_TIME = 0x070B, "timing.last_lap_s", "LastLapTime" => sco("Last lap time", U::Second, T::F64, sp!("mLastLapTime")).p0().discrete().range(0.0, MAX_LAP_TIME_S);
-    BEST_SECTOR1 = 0x070C, "timing.best_sector1_s", "BestSector1" => sco("Best sector 1", U::Second, T::F64, sp!("mBestSector1")).discrete().range(0.0, MAX_LAP_TIME_S);
-    BEST_SECTOR12 = 0x070D, "timing.best_sector12_s", "BestSector12" => sco("Best sector 1+2 (cumulative)", U::Second, T::F64, sp!("mBestSector2")).discrete().range(0.0, MAX_LAP_TIME_S);
-    LAST_SECTOR1 = 0x070E, "timing.last_sector1_s", "LastSector1" => sco("Last sector 1", U::Second, T::F64, sp!("mLastSector1")).discrete().range(0.0, MAX_LAP_TIME_S);
-    LAST_SECTOR12 = 0x070F, "timing.last_sector12_s", "LastSector12" => sco("Last sector 1+2 (cumulative)", U::Second, T::F64, sp!("mLastSector2")).discrete().range(0.0, MAX_LAP_TIME_S);
-    CUR_SECTOR1 = 0x0710, "timing.cur_sector1_s", "CurSector1" => sco("Current lap sector 1", U::Second, T::F64, sp!("mCurSector1")).discrete().range(0.0, MAX_LAP_TIME_S);
-    CUR_SECTOR12 = 0x0711, "timing.cur_sector12_s", "CurSector12" => sco("Current lap sector 1+2 (cumulative)", U::Second, T::F64, sp!("mCurSector2")).discrete().range(0.0, MAX_LAP_TIME_S);
-    BEST_LAP_SECTOR1 = 0x0712, "timing.best_lap_sector1_s", "BestLapSector1" => sco("Sector 1 of the best lap", U::Second, T::F32, sp!("mBestLapSector1")).p2().discrete().range(0.0, MAX_LAP_TIME_S);
-    BEST_LAP_SECTOR12 = 0x0713, "timing.best_lap_sector12_s", "BestLapSector12" => sco("Sector 1+2 of the best lap (cumulative)", U::Second, T::F32, sp!("mBestLapSector2")).p2().discrete().range(0.0, MAX_LAP_TIME_S);
-    TIME_INTO_LAP = 0x0714, "timing.time_into_lap_s", "TimeIntoLap" => sco("Time into lap (LMU estimate)", U::Second, T::F64, sp!("mTimeIntoLap")).range(0.0, MAX_LAP_TIME_S);
-    ESTIMATED_LAP_TIME = 0x0715, "timing.estimated_lap_s", "EstimatedLapTime" => sco("Estimated lap time (LMU)", U::Second, T::F64, sp!("mEstimatedLapTime")).p2().discrete().range(0.0, MAX_LAP_TIME_S);
+    BEST_LAP_TIME = 0x070A, "timing.best_lap_s", "BestLapTime" => sco("Best lap time", U::Second, T::F64, sp!("mBestLapTime")).p0().discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    LAST_LAP_TIME = 0x070B, "timing.last_lap_s", "LastLapTime" => sco("Last lap time", U::Second, T::F64, sp!("mLastLapTime")).p0().discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    BEST_SECTOR1 = 0x070C, "timing.best_sector1_s", "BestSector1" => sco("Best sector 1", U::Second, T::F64, sp!("mBestSector1")).discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    BEST_SECTOR12 = 0x070D, "timing.best_sector12_s", "BestSector12" => sco("Best sector 1+2 (cumulative)", U::Second, T::F64, sp!("mBestSector2")).discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    LAST_SECTOR1 = 0x070E, "timing.last_sector1_s", "LastSector1" => sco("Last sector 1", U::Second, T::F64, sp!("mLastSector1")).discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    LAST_SECTOR12 = 0x070F, "timing.last_sector12_s", "LastSector12" => sco("Last sector 1+2 (cumulative)", U::Second, T::F64, sp!("mLastSector2")).discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    CUR_SECTOR1 = 0x0710, "timing.cur_sector1_s", "CurSector1" => sco("Current lap sector 1", U::Second, T::F64, sp!("mCurSector1")).discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    CUR_SECTOR12 = 0x0711, "timing.cur_sector12_s", "CurSector12" => sco("Current lap sector 1+2 (cumulative)", U::Second, T::F64, sp!("mCurSector2")).discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    BEST_LAP_SECTOR1 = 0x0712, "timing.best_lap_sector1_s", "BestLapSector1" => sco("Sector 1 of the best lap", U::Second, T::F32, sp!("mBestLapSector1")).p2().discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    BEST_LAP_SECTOR12 = 0x0713, "timing.best_lap_sector12_s", "BestLapSector12" => sco("Sector 1+2 of the best lap (cumulative)", U::Second, T::F32, sp!("mBestLapSector2")).p2().discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    TIME_INTO_LAP = 0x0714, "timing.time_into_lap_s", "TimeIntoLap" => sco("Time into lap (LMU estimate)", U::Second, T::F64, sp!("mTimeIntoLap")).discrete().range(0.0, MAX_LAP_TIME_S);
+    ESTIMATED_LAP_TIME = 0x0715, "timing.estimated_lap_s", "EstimatedLapTime" => sco("Estimated lap time (LMU)", U::Second, T::F64, sp!("mEstimatedLapTime")).p2().discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
     LAP_START_TIME_SCORING = 0x0716, "timing.lap_start_et_scoring_s", "LapStartTimeScoring" => sco("Lap start time (scoring)", U::Second, T::F64, sp!("mLapStartET")).p2().discrete().range(0.0, MAX_SESSION_TIME_S);
-    LAP_TIME = 0x0720, "lap.current_time_s", "LapTime" => calc("Current lap time", U::Second, T::F64, "formula:current_lap_time").p0().range(0.0, MAX_LAP_TIME_S);
-    LAST_SECTOR2 = 0x0721, "timing.last_sector2_s", "LastSector2" => calc("Last sector 2", U::Second, T::F64, "formula:last_sector2_from_cumulative").scoring().discrete().range(0.0, MAX_LAP_TIME_S);
-    LAST_SECTOR3 = 0x0722, "timing.last_sector3_s", "LastSector3" => calc("Last sector 3", U::Second, T::F64, "formula:last_sector3_from_lap_time").scoring().discrete().range(0.0, MAX_LAP_TIME_S);
-    BEST_SECTOR2 = 0x0723, "timing.best_sector2_s", "BestSector2" => calc("Best sector 2 (approximation)", U::Second, T::F64, "formula:best_sector2_from_cumulative").estimated().scoring().discrete().range(0.0, MAX_LAP_TIME_S);
-    DELTA_PERSONAL_BEST = 0x0724, "timing.delta_personal_best_s", "DeltaPB" => calc("Delta to personal best (calculated)", U::Second, T::F64, "formula:delta_distance_time_trace").range(-MAX_DELTA_S, MAX_DELTA_S);
-    PREDICTED_LAP_TIME = 0x0725, "timing.predicted_lap_s", "PredictedLapTime" => calc("Predicted lap time", U::Second, T::F64, "formula:predicted_lap_best_plus_delta").estimated().range(0.0, MAX_LAP_TIME_S);
+    LAP_TIME = 0x0720, "lap.current_time_s", "LapTime" => calc("Current lap time", U::Second, T::F64, "formula:current_lap_time").p0().discrete().range(0.0, MAX_LAP_TIME_S);
+    LAST_SECTOR2 = 0x0721, "timing.last_sector2_s", "LastSector2" => calc("Last sector 2", U::Second, T::F64, "formula:last_sector2_from_cumulative").scoring().discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    LAST_SECTOR3 = 0x0722, "timing.last_sector3_s", "LastSector3" => calc("Last sector 3", U::Second, T::F64, "formula:last_sector3_from_lap_time").scoring().discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    BEST_SECTOR2 = 0x0723, "timing.best_sector2_s", "BestSector2" => calc("Best sector 2 (approximation)", U::Second, T::F64, "formula:best_sector2_from_cumulative").estimated().scoring().discrete().range(MIN_LAP_OR_SECTOR_TIME_S, MAX_LAP_TIME_S);
+    DELTA_PERSONAL_BEST = 0x0724, "timing.delta_personal_best_s", "DeltaPB" => calc("Delta to personal best (calculated)", U::Second, T::F64, "formula:delta_distance_time_trace").discrete().range(-MAX_DELTA_S, MAX_DELTA_S);
+    PREDICTED_LAP_TIME = 0x0725, "timing.predicted_lap_s", "PredictedLapTime" => calc("Predicted lap time", U::Second, T::F64, "formula:predicted_lap_best_plus_delta").estimated().discrete().range(0.0, MAX_LAP_TIME_S);
 
     // ===== 0x0800 session, race & scoring (player) =================================================================
     SESSION_TYPE = 0x0800, "session.type", "SessionType" => sco("Session type", U::Enum, T::I32, si!("mSession")).p0().stat().range(0.0, 13.0);
@@ -831,7 +863,7 @@ registry! {
     START_LIGHT = 0x080B, "session.start_light", "StartLight" => sco("Start light frame", U::Count, T::U8, si!("mStartLight"));
     NUM_RED_LIGHTS = 0x080C, "session.num_red_lights", "NumRedLights" => sco("Number of red lights", U::Count, T::U8, si!("mNumRedLights")).p2().stat().range(0.0, 20.0);
     START_TIME_OF_DAY = 0x080D, "session.start_time_of_day_s", "StartTimeOfDay" => sco("Session start time of day", U::Second, T::F32, si!("mStartET")).p2().stat().range(0.0, SECONDS_PER_DAY);
-    TIME_OF_DAY = 0x080E, "session.time_of_day", "TimeOfDay" => sco("Time of day (scale detected, A-LMU-036)", U::Second, T::F32, si!("mTimeOfDay")).p2().env();
+    TIME_OF_DAY = 0x080E, "session.time_of_day", "TimeOfDay" => sco("Time of day (scale detected, A-LMU-036)", U::Second, T::F32, si!("mTimeOfDay")).p2().env().discrete();
     FIXED_SETUP = 0x080F, "session.fixed_setup", "FixedSetup" => sco("Fixed setup", U::None, T::Bool, si!("mIsFixedSetup")).p2().stat();
     GAME_MODE = 0x0810, "session.game_mode", "GameMode" => sco("Game mode", U::Enum, T::U8, si!("mGameMode")).p2().stat().range(0.0, 3.0);
     MAX_PLAYERS = 0x0811, "session.max_players", "MaxPlayers" => sco("Maximum players", U::Count, T::I32, si!("mMaxPlayers")).p2().stat().range(0.0, MAX_VEHICLES);
@@ -918,7 +950,7 @@ registry! {
     // ===== 0x0C00 derived fuel / stint / energy engine outputs (race-engines) ======================================
     FUEL_USED_LAST_LAP = 0x0C00, "fuel.used_last_lap_l", "FuelUsedLastLap" => calc("Fuel used last lap", U::Litre, T::F32, "formula:fuel_used_last_lap").event().range(0.0, MAX_FUEL_PER_LAP_L);
     FUEL_PER_LAP = 0x0C01, "fuel.used_per_lap_l", "FuelPerLap" => calc("Fuel per lap (window average)", U::LitrePerLap, T::F32, "formula:fuel_per_lap_window_average").p0().estimated().event().range(0.0, MAX_FUEL_PER_LAP_L);
-    FUEL_USED_THIS_LAP = 0x0C02, "fuel.used_this_lap_l", "FuelUsedThisLap" => calc("Fuel used this lap", U::Litre, T::F32, "formula:fuel_used_since_lap_start").range(0.0, MAX_FUEL_PER_LAP_L);
+    FUEL_USED_THIS_LAP = 0x0C02, "fuel.used_this_lap_l", "FuelUsedThisLap" => calc("Fuel used this lap", U::Litre, T::F32, "formula:fuel_used_since_lap_start").discrete().range(0.0, MAX_FUEL_PER_LAP_L);
     FUEL_LAPS_REMAINING = 0x0C03, "fuel.laps_remaining", "FuelLapsRemaining" => calc("Laps of fuel remaining", U::Lap, T::F32, "formula:fuel_laps_remaining").p0().estimated().range(0.0, MAX_LAPS);
     FUEL_TIME_REMAINING = 0x0C04, "fuel.time_remaining_s", "FuelTimeRemaining" => calc("Time of fuel remaining", U::Second, T::F32, "formula:fuel_time_remaining").estimated().range(0.0, MAX_SESSION_TIME_S);
     FUEL_TO_FINISH = 0x0C05, "fuel.to_finish_l", "FuelToFinish" => calc("Fuel needed to finish", U::Litre, T::F32, "formula:fuel_to_finish").p0().estimated().range(0.0, MAX_FUEL_TO_FINISH_L);
@@ -926,11 +958,11 @@ registry! {
     FUEL_MARGIN_LAPS = 0x0C07, "fuel.margin_laps", "FuelMarginLaps" => calc("Fuel margin (+ spare, - short)", U::Lap, T::F32, "formula:fuel_margin_laps").estimated().range(-MAX_LAPS, MAX_LAPS);
     VE_USED_LAST_LAP = 0x0C10, "energy.ve_used_last_lap_frac", "VEUsedLastLap" => calc("Virtual energy used last lap", U::Fraction, T::F32, "formula:ve_used_last_lap").event().range(0.0, MAX_VE_PER_LAP_FRAC).vd();
     VE_PER_LAP = 0x0C11, "energy.ve_used_per_lap_frac", "VEPerLap" => calc("Virtual energy per lap (window average)", U::FractionPerLap, T::F32, "formula:ve_per_lap_window_average").p0().estimated().event().range(0.0, MAX_VE_PER_LAP_FRAC).vd();
-    VE_USED_THIS_LAP = 0x0C12, "energy.ve_used_this_lap_frac", "VEUsedThisLap" => calc("Virtual energy used this lap", U::Fraction, T::F32, "formula:ve_used_since_lap_start").range(0.0, 1.0).vd();
+    VE_USED_THIS_LAP = 0x0C12, "energy.ve_used_this_lap_frac", "VEUsedThisLap" => calc("Virtual energy used this lap", U::Fraction, T::F32, "formula:ve_used_since_lap_start").discrete().range(0.0, 1.0).vd();
     VE_LAPS_REMAINING = 0x0C13, "energy.ve_laps_remaining", "VELapsRemaining" => calc("Laps of virtual energy remaining", U::Lap, T::F32, "formula:ve_laps_remaining").p0().estimated().range(0.0, MAX_LAPS).vd();
     STINT_NUMBER = 0x0C20, "stint.number", "StintNumber" => calc("Stint number", U::Count, T::U32, "formula:stint_counter_pit_exits").event().range(1.0, MAX_STINTS);
     STINT_LAPS = 0x0C21, "stint.laps", "StintLaps" => calc("Laps in this stint", U::Lap, T::U32, "formula:laps_since_pit_exit").event().range(0.0, MAX_LAPS);
-    STINT_TIME = 0x0C22, "stint.time_s", "StintTime" => calc("Time in this stint", U::Second, T::F64, "formula:time_since_pit_exit").range(0.0, MAX_SESSION_TIME_S);
+    STINT_TIME = 0x0C22, "stint.time_s", "StintTime" => calc("Time in this stint", U::Second, T::F64, "formula:time_since_pit_exit").discrete().range(0.0, MAX_SESSION_TIME_S);
     STINT_MAX_LAPS = 0x0C23, "stint.max_laps_estimate", "StintMaxLaps" => calc("Stint length limit (fuel or energy)", U::Lap, T::F32, "formula:stint_max_laps_min_fuel_ve").estimated().range(0.0, MAX_LAPS);
     TYRE_SET_LAPS = 0x0C24, "stint.tyre_set_laps", "TyreSetLaps" => calc("Laps on the current tyre set", U::Lap, T::U32, "formula:laps_since_tyre_change").event().range(0.0, MAX_LAPS);
     RACE_LAPS_REMAINING = 0x0C25, "race.laps_remaining_estimate", "RaceLapsRemaining" => calc("Race laps remaining", U::Lap, T::F32, "formula:race_laps_remaining").p0().estimated().range(0.0, MAX_LAPS);
@@ -948,7 +980,8 @@ registry! {
     SRC_INVALID_SAMPLES = 0x0D09, "source.invalid_samples", "SrcInvalidSamples" => app("Samples rejected by validation", U::Count, T::U64, "app:invalid_sample_count").p2();
     SRC_READ_DURATION = 0x0D0A, "source.read_duration_s", "SrcReadDuration" => app("Shared-memory copy duration", U::Second, T::F32, "app:snapshot_copy_duration").p2().min(0.0);
     PIPELINE_LATENCY = 0x0D10, "app.pipeline_latency_s", "AppPipelineLatency" => app("Capture-to-publish latency", U::Second, T::F32, "app:capture_to_publish").p2().min(0.0);
-    CALC_ENGINE_VERSION = 0x0D11, "app.calculation_engine_version", "CalcEngineVersion" => app("Calculation engine version", U::Count, T::U32, "app:race_engines_version").stat();
+    CALC_ENGINE_VERSION = 0x0D11, "app.calculation_engine_version", "CalcEngineVersion" => app("Calculation engine version (race-engines formulas)", U::Count, T::U32, "app:race_engines_version").stat();
+    NORMALIZER_FORMULA_VERSION = 0x0D12, "app.normalizer_formula_version", "NormalizerFormulaVersion" => app("Formula version (lmu-normalizer formulas)", U::Count, T::U32, "app:lmu_normalizer_formula_version").stat();
     NET_STATE = 0x0D20, "net.connection_state", "NetState" => app("Connection state", U::Enum, T::U8, "app:transport_connection_state").event();
     NET_STREAM_AGE = 0x0D21, "net.stream_age_s", "NetStreamAge" => app("Stream age (relay clock)", U::Second, T::F32, "app:stream_age_relay_clock").p2().estimated();
     NET_LATENCY = 0x0D22, "net.latency_s", "NetLatency" => app("One-way latency (estimated)", U::Second, T::F32, "app:one_way_latency").p2().estimated();
@@ -1259,6 +1292,68 @@ pub fn wheel_group(front_left: ChannelId) -> Option<[ChannelId; 4]> {
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Cross-reference with docs/LMU_CHANNEL_MAP.md
+// ---------------------------------------------------------------------------------------------------------
+
+/// LMU_CHANNEL_MAP rows whose name differs from the registry's canonical names: the map describes a vector,
+/// or names a unit other than the internal one, where the registry stores scalar channels in internal units.
+/// Every other map row that is not a per-car standings field (`cars.<id>.*`) is a registry channel of the
+/// same name; `tests/registry_docs.rs` checks both directions.
+pub const CHANNEL_MAP_RENAMES: &[(&str, &[&str])] = &[
+    (
+        "vehicle.orientation_row0",
+        &[
+            "vehicle.orientation_row0_x",
+            "vehicle.orientation_row0_y",
+            "vehicle.orientation_row0_z",
+        ],
+    ),
+    (
+        "vehicle.orientation_row1",
+        &[
+            "vehicle.orientation_row1_x",
+            "vehicle.orientation_row1_y",
+            "vehicle.orientation_row1_z",
+        ],
+    ),
+    (
+        "vehicle.orientation_row2",
+        &[
+            "vehicle.orientation_row2_x",
+            "vehicle.orientation_row2_y",
+            "vehicle.orientation_row2_z",
+        ],
+    ),
+    ("track.map_xy_m", &["track.map_x_m", "track.map_y_m"]),
+    ("vehicle.gps_lat_deg", &["vehicle.gps_lat_rad"]),
+    ("vehicle.gps_lon_deg", &["vehicle.gps_lon_rad"]),
+];
+
+/// LMU_CHANNEL_MAP rows deliberately without a registry channel, with the reason.
+pub const CHANNEL_MAP_UNMAPPED: &[(&str, &str)] = &[
+    (
+        "lmu.event_queue",
+        "diagnostic only (SME event codes, shown by lmu-diag); not telemetry",
+    ),
+    (
+        "session.user_data_path",
+        "personal data (Windows user path): used locally to find LMU's DuckDB recordings, never transmitted",
+    ),
+    (
+        "session.server_name",
+        "server identity is not transmitted (privacy)",
+    ),
+    (
+        "weather.forecast.*",
+        "LMU REST group (CLAIMED); not modelled as channels",
+    ),
+    (
+        "pit.menu.*",
+        "LMU REST group (CLAIMED); not modelled as channels",
+    ),
+];
+
+// ---------------------------------------------------------------------------------------------------------
 // Generated documentation (docs/CHANNEL_IDS.md)
 // ---------------------------------------------------------------------------------------------------------
 
@@ -1327,10 +1422,35 @@ pub fn channel_ids_markdown() -> String {
             "Telemetry schema version **{TELEMETRY_SCHEMA_VERSION}**, **{}** channels. Single source of truth: \
              `telemetry-model::registry` (D-017). IDs are append-only and never reused; per-wheel channels \
              use a stride of 4 (`FL, FR, RL, RR` = base + 0..3). Field semantics, raw units and evidence: \
-             [LMU_CHANNEL_MAP.md](LMU_CHANNEL_MAP.md) (canonical names match).",
+             [LMU_CHANNEL_MAP.md](LMU_CHANNEL_MAP.md).",
             CHANNELS.len()
         ),
     );
+    push_line(o, format_args!(""));
+    push_line(
+        o,
+        format_args!(
+            "Canonical names are the map's row names, except the rows below; `cars.<id>.*` rows are per-car \
+             standings fields (`scoring::CompetitorEntry`), not channels. `tests/registry_docs.rs` checks this \
+             cross-reference in both directions."
+        ),
+    );
+    push_line(o, format_args!(""));
+    push_line(o, format_args!("| LMU_CHANNEL_MAP row | Registry |"));
+    push_line(o, format_args!("|---|---|"));
+    for (map_name, channels) in CHANNEL_MAP_RENAMES {
+        let names: Vec<String> = channels.iter().map(|c| format!("`{c}`")).collect();
+        push_line(
+            o,
+            format_args!(
+                "| `{map_name}` | {} (scalar channels in internal units) |",
+                names.join(", ")
+            ),
+        );
+    }
+    for (map_name, reason) in CHANNEL_MAP_UNMAPPED {
+        push_line(o, format_args!("| `{map_name}` | no channel: {reason} |"));
+    }
     push_line(o, format_args!(""));
     push_line(
         o,
@@ -1725,6 +1845,168 @@ mod tests {
         assert_eq!(ChannelGroup::of(ChannelId(0x0E00)), None);
         for g in ChannelGroup::ALL {
             assert!(g.channels().count() > 0, "{g:?} is empty");
+        }
+    }
+
+    /// LMU_CHANNEL_MAP rules out 0 for these channels ("0.2..0.8", "0 < x ≤ 1440°", "(0, 0.5]", lap and
+    /// sector times "> 0"): a zeroed or unfilled LMU field must never pass validation as a VALID measurement.
+    #[test]
+    fn zeros_the_channel_map_forbids_are_rejected() {
+        use crate::validate::check_value;
+        let def = |id| by_id(id).expect("registered channel");
+        let rear_bias = def(ch::BRAKE_BIAS_REAR);
+        for bad in [0.0, 0.19, 0.81, 1.0] {
+            assert!(
+                check_value(rear_bias, bad).is_err(),
+                "rear brake bias {bad}"
+            );
+        }
+        for good in [0.2, 0.45, 0.8] {
+            assert_eq!(
+                check_value(rear_bias, good),
+                Ok(()),
+                "rear brake bias {good}"
+            );
+        }
+        for id in [ch::STEERING_RANGE_PHYSICAL, ch::STEERING_RANGE_VISUAL] {
+            let d = def(id);
+            assert!(check_value(d, 0.0).is_err(), "{}: zero", d.name);
+            // A 540° range reported in radians (9.42) and converted as degrees: a unit mix-up, rejected.
+            assert!(
+                check_value(d, 9.42_f64.to_radians()).is_err(),
+                "{}: unit mix-up",
+                d.name
+            );
+            for deg in [540.0_f64, 1_440.0] {
+                assert_eq!(
+                    check_value(d, deg.to_radians()),
+                    Ok(()),
+                    "{}: {deg}°",
+                    d.name
+                );
+            }
+        }
+        let dt = def(ch::UPDATE_DELTA_TIME);
+        assert!(check_value(dt, 0.0).is_err(), "zero update interval");
+        for good in [0.0025, 0.01, 0.5] {
+            assert_eq!(check_value(dt, good), Ok(()), "update interval {good}");
+        }
+        for id in [
+            ch::BEST_LAP_TIME,
+            ch::LAST_LAP_TIME,
+            ch::BEST_SECTOR1,
+            ch::BEST_SECTOR12,
+            ch::LAST_SECTOR1,
+            ch::LAST_SECTOR12,
+            ch::CUR_SECTOR1,
+            ch::CUR_SECTOR12,
+            ch::BEST_LAP_SECTOR1,
+            ch::BEST_LAP_SECTOR12,
+            ch::ESTIMATED_LAP_TIME,
+            ch::LAST_SECTOR2,
+            ch::LAST_SECTOR3,
+            ch::BEST_SECTOR2,
+        ] {
+            let d = def(id);
+            assert!(check_value(d, 0.0).is_err(), "{}: zero time", d.name);
+            assert_eq!(check_value(d, 31.5), Ok(()), "{}", d.name);
+        }
+        // Zero stays legitimate where the map allows it: the current lap time and time into lap at the line.
+        for id in [ch::LAP_TIME, ch::TIME_INTO_LAP] {
+            assert_eq!(check_value(def(id), 0.0), Ok(()));
+        }
+    }
+
+    /// The wheel rotation bound was widened for wheelspin; the derived wheel speed must accept the same
+    /// physically possible states (review finding: 600 rad/s on a 0.33 m tyre was VALID raw, INVALID derived).
+    #[test]
+    fn wheel_speed_accepts_every_plausible_wheelspin() {
+        use crate::validate::check_value;
+        let rotation = by_id(ch::WHEEL_ROT_FL).expect("rotation");
+        let speed = by_id(ch::WHEEL_SPEED_FL).expect("wheel speed");
+        assert_eq!(check_value(rotation, 600.0), Ok(()));
+        assert_eq!(check_value(speed, 600.0 * 0.33), Ok(()));
+        assert!(
+            check_value(speed, -1.0).is_err(),
+            "wheel speed is a magnitude"
+        );
+        // Both bounds come from one surface-speed limit: the rotation bound is that limit on the smallest
+        // accepted tyre, and the derived speed accepts the limit itself.
+        let limit_on_smallest_tyre = MAX_WHEEL_ROT_RADPS * MIN_TYRE_RADIUS_M;
+        assert!((limit_on_smallest_tyre - MAX_WHEEL_SURFACE_SPEED_MPS).abs() < 1e-9);
+        assert_eq!(check_value(rotation, -MAX_WHEEL_ROT_RADPS), Ok(()));
+        assert_eq!(check_value(speed, MAX_WHEEL_SURFACE_SPEED_MPS), Ok(()));
+        // A rotation only a smaller tyre could reach is an implausible surface speed on this one.
+        assert!(check_value(speed, MAX_WHEEL_ROT_RADPS * 0.33).is_err());
+        let radius = by_id(ch::TYRE_RADIUS_FL).expect("radius");
+        assert_eq!(
+            radius.valid_range,
+            Some((MIN_TYRE_RADIUS_M, MAX_TYRE_RADIUS_M))
+        );
+    }
+
+    /// The normalizer stores LMU doubles as f32 and can only move a value that rounded out of its range one
+    /// ulp back toward zero. A positive lower bound must therefore round up (or be exact) in f32, and a
+    /// negative upper bound round down, or an in-range boundary value would be rejected.
+    #[test]
+    fn f32_range_bounds_survive_narrowing() {
+        for d in CHANNELS.iter().filter(|d| d.value_type == T::F32) {
+            let Some((lo, hi)) = d.valid_range else {
+                continue;
+            };
+            if lo > 0.0 {
+                assert!(
+                    f64::from(lo as f32) >= lo,
+                    "{}: lower bound {lo} rounds down in f32",
+                    d.name
+                );
+            }
+            if hi < 0.0 {
+                assert!(
+                    f64::from(hi as f32) <= hi,
+                    "{}: upper bound {hi} rounds up in f32",
+                    d.name
+                );
+            }
+        }
+    }
+
+    /// D-010: every `formula:` channel is covered by a version channel of the component computing it.
+    #[test]
+    fn formula_version_channels_exist() {
+        for id in [ch::CALC_ENGINE_VERSION, ch::NORMALIZER_FORMULA_VERSION] {
+            let d = by_id(id).expect("version channel");
+            assert_eq!(
+                (d.source, d.value_type, d.frequency),
+                (Source::Application, T::U32, FrequencyClass::Static),
+                "{}",
+                d.name
+            );
+            assert!(d.origin.starts_with("app:"), "{}", d.name);
+        }
+    }
+
+    /// Channels that restart every lap, stint or day (or follow such a channel) must never be interpolated:
+    /// a value between 86 399.9 s and 0.1 s of time of day, or between a lap's last lap time and 0, was never
+    /// measured.
+    #[test]
+    fn resetting_and_wrapping_channels_are_discrete() {
+        for id in [
+            ch::TIME_OF_DAY,
+            ch::LAP_TIME,
+            ch::TIME_INTO_LAP,
+            ch::STINT_TIME,
+            ch::FUEL_USED_THIS_LAP,
+            ch::VE_USED_THIS_LAP,
+            ch::DELTA_BEST,
+            ch::DELTA_PERSONAL_BEST,
+            ch::PREDICTED_LAP_TIME,
+            ch::HEADING,
+            ch::LAP_DISTANCE,
+            ch::LAP_PROGRESS,
+        ] {
+            let d = by_id(id).expect("registered channel");
+            assert_eq!(d.interpolation, Interpolation::Discrete, "{}", d.name);
         }
     }
 

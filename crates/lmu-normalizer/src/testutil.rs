@@ -71,6 +71,7 @@ pub fn driving_telemetry(id: i32, et: f64) -> RawTelemetry {
     t.abs = 3;
     t.current_sector = 1;
     t.physical_steering_wheel_range = 540.0;
+    t.visual_steering_wheel_range = 540.0;
     for w in &mut t.wheels {
         w.pressure = 170.0;
         w.temperature = [353.15, 353.15, 353.15];

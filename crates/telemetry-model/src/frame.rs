@@ -47,6 +47,11 @@ pub enum FrameError {
     StringTooLong { channel: &'static str, len: usize },
     #[error("TLV codec error: {0}")]
     Codec(#[from] CodecError),
+    #[error(
+        "TLV block announces telemetry schema {found}; this build decodes schema {expected} and the caller \
+         did not accept {found}"
+    )]
+    SchemaMismatch { found: u16, expected: u16 },
 }
 
 /// What happened while applying a TLV block to a frame.
@@ -231,7 +236,7 @@ impl TelemetryFrame {
     }
 
     /// Decodes a snapshot block into a new frame (channels absent from the block keep their "no data"
-    /// sample).
+    /// sample). The block must announce this build's schema, as for [`Self::apply_tlv`].
     pub fn from_snapshot(sequence: u64, data: &[u8]) -> Result<(Self, DecodeReport), FrameError> {
         let base = Self::new(sequence, 0, None);
         base.apply_tlv(sequence, data)
@@ -240,12 +245,36 @@ impl TelemetryFrame {
     /// Applies a TLV block (snapshot or delta) on top of this frame and returns the resulting new frame; the
     /// header (capture time, source ET) comes from the block. Unknown ids are skipped; records that
     /// contradict the registry are stored as `Invalid` and counted.
+    ///
+    /// The block must announce this build's [`TELEMETRY_SCHEMA_VERSION`]. Any other schema is refused with
+    /// [`FrameError::SchemaMismatch`]: the per-record type check cannot detect a changed unit or meaning,
+    /// which is exactly what a schema change signals. [`Self::apply_tlv_accepting`] accepts other schemas
+    /// explicitly.
     pub fn apply_tlv(
         &self,
         sequence: u64,
         data: &[u8],
     ) -> Result<(Self, DecodeReport), FrameError> {
+        self.apply_tlv_accepting(sequence, data, &[TELEMETRY_SCHEMA_VERSION])
+    }
+
+    /// Like [`Self::apply_tlv`], but accepts blocks announcing any schema in `accepted`. The caller vouches
+    /// that every channel id those schemas share with this build's registry has the same meaning, unit and
+    /// type (e.g. a negotiated schema that only added channels, whose unknown ids are skipped), or migrates
+    /// the result itself.
+    pub fn apply_tlv_accepting(
+        &self,
+        sequence: u64,
+        data: &[u8],
+        accepted: &[u16],
+    ) -> Result<(Self, DecodeReport), FrameError> {
         let (header, records) = codec::decode(data)?;
+        if !accepted.contains(&header.schema_version) {
+            return Err(FrameError::SchemaMismatch {
+                found: header.schema_version,
+                expected: TELEMETRY_SCHEMA_VERSION,
+            });
+        }
         let mut frame = self.clone();
         frame.sequence = sequence;
         frame.capture_mono_ns = header.capture_mono_ns;
@@ -447,7 +476,7 @@ mod tests {
     fn decode_skips_unknown_and_invalidates_mismatches() {
         let mut buf = Vec::new();
         let header = TlvHeader {
-            schema_version: 99,
+            schema_version: TELEMETRY_SCHEMA_VERSION,
             capture_mono_ns: 5,
             capture_relay_ns_est: 0,
             source_et_s: f64::NAN,
@@ -464,7 +493,7 @@ mod tests {
         assert_eq!(
             report,
             DecodeReport {
-                schema_version: 99,
+                schema_version: TELEMETRY_SCHEMA_VERSION,
                 applied: 2,
                 unknown_skipped: 1,
                 invalidated: 1
@@ -474,6 +503,36 @@ mod tests {
         assert_eq!(f.f64(ch::RPM), Some(7_000.0));
         assert_eq!(f.source_et_s, None);
         assert_eq!(f.capture_mono_ns, 5);
+    }
+
+    /// A block announcing another telemetry schema is not applied unless the caller explicitly accepts that
+    /// schema: the type check cannot catch a changed unit or meaning, which is what the version signals.
+    #[test]
+    fn foreign_schema_blocks_are_rejected_unless_accepted() {
+        let foreign = TELEMETRY_SCHEMA_VERSION.wrapping_add(1);
+        let mut buf = Vec::new();
+        let header = TlvHeader {
+            schema_version: foreign,
+            capture_mono_ns: 5,
+            capture_relay_ns_est: RELAY_NS_UNKNOWN,
+            source_et_s: 1.0,
+        };
+        let mut enc = TlvEncoder::begin(&mut buf, &header);
+        enc.push(ch::FUEL, &Sample::valid(Value::F32(42.0)))
+            .expect("fuel");
+        enc.finish();
+        let expected = Err(FrameError::SchemaMismatch {
+            found: foreign,
+            expected: TELEMETRY_SCHEMA_VERSION,
+        });
+        assert_eq!(TelemetryFrame::from_snapshot(1, &buf), expected);
+        let base = sample_frame();
+        assert_eq!(base.apply_tlv(8, &buf), expected);
+        let (accepted, report) = base
+            .apply_tlv_accepting(8, &buf, &[TELEMETRY_SCHEMA_VERSION, foreign])
+            .expect("explicitly accepted");
+        assert_eq!(report.schema_version, foreign);
+        assert_eq!(accepted.f64(ch::FUEL), Some(42.0));
     }
 
     #[test]

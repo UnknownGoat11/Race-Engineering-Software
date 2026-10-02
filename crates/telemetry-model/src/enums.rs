@@ -3,10 +3,15 @@
 //! Every enum keeps unknown raw values verbatim in an `Unknown(raw)` variant instead of coercing them to a
 //! known variant, so a new LMU value can never be silently misread. Construct values with `from_raw`;
 //! `raw()` returns the exact LMU value for recording and export.
+//!
+//! Serde (postcard on the wire and in recordings, JSON elsewhere) carries the **raw LMU value**, never the
+//! declaration index: adding a known variant in a later version cannot shift the encoding of `Unknown(raw)`
+//! or of any later field, and decoding always yields the canonical variant (a peer's `Unknown(5)` reads as
+//! `GamePhase::GreenFlag`).
 
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Declares an LMU enum with explicit raw values, an `Unknown(raw)` fallback, `from_raw`, `raw` and `label`.
 macro_rules! lmu_enum {
@@ -17,11 +22,25 @@ macro_rules! lmu_enum {
         }
     ) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum $name {
             $( $(#[$vmeta])* $variant, )+
             /// A raw value this version does not know, kept verbatim.
             Unknown($raw),
+        }
+
+        /// Serialised as the raw LMU value (module docs).
+        impl Serialize for $name {
+            fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                self.raw().serialize(serializer)
+            }
+        }
+
+        /// Decoded from the raw LMU value into the canonical variant (module docs).
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                <$raw>::deserialize(deserializer).map(Self::from_raw)
+            }
         }
 
         impl $name {
@@ -286,8 +305,8 @@ const LMU_SESSION_TEST_DAY: i32 = 0;
 
 /// Session type decoded from `scoring.scoringInfo.mSession`: 0 test day, 1–4 practice, 5–8 qualifying,
 /// 9 warm-up, 10–13 race (header comment, VERIFIED read). Numbered sessions carry their 1-based number
-/// within the block (raw 6 = `Qualifying(2)`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// within the block (raw 6 = `Qualifying(2)`). Serde carries the raw `mSession` value (module docs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SessionType {
     TestDay,
     Practice(u8),
@@ -349,6 +368,21 @@ impl SessionType {
     /// True for race sessions.
     pub const fn is_race(self) -> bool {
         matches!(self, Self::Race(_))
+    }
+}
+
+/// Serialised as the raw `mSession` value; a hand-made numbered variant outside its block (only possible when
+/// constructed by hand, see [`SessionType::raw`]) is written as the block's first value.
+impl Serialize for SessionType {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.raw().serialize(serializer)
+    }
+}
+
+/// Decoded from the raw `mSession` value, exactly like [`SessionType::from_lmu`].
+impl<'de> Deserialize<'de> for SessionType {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        i32::deserialize(deserializer).map(Self::from_lmu)
     }
 }
 
@@ -422,6 +456,48 @@ mod tests {
             assert_eq!(PitState::from_raw(raw).raw(), raw);
             assert_eq!(SurfaceType::from_raw(raw).raw(), raw);
         }
+    }
+
+    /// Serialised as the raw LMU value, not the declaration index: adding a known variant can never shift the
+    /// encoding of `Unknown(raw)` (old recordings stay readable) and decoding is always canonical.
+    #[test]
+    fn serialised_as_raw_lmu_values() {
+        fn bytes<T: Serialize>(v: &T) -> Vec<u8> {
+            postcard::to_stdvec(v).expect("serialize")
+        }
+        assert_eq!(bytes(&CarFlag::Blue), vec![6]);
+        assert_eq!(bytes(&VehicleClass::Gt3), vec![6]);
+        assert_eq!(bytes(&VehicleClass::Unknown(255)), vec![255]);
+        assert_eq!(bytes(&YellowFlagState::Invalid), vec![0xFF], "i8 -1");
+        assert_eq!(bytes(&GamePhase::GreenFlag), vec![5]);
+        // i32 raw: zigzag varint, raw 6 → 12.
+        assert_eq!(bytes(&SessionType::Qualifying(2)), vec![12]);
+
+        // A raw value always decodes to its canonical variant, whatever a peer wrote.
+        let phase: GamePhase = postcard::from_bytes(&[5]).expect("decode");
+        assert_eq!(phase, GamePhase::GreenFlag);
+        let unknown: GamePhase = postcard::from_bytes(&[200]).expect("decode");
+        assert_eq!(unknown, GamePhase::Unknown(200));
+        let session: SessionType = postcard::from_bytes(&[12]).expect("decode");
+        assert_eq!(session, SessionType::Qualifying(2));
+        // A hand-made non-canonical value is normalised by a round trip.
+        let back: GamePhase = postcard::from_bytes(&bytes(&GamePhase::Unknown(5))).expect("decode");
+        assert_eq!(back, GamePhase::GreenFlag);
+        for raw in 0..=u8::MAX {
+            let v = PitState::from_raw(raw);
+            let back: PitState = postcard::from_bytes(&bytes(&v)).expect("decode");
+            assert_eq!(back.raw(), raw);
+        }
+        for raw in -3..=16 {
+            let v = SessionType::from_lmu(raw);
+            let back: SessionType = postcard::from_bytes(&bytes(&v)).expect("decode");
+            assert_eq!(back, v, "raw {raw}");
+        }
+        assert_eq!(
+            serde_json::to_string(&CarFlag::Blue).expect("json"),
+            "6",
+            "JSON also carries the raw value"
+        );
     }
 
     #[test]

@@ -90,6 +90,13 @@ impl Value {
 }
 
 /// Per-sample quality (high 3 bits of the TLV tag byte).
+///
+/// There is no SUSPECT quality yet: codes 5–7 are unassigned and rejected by the decoder. LMU_CHANNEL_MAP and
+/// ASSUMPTIONS ask for one (A-LMU-015 brake temperatures of undecided unit, A-LMU-022 joins, A-LMU-049
+/// sustained out-of-range values). Adding it changes the wire table (docs/PROTOCOL.md §4), the telemetry
+/// schema version and every exhaustive `match` on `Quality` in other crates, so it is deferred to one
+/// coordinated change. Until then such values must never be published as `Valid`: lmu-normalizer withholds
+/// brake temperatures of undecided unit as `Unavailable` and marks out-of-range samples `Invalid`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[repr(u8)]
 pub enum Quality {

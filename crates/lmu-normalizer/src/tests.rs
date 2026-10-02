@@ -242,6 +242,28 @@ fn every_lmu_channel_and_normalizer_formula_is_mapped() {
 }
 
 #[test]
+fn zero_steering_ranges_are_unavailable_not_invalid() {
+    let mut fx = Fixture::driving(100.0);
+    let t = fx.telemetry.as_mut().expect("player telemetry");
+    t.physical_steering_wheel_range = 0.0;
+    t.visual_steering_wheel_range = 0.0;
+    let mut n = Normalizer::new();
+    let out = fx.step(&mut n);
+    assert!(
+        out.rejections.is_empty(),
+        "an unset range is not a rejection: {:?}",
+        out.rejections
+    );
+    for id in [
+        ch::STEERING_RANGE_PHYSICAL,
+        ch::STEERING_RANGE_VISUAL,
+        ch::STEERING_ANGLE,
+    ] {
+        assert_eq!(q(&out, id), Some(Quality::Unavailable), "{id:?}");
+    }
+}
+
+#[test]
 fn plausible_driving_sample_is_fully_valid_and_converted() {
     let fx = Fixture::driving(100.0);
     let mut n = Normalizer::new();

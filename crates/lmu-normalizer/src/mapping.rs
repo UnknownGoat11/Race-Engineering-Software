@@ -185,14 +185,22 @@ fn map_inputs(t: &RawTelemetry, w: &mut FrameWriter<'_>) {
     w.float(ch::CLUTCH_FILTERED, t.filtered_clutch);
     w.float(ch::STEERING_FILTERED, t.filtered_steering);
     w.float(ch::STEERING_TORQUE, t.steering_shaft_torque);
-    // A-LMU-037: the ranges are assumed to be full lock-to-lock in degrees.
+    // A-LMU-037: the ranges are assumed to be full lock-to-lock in degrees. A zero range is "unknown"
+    // (not set by the car/game), so it is published as Unavailable rather than as an invalid zero.
     let range_deg = f64::from(t.physical_steering_wheel_range);
-    w.float(ch::STEERING_RANGE_PHYSICAL, convert::deg_to_rad(range_deg));
+    let range_known = range_deg.is_finite() && range_deg > 0.0;
+    w.opt_float(
+        ch::STEERING_RANGE_PHYSICAL,
+        range_known.then(|| convert::deg_to_rad(range_deg)),
+    );
     let visual_deg = f64::from(t.visual_steering_wheel_range);
-    w.float(ch::STEERING_RANGE_VISUAL, convert::deg_to_rad(visual_deg));
-    // Steering wheel angle = input (−1..1) × half the lock-to-lock range. A zero range is "unknown".
-    let angle = (range_deg.is_finite() && range_deg > 0.0)
-        .then(|| t.unfiltered_steering * convert::deg_to_rad(range_deg / 2.0));
+    let visual_known = visual_deg.is_finite() && visual_deg > 0.0;
+    w.opt_float(
+        ch::STEERING_RANGE_VISUAL,
+        visual_known.then(|| convert::deg_to_rad(visual_deg)),
+    );
+    // Steering wheel angle = input (−1..1) × half the lock-to-lock range.
+    let angle = range_known.then(|| t.unfiltered_steering * convert::deg_to_rad(range_deg / 2.0));
     w.opt_float(ch::STEERING_ANGLE, angle);
 }
 

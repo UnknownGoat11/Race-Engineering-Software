@@ -2,7 +2,23 @@
 
 <!-- GENERATED from crates/telemetry-model/src/registry.rs. Do not edit by hand: run `LMURE_BLESS=1 cargo test -p telemetry-model --test registry_docs` to regenerate. -->
 
-Telemetry schema version **1**, **510** channels. Single source of truth: `telemetry-model::registry` (D-017). IDs are append-only and never reused; per-wheel channels use a stride of 4 (`FL, FR, RL, RR` = base + 0..3). Field semantics, raw units and evidence: [LMU_CHANNEL_MAP.md](LMU_CHANNEL_MAP.md) (canonical names match).
+Telemetry schema version **1**, **511** channels. Single source of truth: `telemetry-model::registry` (D-017). IDs are append-only and never reused; per-wheel channels use a stride of 4 (`FL, FR, RL, RR` = base + 0..3). Field semantics, raw units and evidence: [LMU_CHANNEL_MAP.md](LMU_CHANNEL_MAP.md).
+
+Canonical names are the map's row names, except the rows below; `cars.<id>.*` rows are per-car standings fields (`scoring::CompetitorEntry`), not channels. `tests/registry_docs.rs` checks this cross-reference in both directions.
+
+| LMU_CHANNEL_MAP row | Registry |
+|---|---|
+| `vehicle.orientation_row0` | `vehicle.orientation_row0_x`, `vehicle.orientation_row0_y`, `vehicle.orientation_row0_z` (scalar channels in internal units) |
+| `vehicle.orientation_row1` | `vehicle.orientation_row1_x`, `vehicle.orientation_row1_y`, `vehicle.orientation_row1_z` (scalar channels in internal units) |
+| `vehicle.orientation_row2` | `vehicle.orientation_row2_x`, `vehicle.orientation_row2_y`, `vehicle.orientation_row2_z` (scalar channels in internal units) |
+| `track.map_xy_m` | `track.map_x_m`, `track.map_y_m` (scalar channels in internal units) |
+| `vehicle.gps_lat_deg` | `vehicle.gps_lat_rad` (scalar channels in internal units) |
+| `vehicle.gps_lon_deg` | `vehicle.gps_lon_rad` (scalar channels in internal units) |
+| `lmu.event_queue` | no channel: diagnostic only (SME event codes, shown by lmu-diag); not telemetry |
+| `session.user_data_path` | no channel: personal data (Windows user path): used locally to find LMU's DuckDB recordings, never transmitted |
+| `session.server_name` | no channel: server identity is not transmitted (privacy) |
+| `weather.forecast.*` | no channel: LMU REST group (CLAIMED); not modelled as channels |
+| `pit.menu.*` | no channel: LMU REST group (CLAIMED); not modelled as channels |
 
 Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = estimated. **Prio** network class. **Freq** PHY telemetry rate, SCO scoring rate, ENV slow, EVT event, STA static, DIA ~1 Hz diagnostics. **Int** C = continuous (may be interpolated), D = discrete (never interpolated). **Avail** A = always, V = vehicle-dependent, N = not provided by any live source (sent as NOT_SUPPORTED), X = experimental (not published until verified live). **Range** inclusive plausibility range in internal units (outside = INVALID). **Max rate** largest plausible change per second (larger jumps = INVALID).
 
@@ -21,7 +37,7 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | Track position & map | 0x0A00–0x0AFF | 18 |
 | Flags & pit | 0x0B00–0x0BFF | 20 |
 | Derived fuel / stint / energy (engine outputs) | 0x0C00–0x0CFF | 18 |
-| Application, network & recording diagnostics | 0x0D00–0x0DFF | 36 |
+| Application, network & recording diagnostics | 0x0D00–0x0DFF | 37 |
 
 ## 0x0000 Vehicle & inputs
 
@@ -38,8 +54,8 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0016 | `inputs.clutch_filtered_frac` | `ClutchFiltered` | Clutch after aids | 0..1 | F32 | SM/tel | M | P2 | PHY | C | A | -0.01 … 1.01 |  | `telemetry.telemInfo[player].mFilteredClutch` |
 | 0x0017 | `inputs.steering_filtered` | `SteeringFiltered` | Steering after aids | 0..1 | F32 | SM/tel | M | P1 | PHY | C | A | -1.01 … 1.01 |  | `telemetry.telemInfo[player].mFilteredSteering` |
 | 0x0018 | `inputs.steering_shaft_torque_nm` | `SteeringTorque` | Steering shaft torque | N·m | F32 | SM/tel | M | P2 | PHY | C | A | -500 … 500 |  | `telemetry.telemInfo[player].mSteeringShaftTorque` |
-| 0x0019 | `inputs.steering_wheel_range_physical` | `SteeringRangePhysical` | Steering wheel range (physical) | rad | F32 | SM/tel | M | P2 | STA | D | A | 0 … 25.132741 |  | `telemetry.telemInfo[player].mPhysicalSteeringWheelRange` |
-| 0x001A | `inputs.steering_wheel_range_visual` | `SteeringRangeVisual` | Steering wheel range (visual) | rad | F32 | SM/tel | M | P2 | STA | D | A | 0 … 25.132741 |  | `telemetry.telemInfo[player].mVisualSteeringWheelRange` |
+| 0x0019 | `inputs.steering_wheel_range_physical` | `SteeringRangePhysical` | Steering wheel range (physical) | rad | F32 | SM/tel | M | P2 | STA | D | A | 1.570796 … 25.132741 |  | `telemetry.telemInfo[player].mPhysicalSteeringWheelRange` |
+| 0x001A | `inputs.steering_wheel_range_visual` | `SteeringRangeVisual` | Steering wheel range (visual) | rad | F32 | SM/tel | M | P2 | STA | D | A | 1.570796 … 25.132741 |  | `telemetry.telemInfo[player].mVisualSteeringWheelRange` |
 | 0x001B | `inputs.steering_wheel_angle_rad` | `SteeringAngle` | Steering wheel angle | rad | F32 | CALC | D | P1 | PHY | C | A | -12.566371 … 12.566371 |  | `formula:steering_wheel_angle` |
 | 0x001C | `inputs.ffb_torque` | `FFBTorque` | Force-feedback torque (raw scale) | — | F32 | SM/gen | M | P2 | PHY | C | A |  |  | `generic.FFBTorque` |
 | 0x0020 | `aids.tc_active` | `TCActive` | TC intervening | — | Bool | SM/tel | M | P1 | PHY | D | V |  |  | `telemetry.telemInfo[player].mTCActive` |
@@ -289,7 +305,7 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0419 | `brakes.fr.temp_air_c` | `BrakeAirTemp_FR` | Brake air temp FR | °C | F32 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only (Brakes Air Temp)` |
 | 0x041A | `brakes.rl.temp_air_c` | `BrakeAirTemp_RL` | Brake air temp RL | °C | F32 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only (Brakes Air Temp)` |
 | 0x041B | `brakes.rr.temp_air_c` | `BrakeAirTemp_RR` | Brake air temp RR | °C | F32 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only (Brakes Air Temp)` |
-| 0x0480 | `brakes.bias_rear_frac` | `BrakeBiasRear` | Brake bias (rear share) | 0..1 | F32 | SM/tel | M | P1 | PHY | C | A | 0 … 1 |  | `telemetry.telemInfo[player].mRearBrakeBias` |
+| 0x0480 | `brakes.bias_rear_frac` | `BrakeBiasRear` | Brake bias (rear share) | 0..1 | F32 | SM/tel | M | P1 | PHY | C | A | 0.2 … 0.8 |  | `telemetry.telemInfo[player].mRearBrakeBias` |
 | 0x0481 | `brakes.migration` | `BrakeMigration` | Brake migration setting | count | U8 | SM/tel | M | P2 | PHY | D | V |  |  | `telemetry.telemInfo[player].mMigration` |
 | 0x0482 | `brakes.migration_max` | `BrakeMigrationMax` | Brake migration setting max | count | U8 | SM/tel | M | P2 | STA | D | V |  |  | `telemetry.telemInfo[player].mMigrationMax` |
 
@@ -354,10 +370,10 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0551 | `wheels.fr.toe_rad` | `Toe_FR` | Toe FR | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.2 … 0.2 |  | `telemetry.telemInfo[player].mWheel[1].mToe` |
 | 0x0552 | `wheels.rl.toe_rad` | `Toe_RL` | Toe RL | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.2 … 0.2 |  | `telemetry.telemInfo[player].mWheel[2].mToe` |
 | 0x0553 | `wheels.rr.toe_rad` | `Toe_RR` | Toe RR | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.2 … 0.2 |  | `telemetry.telemInfo[player].mWheel[3].mToe` |
-| 0x0554 | `wheels.fl.rotation_radps` | `WheelRot_FL` | Wheel rotation FL | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1000 … 1000 |  | `telemetry.telemInfo[player].mWheel[0].mRotation` |
-| 0x0555 | `wheels.fr.rotation_radps` | `WheelRot_FR` | Wheel rotation FR | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1000 … 1000 |  | `telemetry.telemInfo[player].mWheel[1].mRotation` |
-| 0x0556 | `wheels.rl.rotation_radps` | `WheelRot_RL` | Wheel rotation RL | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1000 … 1000 |  | `telemetry.telemInfo[player].mWheel[2].mRotation` |
-| 0x0557 | `wheels.rr.rotation_radps` | `WheelRot_RR` | Wheel rotation RR | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1000 … 1000 |  | `telemetry.telemInfo[player].mWheel[3].mRotation` |
+| 0x0554 | `wheels.fl.rotation_radps` | `WheelRot_FL` | Wheel rotation FL | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1500 … 1500 |  | `telemetry.telemInfo[player].mWheel[0].mRotation` |
+| 0x0555 | `wheels.fr.rotation_radps` | `WheelRot_FR` | Wheel rotation FR | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1500 … 1500 |  | `telemetry.telemInfo[player].mWheel[1].mRotation` |
+| 0x0556 | `wheels.rl.rotation_radps` | `WheelRot_RL` | Wheel rotation RL | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1500 … 1500 |  | `telemetry.telemInfo[player].mWheel[2].mRotation` |
+| 0x0557 | `wheels.rr.rotation_radps` | `WheelRot_RR` | Wheel rotation RR | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1500 … 1500 |  | `telemetry.telemInfo[player].mWheel[3].mRotation` |
 | 0x0558 | `wheels.fl.y_location_m` | `WheelYLocation_FL` | Wheel height relative to body FL | m | F32 | SM/tel | M | P2 | PHY | C | A | -1 … 1 |  | `telemetry.telemInfo[player].mWheel[0].mWheelYLocation` |
 | 0x0559 | `wheels.fr.y_location_m` | `WheelYLocation_FR` | Wheel height relative to body FR | m | F32 | SM/tel | M | P2 | PHY | C | A | -1 … 1 |  | `telemetry.telemInfo[player].mWheel[1].mWheelYLocation` |
 | 0x055A | `wheels.rl.y_location_m` | `WheelYLocation_RL` | Wheel height relative to body RL | m | F32 | SM/tel | M | P2 | PHY | C | A | -1 … 1 |  | `telemetry.telemInfo[player].mWheel[2].mWheelYLocation` |
@@ -366,10 +382,10 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x055D | `wheels.fr.detached` | `WheelDetached_FR` | Wheel detached FR | — | Bool | SM/tel | M | P1 | PHY | D | A |  |  | `telemetry.telemInfo[player].mWheel[1].mDetached` |
 | 0x055E | `wheels.rl.detached` | `WheelDetached_RL` | Wheel detached RL | — | Bool | SM/tel | M | P1 | PHY | D | A |  |  | `telemetry.telemInfo[player].mWheel[2].mDetached` |
 | 0x055F | `wheels.rr.detached` | `WheelDetached_RR` | Wheel detached RR | — | Bool | SM/tel | M | P1 | PHY | D | A |  |  | `telemetry.telemInfo[player].mWheel[3].mDetached` |
-| 0x0560 | `wheels.fl.speed_mps` | `WheelSpeed_FL` | Wheel speed FL | m/s | F32 | CALC | E | P1 | PHY | C | A | 0 … 150 |  | `formula:wheel_speed_from_rotation_radius` |
-| 0x0561 | `wheels.fr.speed_mps` | `WheelSpeed_FR` | Wheel speed FR | m/s | F32 | CALC | E | P1 | PHY | C | A | 0 … 150 |  | `formula:wheel_speed_from_rotation_radius` |
-| 0x0562 | `wheels.rl.speed_mps` | `WheelSpeed_RL` | Wheel speed RL | m/s | F32 | CALC | E | P1 | PHY | C | A | 0 … 150 |  | `formula:wheel_speed_from_rotation_radius` |
-| 0x0563 | `wheels.rr.speed_mps` | `WheelSpeed_RR` | Wheel speed RR | m/s | F32 | CALC | E | P1 | PHY | C | A | 0 … 150 |  | `formula:wheel_speed_from_rotation_radius` |
+| 0x0560 | `wheels.fl.speed_mps` | `WheelSpeed_FL` | Wheel speed FL | m/s | F32 | CALC | E | P1 | PHY | C | A | 0 … 300 |  | `formula:wheel_speed_from_rotation_radius` |
+| 0x0561 | `wheels.fr.speed_mps` | `WheelSpeed_FR` | Wheel speed FR | m/s | F32 | CALC | E | P1 | PHY | C | A | 0 … 300 |  | `formula:wheel_speed_from_rotation_radius` |
+| 0x0562 | `wheels.rl.speed_mps` | `WheelSpeed_RL` | Wheel speed RL | m/s | F32 | CALC | E | P1 | PHY | C | A | 0 … 300 |  | `formula:wheel_speed_from_rotation_radius` |
+| 0x0563 | `wheels.rr.speed_mps` | `WheelSpeed_RR` | Wheel speed RR | m/s | F32 | CALC | E | P1 | PHY | C | A | 0 … 300 |  | `formula:wheel_speed_from_rotation_radius` |
 | 0x0564 | `tyres.fl.slip_ratio` | `SlipRatio_FL` | Slip ratio FL (experimental) | 0..1 | F32 | CALC | D | P2 | PHY | C | X | -2 … 2 |  | `formula:slip_ratio_patch_over_ground` |
 | 0x0565 | `tyres.fr.slip_ratio` | `SlipRatio_FR` | Slip ratio FR (experimental) | 0..1 | F32 | CALC | D | P2 | PHY | C | X | -2 … 2 |  | `formula:slip_ratio_patch_over_ground` |
 | 0x0566 | `tyres.rl.slip_ratio` | `SlipRatio_RL` | Slip ratio RL (experimental) | 0..1 | F32 | CALC | D | P2 | PHY | C | X | -2 … 2 |  | `formula:slip_ratio_patch_over_ground` |
@@ -399,34 +415,34 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | ID | Canonical name | Export | Label | Unit | Type | Source | Prov | Prio | Freq | Int | Avail | Range | Max rate/s | Origin |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 0x0700 | `time.source_et_s` | `Time` | Elapsed session time (telemetry) | s | F64 | SM/tel | M | P0 | PHY | C | A | 0 … 10000000 |  | `telemetry.telemInfo[player].mElapsedTime` |
-| 0x0701 | `time.delta_s` | `UpdateDeltaTime` | Physics update interval | s | F32 | SM/tel | M | P2 | PHY | C | A | 0 … 0.5 |  | `telemetry.telemInfo[player].mDeltaTime` |
+| 0x0701 | `time.delta_s` | `UpdateDeltaTime` | Physics update interval | s | F32 | SM/tel | M | P2 | PHY | C | A | 0.000122 … 0.5 |  | `telemetry.telemInfo[player].mDeltaTime` |
 | 0x0702 | `lap.number` | `Lap` | Lap number | count | I32 | SM/tel | M | P0 | PHY | D | A | 0 … 100000 |  | `telemetry.telemInfo[player].mLapNumber` |
 | 0x0703 | `lap.start_et_s` | `LapStartTime` | Lap start time | s | F64 | SM/tel | M | P1 | PHY | D | A | 0 … 10000000 |  | `telemetry.telemInfo[player].mLapStartET` |
 | 0x0704 | `lap.invalidated` | `LapInvalid` | Lap invalidated | — | Bool | SM/tel | M | P0 | PHY | D | A |  |  | `telemetry.telemInfo[player].mLapInvalidated` |
-| 0x0705 | `timing.delta_best_s` | `DeltaBest` | Delta to best lap (LMU) | s | F64 | SM/tel | M | P0 | PHY | C | A | -600 … 600 |  | `telemetry.telemInfo[player].mDeltaBest` |
+| 0x0705 | `timing.delta_best_s` | `DeltaBest` | Delta to best lap (LMU) | s | F64 | SM/tel | M | P0 | PHY | D | A | -600 … 600 |  | `telemetry.telemInfo[player].mDeltaBest` |
 | 0x0706 | `timing.gap_car_ahead_s` | `GapCarAhead` | Gap to car ahead on track | s | F32 | SM/tel | M | P0 | PHY | C | A | 0 … 3600 |  | `telemetry.telemInfo[player].mTimeGapCarAhead` |
 | 0x0707 | `timing.gap_car_behind_s` | `GapCarBehind` | Gap to car behind on track | s | F32 | SM/tel | M | P0 | PHY | C | A | 0 … 3600 |  | `telemetry.telemInfo[player].mTimeGapCarBehind` |
 | 0x0708 | `timing.gap_place_ahead_s` | `GapPlaceAhead` | Gap to the next place | s | F32 | SM/tel | M | P0 | PHY | C | A | 0 … 3600 |  | `telemetry.telemInfo[player].mTimeGapPlaceAhead` |
 | 0x0709 | `timing.gap_place_behind_s` | `GapPlaceBehind` | Gap to the previous place | s | F32 | SM/tel | M | P0 | PHY | C | A | 0 … 3600 |  | `telemetry.telemInfo[player].mTimeGapPlaceBehind` |
-| 0x070A | `timing.best_lap_s` | `BestLapTime` | Best lap time | s | F64 | SM/sco | M | P0 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mBestLapTime` |
-| 0x070B | `timing.last_lap_s` | `LastLapTime` | Last lap time | s | F64 | SM/sco | M | P0 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mLastLapTime` |
-| 0x070C | `timing.best_sector1_s` | `BestSector1` | Best sector 1 | s | F64 | SM/sco | M | P1 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mBestSector1` |
-| 0x070D | `timing.best_sector12_s` | `BestSector12` | Best sector 1+2 (cumulative) | s | F64 | SM/sco | M | P1 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mBestSector2` |
-| 0x070E | `timing.last_sector1_s` | `LastSector1` | Last sector 1 | s | F64 | SM/sco | M | P1 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mLastSector1` |
-| 0x070F | `timing.last_sector12_s` | `LastSector12` | Last sector 1+2 (cumulative) | s | F64 | SM/sco | M | P1 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mLastSector2` |
-| 0x0710 | `timing.cur_sector1_s` | `CurSector1` | Current lap sector 1 | s | F64 | SM/sco | M | P1 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mCurSector1` |
-| 0x0711 | `timing.cur_sector12_s` | `CurSector12` | Current lap sector 1+2 (cumulative) | s | F64 | SM/sco | M | P1 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mCurSector2` |
-| 0x0712 | `timing.best_lap_sector1_s` | `BestLapSector1` | Sector 1 of the best lap | s | F32 | SM/sco | M | P2 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mBestLapSector1` |
-| 0x0713 | `timing.best_lap_sector12_s` | `BestLapSector12` | Sector 1+2 of the best lap (cumulative) | s | F32 | SM/sco | M | P2 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mBestLapSector2` |
-| 0x0714 | `timing.time_into_lap_s` | `TimeIntoLap` | Time into lap (LMU estimate) | s | F64 | SM/sco | M | P1 | SCO | C | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mTimeIntoLap` |
-| 0x0715 | `timing.estimated_lap_s` | `EstimatedLapTime` | Estimated lap time (LMU) | s | F64 | SM/sco | M | P2 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mEstimatedLapTime` |
+| 0x070A | `timing.best_lap_s` | `BestLapTime` | Best lap time | s | F64 | SM/sco | M | P0 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mBestLapTime` |
+| 0x070B | `timing.last_lap_s` | `LastLapTime` | Last lap time | s | F64 | SM/sco | M | P0 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mLastLapTime` |
+| 0x070C | `timing.best_sector1_s` | `BestSector1` | Best sector 1 | s | F64 | SM/sco | M | P1 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mBestSector1` |
+| 0x070D | `timing.best_sector12_s` | `BestSector12` | Best sector 1+2 (cumulative) | s | F64 | SM/sco | M | P1 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mBestSector2` |
+| 0x070E | `timing.last_sector1_s` | `LastSector1` | Last sector 1 | s | F64 | SM/sco | M | P1 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mLastSector1` |
+| 0x070F | `timing.last_sector12_s` | `LastSector12` | Last sector 1+2 (cumulative) | s | F64 | SM/sco | M | P1 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mLastSector2` |
+| 0x0710 | `timing.cur_sector1_s` | `CurSector1` | Current lap sector 1 | s | F64 | SM/sco | M | P1 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mCurSector1` |
+| 0x0711 | `timing.cur_sector12_s` | `CurSector12` | Current lap sector 1+2 (cumulative) | s | F64 | SM/sco | M | P1 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mCurSector2` |
+| 0x0712 | `timing.best_lap_sector1_s` | `BestLapSector1` | Sector 1 of the best lap | s | F32 | SM/sco | M | P2 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mBestLapSector1` |
+| 0x0713 | `timing.best_lap_sector12_s` | `BestLapSector12` | Sector 1+2 of the best lap (cumulative) | s | F32 | SM/sco | M | P2 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mBestLapSector2` |
+| 0x0714 | `timing.time_into_lap_s` | `TimeIntoLap` | Time into lap (LMU estimate) | s | F64 | SM/sco | M | P1 | SCO | D | A | 0 … 3600 |  | `scoring.vehScoringInfo[player].mTimeIntoLap` |
+| 0x0715 | `timing.estimated_lap_s` | `EstimatedLapTime` | Estimated lap time (LMU) | s | F64 | SM/sco | M | P2 | SCO | D | A | 0.001 … 3600 |  | `scoring.vehScoringInfo[player].mEstimatedLapTime` |
 | 0x0716 | `timing.lap_start_et_scoring_s` | `LapStartTimeScoring` | Lap start time (scoring) | s | F64 | SM/sco | M | P2 | SCO | D | A | 0 … 10000000 |  | `scoring.vehScoringInfo[player].mLapStartET` |
-| 0x0720 | `lap.current_time_s` | `LapTime` | Current lap time | s | F64 | CALC | D | P0 | PHY | C | A | 0 … 3600 |  | `formula:current_lap_time` |
-| 0x0721 | `timing.last_sector2_s` | `LastSector2` | Last sector 2 | s | F64 | CALC | D | P1 | SCO | D | A | 0 … 3600 |  | `formula:last_sector2_from_cumulative` |
-| 0x0722 | `timing.last_sector3_s` | `LastSector3` | Last sector 3 | s | F64 | CALC | D | P1 | SCO | D | A | 0 … 3600 |  | `formula:last_sector3_from_lap_time` |
-| 0x0723 | `timing.best_sector2_s` | `BestSector2` | Best sector 2 (approximation) | s | F64 | CALC | E | P1 | SCO | D | A | 0 … 3600 |  | `formula:best_sector2_from_cumulative` |
-| 0x0724 | `timing.delta_personal_best_s` | `DeltaPB` | Delta to personal best (calculated) | s | F64 | CALC | D | P1 | PHY | C | A | -600 … 600 |  | `formula:delta_distance_time_trace` |
-| 0x0725 | `timing.predicted_lap_s` | `PredictedLapTime` | Predicted lap time | s | F64 | CALC | E | P1 | PHY | C | A | 0 … 3600 |  | `formula:predicted_lap_best_plus_delta` |
+| 0x0720 | `lap.current_time_s` | `LapTime` | Current lap time | s | F64 | CALC | D | P0 | PHY | D | A | 0 … 3600 |  | `formula:current_lap_time` |
+| 0x0721 | `timing.last_sector2_s` | `LastSector2` | Last sector 2 | s | F64 | CALC | D | P1 | SCO | D | A | 0.001 … 3600 |  | `formula:last_sector2_from_cumulative` |
+| 0x0722 | `timing.last_sector3_s` | `LastSector3` | Last sector 3 | s | F64 | CALC | D | P1 | SCO | D | A | 0.001 … 3600 |  | `formula:last_sector3_from_lap_time` |
+| 0x0723 | `timing.best_sector2_s` | `BestSector2` | Best sector 2 (approximation) | s | F64 | CALC | E | P1 | SCO | D | A | 0.001 … 3600 |  | `formula:best_sector2_from_cumulative` |
+| 0x0724 | `timing.delta_personal_best_s` | `DeltaPB` | Delta to personal best (calculated) | s | F64 | CALC | D | P1 | PHY | D | A | -600 … 600 |  | `formula:delta_distance_time_trace` |
+| 0x0725 | `timing.predicted_lap_s` | `PredictedLapTime` | Predicted lap time | s | F64 | CALC | E | P1 | PHY | D | A | 0 … 3600 |  | `formula:predicted_lap_best_plus_delta` |
 
 ## 0x0800 Session, race & scoring
 
@@ -446,7 +462,7 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x080B | `session.start_light` | `StartLight` | Start light frame | count | U8 | SM/sco | M | P1 | SCO | D | A |  |  | `scoring.scoringInfo.mStartLight` |
 | 0x080C | `session.num_red_lights` | `NumRedLights` | Number of red lights | count | U8 | SM/sco | M | P2 | STA | D | A | 0 … 20 |  | `scoring.scoringInfo.mNumRedLights` |
 | 0x080D | `session.start_time_of_day_s` | `StartTimeOfDay` | Session start time of day | s | F32 | SM/sco | M | P2 | STA | D | A | 0 … 86400 |  | `scoring.scoringInfo.mStartET` |
-| 0x080E | `session.time_of_day` | `TimeOfDay` | Time of day (scale detected, A-LMU-036) | s | F32 | SM/sco | M | P2 | ENV | C | A |  |  | `scoring.scoringInfo.mTimeOfDay` |
+| 0x080E | `session.time_of_day` | `TimeOfDay` | Time of day (scale detected, A-LMU-036) | s | F32 | SM/sco | M | P2 | ENV | D | A |  |  | `scoring.scoringInfo.mTimeOfDay` |
 | 0x080F | `session.fixed_setup` | `FixedSetup` | Fixed setup | — | Bool | SM/sco | M | P2 | STA | D | A |  |  | `scoring.scoringInfo.mIsFixedSetup` |
 | 0x0810 | `session.game_mode` | `GameMode` | Game mode | enum | U8 | SM/sco | M | P2 | STA | D | A | 0 … 3 |  | `scoring.scoringInfo.mGameMode` |
 | 0x0811 | `session.max_players` | `MaxPlayers` | Maximum players | count | I32 | SM/sco | M | P2 | STA | D | A | 0 … 104 |  | `scoring.scoringInfo.mMaxPlayers` |
@@ -545,7 +561,7 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 0x0C00 | `fuel.used_last_lap_l` | `FuelUsedLastLap` | Fuel used last lap | L | F32 | CALC | D | P1 | EVT | D | A | 0 … 50 |  | `formula:fuel_used_last_lap` |
 | 0x0C01 | `fuel.used_per_lap_l` | `FuelPerLap` | Fuel per lap (window average) | L/lap | F32 | CALC | E | P0 | EVT | D | A | 0 … 50 |  | `formula:fuel_per_lap_window_average` |
-| 0x0C02 | `fuel.used_this_lap_l` | `FuelUsedThisLap` | Fuel used this lap | L | F32 | CALC | D | P1 | PHY | C | A | 0 … 50 |  | `formula:fuel_used_since_lap_start` |
+| 0x0C02 | `fuel.used_this_lap_l` | `FuelUsedThisLap` | Fuel used this lap | L | F32 | CALC | D | P1 | PHY | D | A | 0 … 50 |  | `formula:fuel_used_since_lap_start` |
 | 0x0C03 | `fuel.laps_remaining` | `FuelLapsRemaining` | Laps of fuel remaining | lap | F32 | CALC | E | P0 | PHY | C | A | 0 … 100000 |  | `formula:fuel_laps_remaining` |
 | 0x0C04 | `fuel.time_remaining_s` | `FuelTimeRemaining` | Time of fuel remaining | s | F32 | CALC | E | P1 | PHY | C | A | 0 … 10000000 |  | `formula:fuel_time_remaining` |
 | 0x0C05 | `fuel.to_finish_l` | `FuelToFinish` | Fuel needed to finish | L | F32 | CALC | E | P0 | PHY | C | A | 0 … 20000 |  | `formula:fuel_to_finish` |
@@ -553,11 +569,11 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0C07 | `fuel.margin_laps` | `FuelMarginLaps` | Fuel margin (+ spare, - short) | lap | F32 | CALC | E | P1 | PHY | C | A | -100000 … 100000 |  | `formula:fuel_margin_laps` |
 | 0x0C10 | `energy.ve_used_last_lap_frac` | `VEUsedLastLap` | Virtual energy used last lap | 0..1 | F32 | CALC | D | P1 | EVT | D | V | 0 … 0.5 |  | `formula:ve_used_last_lap` |
 | 0x0C11 | `energy.ve_used_per_lap_frac` | `VEPerLap` | Virtual energy per lap (window average) | /lap | F32 | CALC | E | P0 | EVT | D | V | 0 … 0.5 |  | `formula:ve_per_lap_window_average` |
-| 0x0C12 | `energy.ve_used_this_lap_frac` | `VEUsedThisLap` | Virtual energy used this lap | 0..1 | F32 | CALC | D | P1 | PHY | C | V | 0 … 1 |  | `formula:ve_used_since_lap_start` |
+| 0x0C12 | `energy.ve_used_this_lap_frac` | `VEUsedThisLap` | Virtual energy used this lap | 0..1 | F32 | CALC | D | P1 | PHY | D | V | 0 … 1 |  | `formula:ve_used_since_lap_start` |
 | 0x0C13 | `energy.ve_laps_remaining` | `VELapsRemaining` | Laps of virtual energy remaining | lap | F32 | CALC | E | P0 | PHY | C | V | 0 … 100000 |  | `formula:ve_laps_remaining` |
 | 0x0C20 | `stint.number` | `StintNumber` | Stint number | count | U32 | CALC | D | P1 | EVT | D | A | 1 … 1000 |  | `formula:stint_counter_pit_exits` |
 | 0x0C21 | `stint.laps` | `StintLaps` | Laps in this stint | lap | U32 | CALC | D | P1 | EVT | D | A | 0 … 100000 |  | `formula:laps_since_pit_exit` |
-| 0x0C22 | `stint.time_s` | `StintTime` | Time in this stint | s | F64 | CALC | D | P1 | PHY | C | A | 0 … 10000000 |  | `formula:time_since_pit_exit` |
+| 0x0C22 | `stint.time_s` | `StintTime` | Time in this stint | s | F64 | CALC | D | P1 | PHY | D | A | 0 … 10000000 |  | `formula:time_since_pit_exit` |
 | 0x0C23 | `stint.max_laps_estimate` | `StintMaxLaps` | Stint length limit (fuel or energy) | lap | F32 | CALC | E | P1 | PHY | C | A | 0 … 100000 |  | `formula:stint_max_laps_min_fuel_ve` |
 | 0x0C24 | `stint.tyre_set_laps` | `TyreSetLaps` | Laps on the current tyre set | lap | U32 | CALC | D | P1 | EVT | D | A | 0 … 100000 |  | `formula:laps_since_tyre_change` |
 | 0x0C25 | `race.laps_remaining_estimate` | `RaceLapsRemaining` | Race laps remaining | lap | F32 | CALC | E | P0 | PHY | C | A | 0 … 100000 |  | `formula:race_laps_remaining` |
@@ -578,7 +594,8 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0D09 | `source.invalid_samples` | `SrcInvalidSamples` | Samples rejected by validation | count | U64 | APP | D | P2 | DIA | D | A |  |  | `app:invalid_sample_count` |
 | 0x0D0A | `source.read_duration_s` | `SrcReadDuration` | Shared-memory copy duration | s | F32 | APP | D | P2 | DIA | C | A | ≥ 0 |  | `app:snapshot_copy_duration` |
 | 0x0D10 | `app.pipeline_latency_s` | `AppPipelineLatency` | Capture-to-publish latency | s | F32 | APP | D | P2 | DIA | C | A | ≥ 0 |  | `app:capture_to_publish` |
-| 0x0D11 | `app.calculation_engine_version` | `CalcEngineVersion` | Calculation engine version | count | U32 | APP | D | P1 | STA | D | A |  |  | `app:race_engines_version` |
+| 0x0D11 | `app.calculation_engine_version` | `CalcEngineVersion` | Calculation engine version (race-engines formulas) | count | U32 | APP | D | P1 | STA | D | A |  |  | `app:race_engines_version` |
+| 0x0D12 | `app.normalizer_formula_version` | `NormalizerFormulaVersion` | Formula version (lmu-normalizer formulas) | count | U32 | APP | D | P1 | STA | D | A |  |  | `app:lmu_normalizer_formula_version` |
 | 0x0D20 | `net.connection_state` | `NetState` | Connection state | enum | U8 | APP | D | P1 | EVT | D | A |  |  | `app:transport_connection_state` |
 | 0x0D21 | `net.stream_age_s` | `NetStreamAge` | Stream age (relay clock) | s | F32 | APP | E | P2 | DIA | C | A |  |  | `app:stream_age_relay_clock` |
 | 0x0D22 | `net.latency_s` | `NetLatency` | One-way latency (estimated) | s | F32 | APP | E | P2 | DIA | C | A |  |  | `app:one_way_latency` |

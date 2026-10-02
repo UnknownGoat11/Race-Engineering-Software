@@ -248,4 +248,7 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
   MoTeC-style export name, unit, type, source, priority P0/P1/P2, frequency class, capability). IDs are
   append-only and never reused. `TELEMETRY_SCHEMA_VERSION` increments when channels are added/changed;
   transport `PROTOCOL_VERSION` (major.minor) is independent. Generated docs: `docs/CHANNEL_IDS.md`.
+- **Clarification (2026-10-02):** schema 1 stays open until the first tagged release (v0.1.0); channels added
+  before then (e.g. 0x0D12 `app.normalizer_formula_version`) do not bump it. From the first release on, every
+  added/changed channel bumps `TELEMETRY_SCHEMA_VERSION`.
 - **Date:** 2026-09-30

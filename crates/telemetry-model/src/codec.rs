@@ -24,6 +24,8 @@ pub const MAX_RECORDS: usize = u16::MAX as usize;
 
 const QUALITY_SHIFT: u8 = 5;
 const VALUE_TYPE_MASK: u8 = 0b0001_1111;
+/// Smallest encoded record: u16 channel id + tag byte (type NONE carries no value bytes).
+const MIN_RECORD_BYTES: usize = 2 + 1;
 
 /// Fixed header preceding the records of a TLV block.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -172,6 +174,13 @@ impl<'b> Cursor<'b> {
     }
 }
 
+/// Records worth reserving for a block whose header announces `count` records followed by `body_bytes`
+/// bytes. The count is untrusted: the reservation never exceeds what the bytes can actually hold, so a short
+/// block announcing 65 535 records costs no large allocation before it fails as truncated.
+fn record_capacity(count: usize, body_bytes: usize) -> usize {
+    count.min(body_bytes / MIN_RECORD_BYTES)
+}
+
 /// Decodes a complete TLV block. Unknown channel ids are returned as-is (the caller decides whether to
 /// skip them); unknown value types or qualities are errors because the record length would be unknown.
 pub fn decode(data: &[u8]) -> Result<(TlvHeader, Vec<TlvRecord>), CodecError> {
@@ -183,7 +192,7 @@ pub fn decode(data: &[u8]) -> Result<(TlvHeader, Vec<TlvRecord>), CodecError> {
         source_et_s: f64::from_le_bytes(c.array()?),
     };
     let count = u16::from_le_bytes(c.array()?) as usize;
-    let mut records = Vec::with_capacity(count);
+    let mut records = Vec::with_capacity(record_capacity(count, data.len().saturating_sub(c.pos)));
     for _ in 0..count {
         let channel = ChannelId(u16::from_le_bytes(c.array()?));
         let tag = c.u8()?;
@@ -306,6 +315,27 @@ mod tests {
         let mut extra = buf.clone();
         extra.push(0);
         assert_eq!(decode(&extra), Err(CodecError::TrailingBytes(1)));
+    }
+
+    #[test]
+    fn untrusted_record_count_bounds_the_reservation() {
+        // Review finding: a 28-byte block announcing 65 535 records reserved 65 535 records (~2.6 MB).
+        assert_eq!(record_capacity(MAX_RECORDS, 0), 0);
+        assert_eq!(record_capacity(MAX_RECORDS, 30), 10);
+        assert_eq!(record_capacity(5, 300), 5, "an honest count is kept");
+        let mut buf = Vec::new();
+        TlvEncoder::begin(&mut buf, &header()).finish();
+        buf[TLV_HEADER_BYTES - 2..TLV_HEADER_BYTES].copy_from_slice(&u16::MAX.to_le_bytes());
+        assert!(matches!(decode(&buf), Err(CodecError::Truncated { .. })));
+        // One honest record still decodes after an over-reserving header was refused.
+        let mut one = Vec::new();
+        let mut enc = TlvEncoder::begin(&mut one, &header());
+        enc.push(ChannelId(1), &Sample::unavailable())
+            .expect("push");
+        enc.finish();
+        assert_eq!(one.len(), TLV_HEADER_BYTES + MIN_RECORD_BYTES);
+        let (_, recs) = decode(&one).expect("decode");
+        assert_eq!(recs.len(), 1);
     }
 
     #[test]

@@ -319,6 +319,11 @@ order without names, enum = varint variant index (declaration order) + variant f
 value. **Field and variant order is the wire format**. `Secret` is a plain `String` on the wire (its `Debug`
 is redacted). Wire example: `Ping { id: 1, t0: 300 }` = `01 AC 02`.
 
+Exception — LMU-derived enums (`telemetry_model::enums::*` and `SessionType`) are **not** encoded by variant
+index: each is serialized as its raw LMU value in the LMU field's integer type (e.g. `CarFlag` as `u8`,
+`SessionType` as `i32` zigzag varint) and decoded through `from_raw` / `from_lmu`, so reordering or adding
+variants never changes the wire bytes and an unknown raw value survives the round trip.
+
 Version evolution within major 1 (normative):
 * A new minor may only **append bytes at the end of a payload** (new trailing fields of the top-level payload
   struct, or of the struct that ends it). Changes in the middle of a payload, or inside nested types that are
