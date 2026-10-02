@@ -252,3 +252,43 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
   before then (e.g. 0x0D12 `app.normalizer_formula_version`) do not bump it. From the first release on, every
   added/changed channel bumps `TELEMETRY_SCHEMA_VERSION`.
 - **Date:** 2026-09-30
+
+## D-023 UI data bridge wire format and frontend data layer
+- **Context:** D-011, D-012; spec §61–63, §121–125, §219. The engineer UI needs every sample of the last
+  30–60 s for live graphs (§63), so the bridge cannot be latest-only, and JSON is too slow at 100 Hz × ~500
+  channels.
+- **Chosen:**
+  1. High-rate telemetry reaches the WebView only as binary `UiBatch` messages (raw `ArrayBuffer`) on a
+     `tauri::ipc::Channel`, ≤60 per second, only while the window is visible. Batching does not drop samples:
+     a batch carries every canonical TLV block produced since the previous batch, oldest first. If the bounded
+     bridge queue overflows, the dropped blocks are reported with `GAP_BEFORE` so graphs show a gap (§219).
+  2. `UiBatch` v1 layout (little-endian):
+     ```text
+     0   4  magic "LRUB"
+     4   2  version = 1
+     6   2  flags: bit0 RESET (discard cached values and ring contents, then apply)
+                   bit1 BACKFILL (historical blocks that prefill the ring, oldest first)
+                   bit2 GAP_BEFORE (blocks were dropped before this batch)
+                   other bits must be 0
+     8   4  batch_seq (u32, +1 per batch per subscription; a jump is treated as GAP_BEFORE)
+     12  2  block_count
+     14  2  reserved = 0
+     16  …  block_count × { u32 len | len bytes = one telemetry-model TLV block (codec.rs, PROTOCOL.md §4) }
+     ```
+     A batch is at most 4 MiB (backfills are split). Any structural error rejects the whole batch and the UI
+     resubscribes (which starts with RESET + BACKFILL); a partially applied batch is never shown.
+  3. The TypeScript side mirrors only wire-format decoding (TLV + envelope) and a display-cache ring buffer
+     that follows `telemetry-model::ring` semantics (NaN gaps, no interpolation or hold across gaps, Discrete
+     channels never interpolated, time regression = new session → clear). It contains no fuel/timing/tyre
+     logic (D-010).
+  4. Channel metadata for the UI is generated from `telemetry-model::registry` into
+     `apps/desktop/src/generated/channels.ts` by `tools/gen-ts`, which also writes golden TLV/UiBatch vectors
+     produced by the Rust codec. A Rust test fails if the generated files are stale; TS tests decode the golden
+     vectors, so the two decoders cannot drift apart.
+  5. Live-graph time axis = TLV header `source_et_s` (LMU session ET). Blocks without a finite ET update current
+     values but do not enter the ring.
+  6. Low-rate structured state (standings ≤5 Hz, capability map on change, session events, alerts, link and
+     freshness status 4 Hz) uses typed JSON Tauri events, specified together with app-core.
+- **Alternatives:** JSON events (CPU/GC cost at 100 Hz); latest-only batches (lose samples, break §63); a Rust
+  graph query per rendered frame (an IPC round trip per frame; kept for historical analysis of recordings).
+- **Date:** 2026-10-02
