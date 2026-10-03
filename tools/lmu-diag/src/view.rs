@@ -292,8 +292,9 @@ fn status_lines(s: &mut Screen, status: &Status, now_ns: u64) {
         .map(|(code, n)| format!("{code}:{n}"))
         .collect();
     s.line(format!(
-        "Events   code:occurrences {} | unknown codes {} (queue of codes; 0 = SME_ENTER or empty slot)",
+        "Events   code:occurrences {} | empty slots {} | unknown codes {} (queue of codes; 16 = SME_MAX = empty slot)",
         if events.is_empty() { "none".to_owned() } else { events.join(" ") },
+        st.empty_event_slots,
         st.unknown_event_codes,
     ));
 }

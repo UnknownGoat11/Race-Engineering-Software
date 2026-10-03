@@ -370,9 +370,13 @@ mod tests {
 
     #[test]
     fn unverified_game_version_is_reported_separately_and_does_not_lower_support() {
+        // A future version nobody has verified yet (14200 is verified, see the next test).
+        const UNVERIFIED_VERSION: i32 = 14_300;
         let mut p = FrameProcessor::new();
         let mut stats = ReaderStats::default();
-        let s = snapshot(run(&mut p, &LayoutBuilder::on_track_frame(), &mut stats));
+        let mut b = LayoutBuilder::on_track_frame();
+        b.game_version(UNVERIFIED_VERSION);
+        let s = snapshot(run(&mut p, &b, &mut stats));
         let report = p.report();
         let warnings: Vec<CheckId> = report.warnings().map(|c| c.id).collect();
         assert_eq!(warnings, vec![CheckId::GameVersion], "{report:#?}");
@@ -387,8 +391,29 @@ mod tests {
         assert!(!s.version_verified);
         assert_eq!(s.player_identity, PlayerIdentity::Verified);
         assert_eq!(s.vehicle_telemetry.len(), 2, "opponent slots are copied");
-        assert_eq!(report.game_version, Some(14_200));
+        assert_eq!(report.game_version, Some(UNVERIFIED_VERSION));
         assert!(report.is_decodable());
+    }
+
+    #[test]
+    fn gate1_verified_version_and_empty_event_slots_raise_no_warning() {
+        // LMU 1.4.2.0 (gameVersion 14200) was verified at Gate 1; its unused event slots read SME_MAX.
+        let mut p = FrameProcessor::new();
+        let mut stats = ReaderStats::default();
+        let mut b = LayoutBuilder::on_track_frame();
+        b.event(0, crate::offsets::sme::UPDATE_TELEMETRY);
+        b.event(1, crate::offsets::sme::FFB);
+        for slot in 2..crate::offsets::EVENT_SLOTS {
+            b.event(slot, crate::offsets::sme::MAX);
+        }
+        let s = snapshot(run(&mut p, &b, &mut stats));
+        let report = p.report();
+        assert_eq!(report.warnings().count(), 0, "{report:#?}");
+        assert_eq!(report.version_verified, Some(true));
+        assert!(s.version_verified);
+        assert_eq!(s.support, SupportLevel::Supported);
+        assert_eq!(stats.unknown_event_codes, 0);
+        assert_eq!(stats.empty_event_slots, 14);
     }
 
     #[test]

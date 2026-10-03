@@ -40,10 +40,13 @@ pub const LAYOUT_SOURCE: &str = "docs/research/lmu_abi_layout.json";
 /// The LMU build whose SDK headers were probed (research §3).
 pub const PROBED_LMU_BUILD: &str = "LMU 1.4.2.0 (Steam build 25513257)";
 
-/// `gameVersion` values that have been verified against this layout with LMU running.
-/// Empty until the Gate-1 session records one (A-LMU-010); until then every version is reported as
-/// `UNKNOWN_VERSION` (a warning) and decoding continues as long as the structural checks pass.
-pub const VERIFIED_GAME_VERSIONS: &[i32] = &[];
+/// `gameVersion` values that have been verified against this layout with LMU running (A-LMU-010).
+/// Any other version is reported as `UNKNOWN_VERSION` (a warning) and decoding continues as long as the
+/// structural checks pass.
+///
+/// - 14200: LMU 1.4.2.0 (Steam build 25513257), Gate 1 on 2026-10-02 — all structural checks passed
+///   and 15 min of driving decoded with plausible values (docs/GATE1_REPORT.md).
+pub const VERIFIED_GAME_VERSIONS: &[i32] = &[14200];
 
 /// Upper bound of a plausible `mDeltaTime` (research §13: in (0, 0.1] s).
 const MAX_PLAUSIBLE_DELTA_TIME_S: f64 = 0.1;
@@ -694,8 +697,8 @@ fn describe(id: CheckId, s: &StructuralFacts, c: Option<&ContentFacts>) -> (Stri
                     "UNKNOWN_VERSION (not yet verified at runtime; decoding continues while structural checks pass)"
                 };
                 let expected = format!(
-                    "a runtime-verified value, verified list {VERIFIED_GAME_VERSIONS:?} (A-LMU-010: empty until \
-                     Gate 1 records one; probably 14200 on {PROBED_LMU_BUILD})"
+                    "a runtime-verified value, verified list {VERIFIED_GAME_VERSIONS:?} (A-LMU-010; layout \
+                     probed on {PROBED_LMU_BUILD})"
                 );
                 (format!("{} {state}", c.game_version), expected)
             }
@@ -704,13 +707,13 @@ fn describe(id: CheckId, s: &StructuralFacts, c: Option<&ContentFacts>) -> (Stri
             None => na(),
             Some(c) => (
                 match c.first_unknown_event {
-                    None => "all codes < SME_MAX".to_owned(),
+                    None => "all codes known (0..=15, or 16 = SME_MAX empty slot)".to_owned(),
                     Some((slot, code)) => format!(
                         "{} unknown code(s), first events[{slot}] = {code}",
                         c.unknown_events
                     ),
                 },
-                "codes 0..=15".to_owned(),
+                "codes 0..=15, or 16 (SME_MAX) for an unused slot".to_owned(),
             ),
         },
         CheckId::PlayerIndex => match c {

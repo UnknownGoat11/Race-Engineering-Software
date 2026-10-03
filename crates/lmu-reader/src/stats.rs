@@ -258,9 +258,11 @@ pub struct ReaderStats {
     /// Snapshots per second.
     pub snapshot_rate: RateMeter,
     /// Occurrences of each `SharedMemoryEvent` code in the `generic.events[]` queue, summed over the
-    /// slots of every returned frame (code 0 includes empty slots, A-LMU-009).
+    /// slots of every returned frame (A-LMU-009).
     pub event_code_occurrences: [u64; EVENT_SLOTS],
-    /// Occurrences of codes ≥ `SME_MAX`.
+    /// Unused queue slots (`SME_MAX`, verified at Gate 1 with LMU 1.4.2.0).
+    pub empty_event_slots: u64,
+    /// Occurrences of codes > `SME_MAX`.
     pub unknown_event_codes: u64,
     /// Capture time of the last returned snapshot.
     pub last_snapshot_ns: Option<u64>,
@@ -295,6 +297,10 @@ impl ReaderStats {
     /// Counts the codes in one frame's event queue.
     pub(crate) fn record_events(&mut self, events: &[u32]) {
         for &code in events {
+            if code == crate::offsets::sme::MAX {
+                self.empty_event_slots += 1;
+                continue;
+            }
             match usize::try_from(code)
                 .ok()
                 .and_then(|i| self.event_code_occurrences.get_mut(i))
@@ -371,9 +377,10 @@ mod tests {
         s.record_lock_hold(LOCK_HOLD_BUDGET_NS);
         s.record_lock_hold(LOCK_HOLD_BUDGET_NS + 1);
         assert_eq!(s.lock_hold_over_budget, 1);
-        s.record_events(&[11, 0, 0, 99]);
+        s.record_events(&[11, 0, 0, 99, 16, 16]);
         assert_eq!(s.event_code_occurrences[11], 1);
         assert_eq!(s.event_code_occurrences[0], 2);
+        assert_eq!(s.empty_event_slots, 2, "SME_MAX = unused slot (Gate 1)");
         assert_eq!(s.unknown_event_codes, 1);
         s.last_snapshot_ns = Some(10);
         assert_eq!(s.sample_age_ns(25), Some(15));

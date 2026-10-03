@@ -9,11 +9,12 @@ use crate::offsets::{sme, vehicle_championship, vehicle_class};
 
 /// A `SharedMemoryEvent` code from the `generic.events[]` queue.
 ///
-/// The queue is a list of codes, not 16 flags, and `SME_ENTER` (0) is indistinguishable from an empty
-/// slot (A-LMU-009). Do not use it for freshness; the reader uses ET changes instead.
+/// The queue is a list of codes, not 16 flags. Unused slots hold `SME_MAX` (16), not 0: verified with
+/// LMU 1.4.2.0 at Gate 1 (A-LMU-009; docs/GATE1_REPORT.md). Do not use it for freshness; the reader uses
+/// ET changes instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum SharedMemoryEvent {
-    /// `SME_ENTER` (also what an empty slot reads as).
+    /// `SME_ENTER`.
     Enter,
     /// `SME_EXIT`.
     Exit,
@@ -45,6 +46,8 @@ pub enum SharedMemoryEvent {
     SetEnvironment,
     /// `SME_FFB`.
     Ffb,
+    /// `SME_MAX` (16): an unused queue slot.
+    Empty,
     /// Any other value (not a known code; layout or version change?).
     Other(u32),
 }
@@ -69,13 +72,19 @@ impl SharedMemoryEvent {
             sme::UNINIT_APPLICATION => Self::UninitApplication,
             sme::SET_ENVIRONMENT => Self::SetEnvironment,
             sme::FFB => Self::Ffb,
+            sme::MAX => Self::Empty,
             other => Self::Other(other),
         }
     }
 
-    /// `true` for a value below `SME_MAX`.
+    /// `true` for a known code or the empty-slot marker (`SME_MAX`); `false` only for values above it.
     pub fn is_known(self) -> bool {
         !matches!(self, Self::Other(_))
+    }
+
+    /// `true` for an unused queue slot (`SME_MAX`).
+    pub fn is_empty(self) -> bool {
+        matches!(self, Self::Empty)
     }
 }
 
@@ -184,9 +193,14 @@ mod tests {
             SharedMemoryEvent::UpdateScoring
         );
         assert_eq!(SharedMemoryEvent::from_raw(0), SharedMemoryEvent::Enter);
+        // Gate 1 (LMU 1.4.2.0): unused slots read SME_MAX, which is not an unknown code.
+        let empty = SharedMemoryEvent::from_raw(16);
+        assert_eq!(empty, SharedMemoryEvent::Empty);
+        assert!(empty.is_known() && empty.is_empty());
+        assert!(!SharedMemoryEvent::from_raw(0).is_empty());
         assert_eq!(
-            SharedMemoryEvent::from_raw(16),
-            SharedMemoryEvent::Other(16)
+            SharedMemoryEvent::from_raw(17),
+            SharedMemoryEvent::Other(17)
         );
         assert!(!SharedMemoryEvent::from_raw(99).is_known());
     }
