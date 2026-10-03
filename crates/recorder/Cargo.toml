@@ -1,11 +1,27 @@
 [package]
 name = "recorder"
+description = "Crash-tolerant local telemetry recording (.lmurec chunked log), SQLite session index, readback and replay"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+crossbeam-channel.workspace = true
+zstd.workspace = true
+crc32c.workspace = true
+rusqlite.workspace = true
+uuid.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Additive feature on the workspace `windows` dependency: GetDiskFreeSpaceExW lives in Storage_FileSystem.
+windows = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+# Tests only: build realistic TLV payloads with the shared codec (the recorder itself is payload-agnostic).
+telemetry-model.workspace = true
 
 [lints]
 workspace = true
