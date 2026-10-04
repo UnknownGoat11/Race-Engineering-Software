@@ -165,13 +165,20 @@ fn send(tx: &SyncSender<Msg>, msg: Msg, dropped: &mut u64) -> bool {
 
 /// Reserves `bytes` of the raw budget; `false` (frame dropped) if it would be exceeded.
 fn reserve(in_flight: &AtomicUsize, bytes: usize) -> bool {
-    in_flight
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-            current
-                .checked_add(bytes)
-                .filter(|&total| total <= MAX_RAW_BYTES_IN_FLIGHT)
-        })
-        .is_ok()
+    // Explicit CAS loop (`fetch_update` is deprecated on newer toolchains).
+    let mut current = in_flight.load(Ordering::SeqCst);
+    loop {
+        let Some(total) = current
+            .checked_add(bytes)
+            .filter(|&total| total <= MAX_RAW_BYTES_IN_FLIGHT)
+        else {
+            return false;
+        };
+        match in_flight.compare_exchange_weak(current, total, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 /// Sends a frame, accounting its raw bytes against the budget.

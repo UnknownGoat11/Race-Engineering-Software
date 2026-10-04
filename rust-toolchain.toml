@@ -1,0 +1,6 @@
+# Pinned so local builds and CI use the same compiler and lints (clippy -D warnings must not change under
+# us when a new stable release deprecates an API). Bump deliberately, together with any lint fixes.
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
