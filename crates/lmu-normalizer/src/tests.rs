@@ -28,6 +28,8 @@ use crate::writer::FrameWriter;
 
 const PLAYER_ID: i32 = 7;
 const LMU_1_4_2_VERSION: i32 = 14_200;
+/// A future LMU version nobody has verified: the evidence-based detectors run without any verified default.
+const UNVERIFIED_FUTURE_VERSION: i32 = 14_300;
 
 /// Owns the raw blocks of one step.
 struct Fixture {
@@ -287,10 +289,9 @@ fn plausible_driving_sample_is_fully_valid_and_converted() {
     assert!(close(f(&out, ch::TYRE_PRESSURE_FL), 170_000.0), "kPa → Pa");
     assert!(close(f(&out, ch::TYRE_TEMP_MIDDLE_RR), 80.0), "K → °C");
     assert!(close(f(&out, ch::TYRE_CARCASS_TEMP_FL), 87.0));
-    assert_eq!(
-        q(&out, ch::BRAKE_TEMP_FL),
-        Some(Quality::Unavailable),
-        "unit undecided: withheld, never an unverified VALID conversion"
+    assert!(
+        close(f(&out, ch::BRAKE_TEMP_FL), 400.0),
+        "673.15 K → 400 °C: Kelvin is verified for LMU 1.4.2.0 (Gate 1, A-LMU-015)"
     );
     assert!(close(f(&out, ch::TYRE_RADIUS_FL), 0.33), "cm → m");
     assert!(close(f(&out, ch::WHEEL_SPEED_RL), 49.5), "|rot| × radius");
@@ -577,6 +578,7 @@ fn brake_pressure_above_one_and_a_half_stops_mapping() {
 #[test]
 fn brake_temperature_unit_is_decided_from_cold_brake_evidence() {
     let mut fx = Fixture::driving(10.0);
+    fx.generic.game_version = UNVERIFIED_FUTURE_VERSION;
     fx.t().local_vel.z = 0.0; // parked
     for w in &mut fx.t().wheels {
         w.brake_temp = 24.0; // Celsius near the 22 °C ambient
@@ -762,8 +764,8 @@ fn capability_map_tracks_qualities_and_rates() {
     assert_eq!(status(ch::SPEED), Some(S::Calculated));
     assert_eq!(
         status(ch::BRAKE_TEMP_FL),
-        Some(S::Unavailable),
-        "unit undecided"
+        Some(S::Available),
+        "Kelvin verified for LMU 1.4.2.0"
     );
     assert_eq!(
         status(ch::SLIP_RATIO_FL),
@@ -1037,6 +1039,7 @@ fn kelvin_brakes_are_published_only_once_decided_after_a_realtime_entry() {
     };
     // App running before the car goes on track: monitor (not realtime), then the realtime entry.
     let mut fx = Fixture::driving(10.0);
+    fx.generic.game_version = UNVERIFIED_FUTURE_VERSION;
     cold(&mut fx);
     fx.info.in_realtime = false;
     let mut n = Normalizer::new();
@@ -1058,6 +1061,7 @@ fn kelvin_brakes_are_published_only_once_decided_after_a_realtime_entry() {
 
     // App started mid-session with the car already in realtime: no window, nothing published.
     let mut late = Fixture::driving(2_000.0);
+    late.generic.game_version = UNVERIFIED_FUTURE_VERSION;
     cold(&mut late);
     let mut n = Normalizer::new();
     let mut out = late.step(&mut n);
@@ -1094,4 +1098,122 @@ fn ambiguous_energy_scale_is_withheld_not_published_as_a_fraction() {
     fx.advance(0.01);
     let confirmed = fx.step(&mut n);
     assert!(close(f(&confirmed, ch::VIRTUAL_ENERGY), 0.8));
+}
+
+#[test]
+fn verified_version_publishes_kelvin_brakes_from_the_first_frame() {
+    // Gate 1 (2026-10-02): LMU 1.4.2.0 reports mBrakeTemp in Kelvin (cold = ambient + 273.15).
+    let fx = Fixture::driving(500.0);
+    let mut n = Normalizer::new();
+    let out = fx.step(&mut n);
+    assert_eq!(
+        (n.brake_temp_unit().state, n.brake_temp_unit().unit),
+        (UnitDecisionState::Verified, BrakeTempUnit::Kelvin)
+    );
+    for wheel in Wheel::ALL {
+        assert!(close(f(&out, wheel_id(ch::BRAKE_TEMP_FL, wheel)), 400.0));
+    }
+    assert!(
+        !out.notices
+            .iter()
+            .any(|x| x.code == NoticeCode::BrakeTempUnitUnverified)
+    );
+    let note = n
+        .capability_map()
+        .get(ch::BRAKE_TEMP_FL)
+        .and_then(|c| c.note.clone());
+    assert!(note.is_some_and(|s| s.contains("verified with real data")));
+}
+
+#[test]
+fn evidence_against_the_verified_unit_withholds_brake_temperatures() {
+    // Readings that cannot be Kelvin (all four below 200 and non-zero) on a version verified as Kelvin:
+    // LMU changed the unit, so nothing is published as VALID any more.
+    let mut fx = Fixture::driving(500.0);
+    for w in &mut fx.t().wheels {
+        w.brake_temp = 150.0;
+    }
+    let mut n = Normalizer::new();
+    let out = fx.step(&mut n);
+    assert_eq!(n.brake_temp_unit().state, UnitDecisionState::Conflicting);
+    assert_eq!(q(&out, ch::BRAKE_TEMP_FL), Some(Quality::Unavailable));
+    assert!(
+        out.notices
+            .iter()
+            .any(|x| x.code == NoticeCode::BrakeTempUnitConflict)
+    );
+}
+
+#[test]
+fn detached_wheel_values_are_unavailable_not_frozen() {
+    // Gate 1: a wheel that came off kept constant pressure and carcass values for minutes (A-LMU-061).
+    let mut fx = Fixture::driving(500.0);
+    let fr = Wheel::FrontRight.index();
+    fx.t().wheels[fr].detached = true;
+    let mut n = Normalizer::new();
+    let out = fx.step(&mut n);
+    assert!(out.rejections.is_empty(), "{:?}", out.rejections);
+    let frame = out.frame.as_ref().expect("frame");
+    assert_eq!(
+        frame.get(ch::WHEEL_DETACHED_FR).value,
+        Value::Bool(true),
+        "the detached flag itself is published"
+    );
+    for id in [
+        ch::TYRE_PRESSURE_FR,
+        ch::TYRE_TEMP_MIDDLE_FR,
+        ch::TYRE_CARCASS_TEMP_FR,
+        ch::TYRE_TEMP_INNER_FR,
+        ch::TYRE_LOAD_FR,
+        ch::WHEEL_SPEED_FR,
+        ch::WHEEL_ROT_FR,
+        ch::CAMBER_FR,
+    ] {
+        assert_eq!(q(&out, id), Some(Quality::Unavailable), "{id:?}");
+    }
+    // The other wheels are unaffected.
+    assert!(close(f(&out, ch::TYRE_PRESSURE_FL), 170_000.0));
+    assert_eq!(q(&out, ch::TYRE_TEMP_MIDDLE_RR), Some(Quality::Valid));
+}
+
+#[test]
+fn uninitialised_tyre_and_engine_readings_are_unavailable_not_invalid() {
+    // Gate 1: during a garage/reset transition LMU reported 0 K tyre temperatures, 0 kPa and 0 °C coolant and
+    // oil on every wheel/engine (A-LMU-062). Those are "no data", not measurements and not rejections.
+    let mut fx = Fixture::driving(500.0);
+    for w in &mut fx.t().wheels {
+        w.temperature = [0.0; 3];
+        w.tire_inner_layer_temperature = [0.0; 3];
+        w.tire_carcass_temperature = 0.0;
+        w.pressure = 0.0;
+    }
+    fx.t().engine_water_temp = 0.0;
+    fx.t().engine_oil_temp = 0.0;
+    let mut n = Normalizer::new();
+    let out = fx.step(&mut n);
+    assert!(out.rejections.is_empty(), "{:?}", out.rejections);
+    for wheel in Wheel::ALL {
+        for base in [
+            ch::TYRE_PRESSURE_FL,
+            ch::TYRE_TEMP_LEFT_FL,
+            ch::TYRE_LAYER_TEMP_RIGHT_FL,
+            ch::TYRE_CARCASS_TEMP_FL,
+            ch::TYRE_TEMP_AVG_FL,
+            ch::TYRE_TEMP_SPREAD_FL,
+        ] {
+            let id = wheel_id(base, wheel);
+            assert_eq!(q(&out, id), Some(Quality::Unavailable), "{id:?}");
+        }
+    }
+    assert_eq!(q(&out, ch::WATER_TEMP), Some(Quality::Unavailable));
+    assert_eq!(q(&out, ch::OIL_TEMP), Some(Quality::Unavailable));
+
+    // A flat tyre with a real thermal state: 0 kPa is a measurement and is published.
+    let mut flat = Fixture::driving(500.0);
+    flat.t().wheels[0].pressure = 0.0;
+    flat.t().wheels[0].flat = true;
+    let mut n = Normalizer::new();
+    let out = flat.step(&mut n);
+    assert_eq!(q(&out, ch::TYRE_PRESSURE_FL), Some(Quality::Valid));
+    assert!(close(f(&out, ch::TYRE_PRESSURE_FL), 0.0));
 }

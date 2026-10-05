@@ -157,16 +157,19 @@ impl<'a> NormalizerInput<'a> {
 const STATIC_NOTES: &[(ChannelId, &str)] = &[
     (
         ch::G_LAT,
-        "+ = towards the car's left (ISO 8855); sign unverified (A-LMU-024)",
+        "+ = towards the car's left (ISO 8855); sign verified at Gate 1 (A-LMU-024)",
     ),
     (
         ch::G_LONG,
-        "+ = accelerating, − = braking; sign unverified (A-LMU-024)",
+        "+ = accelerating, − = braking; sign verified at Gate 1 (A-LMU-024)",
     ),
-    (ch::G_VERT, "gravity inclusion unverified (A-LMU-032)"),
+    (
+        ch::G_VERT,
+        "kinematic, gravity excluded (≈ 0 g at rest); verified at Gate 1 (A-LMU-032)",
+    ),
     (
         ch::YAW_RATE,
-        "+ = yawing left (ISO 8855); sign unverified (A-LMU-024)",
+        "+ = yawing left (ISO 8855); sign verified at Gate 1 (A-LMU-024)",
     ),
     (
         ch::PITCH_RATE,
@@ -684,6 +687,12 @@ impl Normalizer {
             }
             (UnitDecisionState::Decided, BrakeTempUnit::Celsius) => {
                 "unit detected from cold-brake evidence: Celsius (A-LMU-015)"
+            }
+            (UnitDecisionState::Verified, BrakeTempUnit::Kelvin) => {
+                "Kelvin, verified with real data for this LMU version (Gate 1, A-LMU-015)"
+            }
+            (UnitDecisionState::Verified, BrakeTempUnit::Celsius) => {
+                "Celsius, verified with real data for this LMU version (A-LMU-015)"
             }
             (UnitDecisionState::Conflicting, _) => {
                 "unit unverified: conflicting K/°C evidence, withheld for the session (A-LMU-015)"

@@ -39,7 +39,7 @@ mod testutil;
 pub use capability::{CAPABILITY_DECISION_SAMPLES, VehicleCapabilityTracker};
 pub use detect::{
     BrakeTempUnit, BrakeTempUnitDecision, BrakeTempUnitDetector, FractionScale,
-    FractionScaleDetector, UnitDecisionState,
+    FractionScaleDetector, UnitDecisionState, VERIFIED_BRAKE_TEMP_UNITS, verified_brake_temp_unit,
 };
 pub use identity::{IdentityChange, IdentityTracker};
 pub use normalizer::{

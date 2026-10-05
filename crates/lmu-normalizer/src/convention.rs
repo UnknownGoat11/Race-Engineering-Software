@@ -1,4 +1,6 @@
-//! LMU local vehicle frame → canonical body frame (ISO 8855). ASSUMPTION A-LMU-024, pending Gate-1.
+//! LMU local vehicle frame → canonical body frame (ISO 8855). A-LMU-024: verified at Gate 1 (LMU 1.4.2.0,
+//! docs/GATE1_REPORT.md §3.7) for forward = −z, the longitudinal and lateral acceleration signs and the yaw
+//! sense; the pitch and roll senses still rest on the header only.
 //!
 //! LMU's local frame, as stated by the header: **+x out of the car's left side, +y up, +z towards the
 //! rear**; rotation senses **+x pitches up, +y yaws right, +z rolls right**. The header's own remark about
@@ -11,7 +13,7 @@
 //! - **positive `dynamics.g_long` = acceleration** (throttle), negative = braking;
 //! - **positive `dynamics.g_lat` = acceleration towards the car's LEFT**, i.e. a left-hand corner. A UI that
 //!   wants "right = +" flips it for display only;
-//! - positive `dynamics.g_vert` = upward acceleration (gravity inclusion UNVERIFIED, A-LMU-032);
+//! - positive `dynamics.g_vert` = upward acceleration, gravity excluded (verified at Gate 1, A-LMU-032);
 //! - positive `dynamics.yaw_rate_radps` = yawing left (counter-clockwise seen from above);
 //! - positive `dynamics.pitch_rate_radps` = nose down; positive `dynamics.roll_rate_radps` = rolling right;
 //! - positive `vehicle.speed_forward_mps` = moving forward (LMU forward motion is −z).

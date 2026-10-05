@@ -46,14 +46,28 @@ pub enum BrakeTempUnit {
     Celsius,
 }
 
+/// LMU `gameVersion`s whose `mBrakeTemp` unit was verified with real data (A-LMU-015). 14200 (LMU 1.4.2.0):
+/// Gate 1 on 2026-10-02, cold brakes read exactly ambient + 273.15 on all four wheels (docs/GATE1_REPORT.md).
+pub const VERIFIED_BRAKE_TEMP_UNITS: &[(i32, BrakeTempUnit)] = &[(14_200, BrakeTempUnit::Kelvin)];
+
+/// The brake temperature unit verified for an LMU `gameVersion`, if any.
+pub fn verified_brake_temp_unit(game_version: i32) -> Option<BrakeTempUnit> {
+    VERIFIED_BRAKE_TEMP_UNITS
+        .iter()
+        .find(|(version, _)| *version == game_version)
+        .map(|&(_, unit)| unit)
+}
+
 /// How firm the brake temperature unit is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum UnitDecisionState {
     /// No (or not enough) evidence yet: the default hypothesis is used.
     Assumed,
+    /// Verified with real data for the running LMU version; kept unless session evidence contradicts it.
+    Verified,
     /// Enough agreeing evidence: latched for the session.
     Decided,
-    /// Evidence for both units: the default hypothesis is kept and flagged.
+    /// Evidence for both units (or against the verified unit): the values are withheld and flagged.
     Conflicting,
 }
 
@@ -111,12 +125,18 @@ pub struct BrakeObservation {
 ///   All-zero readings (car not loaded) are never evidence.
 ///
 /// [`BRAKE_UNIT_VOTES_REQUIRED`] votes for one unit with none for the other decide it.
+///
+/// For an LMU version listed in [`VERIFIED_BRAKE_TEMP_UNITS`] the verified unit is applied from the first
+/// frame ([`UnitDecisionState::Verified`]); a single vote against it makes the detector conflicting (values
+/// withheld again), because it would mean LMU changed the unit.
 #[derive(Debug, Clone, Default)]
 pub struct BrakeTempUnitDetector {
     kelvin_votes: u32,
     celsius_votes: u32,
     decided: Option<BrakeTempUnit>,
     conflicting: bool,
+    /// Unit verified for the running LMU version (see [`BrakeTempUnitDetector::set_verified_unit`]).
+    verified: Option<BrakeTempUnit>,
     /// `mInRealtime` of the previous snapshot (`None` before the first one).
     prev_in_realtime: Option<bool>,
     /// A realtime entry (false → true) was seen and the car has not left realtime since.
@@ -148,17 +168,25 @@ impl BrakeTempUnitDetector {
         self.prev_in_realtime = Some(in_realtime);
     }
 
-    /// `true` when the unit is decided from evidence (only then are values published).
+    /// Sets the unit verified for the running LMU version (`None` for an unverified version). Called on
+    /// every observation, so it follows a version change and survives detector resets.
+    pub fn set_verified_unit(&mut self, unit: Option<BrakeTempUnit>) {
+        self.verified = unit;
+    }
+
+    /// `true` when the unit is decided from evidence or verified for this LMU version and not contradicted
+    /// (only then are values published).
     pub fn is_decided(&self) -> bool {
-        self.decided.is_some()
+        self.decided.is_some() || (self.verified.is_some() && !self.conflicting)
     }
 
     /// The unit to apply now and the state of the decision.
     pub fn decision(&self) -> BrakeTempUnitDecision {
-        let (unit, state, confidence) = match (self.decided, self.conflicting) {
-            (Some(unit), _) => (unit, UnitDecisionState::Decided, 1.0),
-            (None, true) => (Self::DEFAULT_UNIT, UnitDecisionState::Conflicting, 0.0),
-            (None, false) => {
+        let (unit, state, confidence) = match (self.decided, self.conflicting, self.verified) {
+            (Some(unit), _, _) => (unit, UnitDecisionState::Decided, 1.0),
+            (None, true, _) => (Self::DEFAULT_UNIT, UnitDecisionState::Conflicting, 0.0),
+            (None, false, Some(unit)) => (unit, UnitDecisionState::Verified, 1.0),
+            (None, false, None) => {
                 let votes = self.kelvin_votes.max(self.celsius_votes);
                 let share = f64::from(votes) / f64::from(BRAKE_UNIT_VOTES_REQUIRED);
                 (
@@ -197,12 +225,17 @@ impl BrakeTempUnitDetector {
         if obs.raw.iter().any(|v| !v.is_finite()) {
             return BrakeUnitTransition::None;
         }
-        match Self::vote(obs, self.realtime_since_et) {
-            Some(BrakeTempUnit::Kelvin) => self.kelvin_votes = self.kelvin_votes.saturating_add(1),
-            Some(BrakeTempUnit::Celsius) => {
-                self.celsius_votes = self.celsius_votes.saturating_add(1);
-            }
-            None => return BrakeUnitTransition::None,
+        let Some(vote) = Self::vote(obs, self.realtime_since_et) else {
+            return BrakeUnitTransition::None;
+        };
+        // Evidence against the unit verified for this LMU version: LMU changed something; stop trusting it.
+        if self.verified.is_some_and(|verified| verified != vote) {
+            self.conflicting = true;
+            return BrakeUnitTransition::BecameConflicting;
+        }
+        match vote {
+            BrakeTempUnit::Kelvin => self.kelvin_votes = self.kelvin_votes.saturating_add(1),
+            BrakeTempUnit::Celsius => self.celsius_votes = self.celsius_votes.saturating_add(1),
         }
         if self.kelvin_votes > 0 && self.celsius_votes > 0 {
             self.conflicting = true;

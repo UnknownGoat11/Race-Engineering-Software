@@ -20,7 +20,7 @@ use crate::convention;
 use crate::detect::{
     BrakeObservation, BrakePressureGuard, BrakeTempUnitDetector, BrakeUnitTransition,
     FractionScale, FractionScaleDetector, KelvinLatch, TimeOfDayDetector, TurboReading,
-    TurboUnitDetector,
+    TurboUnitDetector, verified_brake_temp_unit,
 };
 use crate::notice::{DiagnosticNotice, NoticeCode, NoticeLog};
 use crate::standings::{finite, lap_start_et, non_negative, qualification, text};
@@ -316,8 +316,15 @@ fn map_powertrain(t: &RawTelemetry, st: &mut MapState<'_>, w: &mut FrameWriter<'
     w.float(ch::RPM, t.engine_rpm);
     w.float(ch::CLUTCH_RPM, t.clutch_rpm);
     w.float(ch::ENGINE_TORQUE, t.engine_torque);
-    w.float(ch::WATER_TEMP, t.engine_water_temp);
-    w.float(ch::OIL_TEMP, t.engine_oil_temp);
+    // Coolant and oil both exactly 0.000 °C: the engine model is not initialised (garage/reset transition,
+    // A-LMU-062); a real cold engine reads near ambient, not two exact zeros.
+    if t.engine_water_temp == 0.0 && t.engine_oil_temp == 0.0 {
+        w.quality(ch::WATER_TEMP, Quality::Unavailable);
+        w.quality(ch::OIL_TEMP, Quality::Unavailable);
+    } else {
+        w.float(ch::WATER_TEMP, t.engine_water_temp);
+        w.float(ch::OIL_TEMP, t.engine_oil_temp);
+    }
     w.boolean(ch::OVERHEATING, t.overheating);
     w.int(ch::IGNITION_STARTER, i64::from(t.ignition_starter));
     w.boolean(ch::ANTI_STALL, t.anti_stall_activated != 0);
@@ -425,11 +432,73 @@ fn map_chassis(t: &RawTelemetry, w: &mut FrameWriter<'_>) {
         w.float(id(ch::SUSP_POS_FL), raw.suspension_deflection);
         w.float(id(ch::RIDE_HEIGHT_FL), raw.ride_height);
         w.float(id(ch::PUSHROD_FORCE_FL), raw.susp_force);
+        w.boolean(id(ch::WHEEL_DETACHED_FL), raw.detached);
+        if raw.detached {
+            // A-LMU-061: the values of a wheel that came off are frozen or meaningless.
+            for base in DETACHED_WHEEL_CHASSIS_CHANNELS {
+                w.quality(id(base), Quality::Unavailable);
+            }
+            continue;
+        }
         w.float(id(ch::CAMBER_FL), raw.camber);
         w.float(id(ch::TOE_FL), raw.toe);
         w.float(id(ch::WHEEL_ROT_FL), raw.rotation);
         w.float(id(ch::WHEEL_Y_LOCATION_FL), raw.wheel_y_location);
-        w.boolean(id(ch::WHEEL_DETACHED_FL), raw.detached);
+    }
+}
+
+/// Per-wheel chassis channels (FL ids) of the wheel itself, withheld while it is detached (A-LMU-061).
+const DETACHED_WHEEL_CHASSIS_CHANNELS: [ChannelId; 4] = [
+    ch::CAMBER_FL,
+    ch::TOE_FL,
+    ch::WHEEL_ROT_FL,
+    ch::WHEEL_Y_LOCATION_FL,
+];
+
+/// Per-wheel tyre channels (FL ids) withheld while the wheel is detached (A-LMU-061). The flat flag and the
+/// axle compound names stay published.
+const DETACHED_WHEEL_TYRE_CHANNELS: [ChannelId; 29] = [
+    ch::TYRE_PRESSURE_FL,
+    ch::TYRE_TEMP_LEFT_FL,
+    ch::TYRE_TEMP_MIDDLE_FL,
+    ch::TYRE_TEMP_RIGHT_FL,
+    ch::TYRE_LAYER_TEMP_LEFT_FL,
+    ch::TYRE_LAYER_TEMP_MIDDLE_FL,
+    ch::TYRE_LAYER_TEMP_RIGHT_FL,
+    ch::TYRE_TEMP_INNER_FL,
+    ch::TYRE_TEMP_OUTER_FL,
+    ch::TYRE_TEMP_AVG_FL,
+    ch::TYRE_TEMP_SPREAD_FL,
+    ch::TYRE_CARCASS_TEMP_FL,
+    ch::TYRE_OPTIMAL_TEMP_FL,
+    ch::TYRE_WEAR_FL,
+    ch::TYRE_SLIDING_FL,
+    ch::TYRE_LOAD_FL,
+    ch::TYRE_LAT_FORCE_FL,
+    ch::TYRE_LONG_FORCE_FL,
+    ch::TYRE_LAT_PATCH_VEL_FL,
+    ch::TYRE_LONG_PATCH_VEL_FL,
+    ch::TYRE_LAT_GROUND_VEL_FL,
+    ch::TYRE_LONG_GROUND_VEL_FL,
+    ch::TYRE_DEFLECTION_FL,
+    ch::TYRE_RADIUS_FL,
+    ch::WHEEL_SPEED_FL,
+    ch::TYRE_COMPOUND_INDEX_FL,
+    ch::TYRE_COMPOUND_TYPE_FL,
+    ch::SURFACE_TYPE_FL,
+    ch::TERRAIN_NAME_FL,
+];
+
+/// A Kelvin reading in °C; exactly 0 K (physically impossible) means "not initialised" (A-LMU-062).
+fn initialised_kelvin(raw: f64) -> Option<f64> {
+    (raw != 0.0).then(|| convert::kelvin_to_celsius(raw))
+}
+
+/// `Some` → the value; `None` → explicitly `Unavailable` (not left at a default from an earlier frame).
+fn float_or_unavailable(w: &mut FrameWriter<'_>, id: ChannelId, v: Option<f64>) {
+    match v {
+        Some(v) => w.float(id, v),
+        None => w.quality(id, Quality::Unavailable),
     }
 }
 
@@ -456,31 +525,60 @@ fn map_tyres(
     for wheel in Wheel::ALL {
         let raw = &t.wheels[wheel.index()];
         let id = |base| wheel_id(base, wheel);
-        w.float(id(ch::TYRE_PRESSURE_FL), convert::kpa_to_pa(raw.pressure));
+        w.boolean(id(ch::TYRE_FLAT_FL), raw.flat);
+        if raw.detached {
+            // A-LMU-061: a detached wheel's tyre values are frozen or meaningless.
+            for base in DETACHED_WHEEL_TYRE_CHANNELS {
+                w.quality(id(base), Quality::Unavailable);
+            }
+            continue;
+        }
 
-        // Surface and inner-layer temperatures are Kelvin per the header (A-LMU-049), car-frame L/C/R.
-        let surface = raw.temperature.map(convert::kelvin_to_celsius);
-        let layer = raw
-            .tire_inner_layer_temperature
-            .map(convert::kelvin_to_celsius);
+        // All three surface temperatures exactly 0 K: the tyre model is not initialised (garage/reset
+        // transition, A-LMU-062), so the 0 kPa read in that state is not a measurement either. A flat tyre's
+        // 0 kPa with real temperatures is published.
+        let initialised = raw.temperature.iter().any(|&k| k != 0.0);
+        if initialised {
+            w.float(id(ch::TYRE_PRESSURE_FL), convert::kpa_to_pa(raw.pressure));
+        } else {
+            w.quality(id(ch::TYRE_PRESSURE_FL), Quality::Unavailable);
+        }
+
+        // Surface and inner-layer temperatures are Kelvin (A-LMU-049, verified at Gate 1), car-frame L/C/R.
+        let surface = raw.temperature.map(initialised_kelvin);
+        let layer = raw.tire_inner_layer_temperature.map(initialised_kelvin);
         let lcr_ids = [
             (ch::TYRE_TEMP_LEFT_FL, ch::TYRE_LAYER_TEMP_LEFT_FL),
             (ch::TYRE_TEMP_MIDDLE_FL, ch::TYRE_LAYER_TEMP_MIDDLE_FL),
             (ch::TYRE_TEMP_RIGHT_FL, ch::TYRE_LAYER_TEMP_RIGHT_FL),
         ];
         for (i, (surface_id, layer_id)) in lcr_ids.into_iter().enumerate() {
-            w.float(id(surface_id), surface[i]);
-            w.float(id(layer_id), layer[i]);
+            float_or_unavailable(w, id(surface_id), surface[i]);
+            float_or_unavailable(w, id(layer_id), layer[i]);
         }
-        // Inner/outer: the side mapping lives in one function (A-LMU-016).
-        let edges = lcr_to_edges(wheel, surface);
-        w.float(id(ch::TYRE_TEMP_INNER_FL), edges.inner);
-        w.float(id(ch::TYRE_TEMP_OUTER_FL), edges.outer);
-        w.float(id(ch::TYRE_TEMP_AVG_FL), surface.iter().sum::<f64>() / 3.0);
-        w.float(id(ch::TYRE_TEMP_SPREAD_FL), edges.inner - edges.outer);
-        w.float(
+        // Inner/outer (the side mapping lives in one function, A-LMU-016), average and spread need all three
+        // surface readings.
+        if let [Some(left), Some(centre), Some(right)] = surface {
+            let surface = [left, centre, right];
+            let edges = lcr_to_edges(wheel, surface);
+            w.float(id(ch::TYRE_TEMP_INNER_FL), edges.inner);
+            w.float(id(ch::TYRE_TEMP_OUTER_FL), edges.outer);
+            w.float(id(ch::TYRE_TEMP_AVG_FL), surface.iter().sum::<f64>() / 3.0);
+            w.float(id(ch::TYRE_TEMP_SPREAD_FL), edges.inner - edges.outer);
+        } else {
+            for base in [
+                ch::TYRE_TEMP_INNER_FL,
+                ch::TYRE_TEMP_OUTER_FL,
+                ch::TYRE_TEMP_AVG_FL,
+                ch::TYRE_TEMP_SPREAD_FL,
+            ] {
+                w.quality(id(base), Quality::Unavailable);
+            }
+        }
+        float_or_unavailable(
+            w,
             id(ch::TYRE_CARCASS_TEMP_FL),
-            convert::kelvin_to_celsius(raw.tire_carcass_temperature),
+            initialised_kelvin(raw.tire_carcass_temperature),
         );
 
         // mOptimalTemp: no header unit, °C CLAIMED; > 200 latches Kelvin (A-LMU-038).
@@ -525,7 +623,6 @@ fn map_tyres(
             i64::from(raw.compound_index),
         );
         w.int(id(ch::TYRE_COMPOUND_TYPE_FL), i64::from(raw.compound_type));
-        w.boolean(id(ch::TYRE_FLAT_FL), raw.flat);
         w.int(id(ch::SURFACE_TYPE_FL), i64::from(raw.surface_type));
         w.text(id(ch::TERRAIN_NAME_FL), raw.terrain_name.as_str());
     }
@@ -557,6 +654,9 @@ fn map_brakes(input: &MapInput<'_>, st: &mut MapState<'_>, w: &mut FrameWriter<'
         in_realtime: input.info.in_realtime,
         ambient_c: finite(input.info.ambient_temp),
     };
+    st.det
+        .brake_unit
+        .set_verified_unit(verified_brake_temp_unit(input.generic.game_version));
     let transition = st.det.brake_unit.observe(&obs);
     let decision = st.det.brake_unit.decision();
     match transition {
@@ -577,8 +677,8 @@ fn map_brakes(input: &MapInput<'_>, st: &mut MapState<'_>, w: &mut FrameWriter<'
                 NoticeCode::BrakeTempUnitConflict,
                 Severity::Warning,
                 Some(ch::BRAKE_TEMP_FL),
-                "conflicting brake temperature unit evidence: brake temperatures withheld (UNAVAILABLE) for \
-                 the session (A-LMU-015)",
+                "conflicting brake temperature unit evidence (or evidence against the unit verified for this \
+                 LMU version): brake temperatures withheld (UNAVAILABLE) for the session (A-LMU-015)",
             )
             .at(et),
         ),

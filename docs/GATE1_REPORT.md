@@ -73,15 +73,18 @@ brakes, laps and a pit stop with refuel and tyres), `gate1-live.jsonl` (207 s, 1
 14. **Pit lane.** `mCurrentSector` sign bit set for 32 frames; scoring `mInPits` true and pit state 5 for
     3 updates.
 
-## 4. New behaviour found (needs code)
+## 4. New behaviour found (handled in lmu-normalizer, 2026-10-05)
 
-- **Damaged car.** After a crash, FR `mDetached` was true for 10,291 frames and FL `mFlat` true for
-  7,993 frames (FL pressure 0 while flat). Channels of a detached wheel must be Unavailable, not 0.
-- **Reset frames.** 32 frames had pressure 0 on all wheels, engine temperatures 0, `mTCMax` 0 and the
-  pit-lane bit set (a garage/reset transition). These must not be published as valid values.
+- **Damaged car.** After a crash, FR `mDetached` was true for 10,291 frames (its pressure and carcass
+  temperature frozen) and FL `mFlat` true for 7,993 frames (FL pressure 0 while flat). → A-LMU-061: a
+  detached wheel's tyre and wheel-motion channels are `UNAVAILABLE`; a flat tyre's 0 kPa is still published.
+- **Reset frames.** 32 frames had 0 K tyre temperatures, 0 kPa on all wheels, engine temperatures 0, `mTCMax`
+  0 and the pit-lane bit set (a garage/reset transition). → A-LMU-062: those readings are `UNAVAILABLE`, not
+  values and not rejections.
 - **Surface type 30** appeared (outside the documented enum); it is kept as `Unknown(30)`.
-- **Brake temperature unit.** Now verified as Kelvin for 14200, so the normalizer can use Kelvin for
-  verified versions instead of withholding until its runtime detector decides.
+- **Brake temperature unit.** Kelvin is applied from the first frame for verified versions
+  (`VERIFIED_BRAKE_TEMP_UNITS`: 14200); any evidence against it withholds the values again (conflict).
+- **Sign notes.** The capability notes of `g_lat`, `g_long`, `g_vert` and `yaw_rate` now say "verified".
 
 ## 5. Still to verify from the capture (tools/lmu-verify) or a later session
 
