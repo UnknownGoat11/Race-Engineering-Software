@@ -18,7 +18,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.90"
+rust-version = "1.94"
 license = "LicenseRef-Proprietary"
 repository = "https://github.com/UnknownGoat11/Race-Engineering-Software"
 authors = ["LMU Race Engineering contributors"]
@@ -58,7 +58,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 rand = "0.9"
 rand_chacha = "0.9"
 argon2 = "0.5"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "uuid", "chrono", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "uuid", "chrono", "macros"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 axum = "0.8"
@@ -77,6 +77,13 @@ crossbeam-channel = "0.5"
 arc-swap = "1"
 proptest = "1"
 criterion = "0.5"
+# relay: Ed25519 access tokens (JWT, EdDSA), SHA-256 token/code hashes, constant-time compares
+ed25519-dalek = "2"
+sha2 = "0.10"
+subtle = "2"
+base64 = "0.22"
+# relay: keyed (HMAC-SHA256) connection-code hashes
+hmac = "0.12"
 
 [profile.release]
 lto = "thin"
