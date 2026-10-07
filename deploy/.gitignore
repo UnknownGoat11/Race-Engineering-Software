@@ -1,0 +1,5 @@
+# Local deployment secrets: never commit.
+relay.env
+.env
+secrets/
+certs/

@@ -1,0 +1,113 @@
+# lmu-relay + PostgreSQL.
+#
+# One-time setup (run in deploy/):
+#   1. cp relay.env.example relay.env          # fill in ADMIN_TOKEN, RELAY_ENV, TLS paths
+#      printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)" > .env
+#   2. docker compose build
+#   3. mkdir -p secrets && docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/secrets:/out" \
+#        lmu-relay:latest gen-jwt-key --out /out/jwt.key
+#      sudo chown 65532:65532 secrets/jwt.key && sudo chmod 0400 secrets/jwt.key
+#   4. TLS certificate (Let's Encrypt with certbot on the host, see "Certificates" below).
+#   5. docker compose up -d
+#   6. Accounts (the password is read from stdin, never from the command line):
+#        printf '%s\n' 'the-password' | docker compose run --rm -T relay \
+#          create-user --username alice --display-name "Alice" --role driver
+#      Roles: driver | engineer | admin. Log a user out everywhere (their open connections are
+#      closed within REVOCATION_CHECK_INTERVAL_S, default 30 s):
+#        docker compose run --rm relay revoke-tokens --username alice
+#
+# Certificates (D-016): the relay re-reads TLS_CERT / TLS_KEY when they change (polled every
+# TLS_RELOAD_INTERVAL_S, default 30 s), so renewals need no restart. Let's Encrypt keeps private
+# keys readable by root only, so a certbot deploy hook copies the pair to a directory the
+# container user (uid/gid 65532) can read:
+#   sudo mkdir -p /etc/lmu-relay/tls
+#   sudo certbot certonly --standalone -d relay.example.com \
+#     --deploy-hook 'install -m 0640 -o root -g 65532 "$RENEWED_LINEAGE/fullchain.pem" /etc/lmu-relay/tls/fullchain.pem && install -m 0640 -o root -g 65532 "$RENEWED_LINEAGE/privkey.pem" /etc/lmu-relay/tls/privkey.pem'
+#   (--standalone needs port 80 free during issuance/renewal; use --webroot behind a web server.)
+#   certbot's systemd timer / cron runs `certbot renew`, which re-runs the deploy hook.
+# Development instead: `lmu-relay dev-cert --out certs --name relay.local` and trust certs/ca.pem
+# in development clients only.
+#
+# Backups: only the `pgdata` volume holds state (accounts, refresh-token digests, session
+# metadata incl. which engineers hold a slot; never telemetry, codes or tickets). Relay restarts
+# need no user action: drivers re-authenticate and resume their session with their resume token,
+# running engineer apps resume with their in-memory ticket (valid ENGINEER_TICKET_TTL_S after the
+# drop; the ticket key is derived from secrets/jwt.key, so keep that file across restarts).
+# Connection codes live in relay memory only: the driver gets a fresh one after the restart.
+# An engineer whose app was closed, who disconnected or who was removed needs a new code (D-022).
+#
+# Client addresses and IPv6 (important): every per-IP protection of the relay (32 connections,
+# 30 AUTH/min, D-022 code redemptions 5/min and 20/h) keys on the source address the relay sees.
+# The `public` network below is IPv4-only. If the host has IPv6 and the relay hostname has an
+# AAAA record, Docker accepts IPv6 clients on [::]:443 through its userland proxy and the relay
+# sees all of them as ONE address (the bridge gateway), so all IPv6 users share one per-IP
+# budget. Therefore choose one:
+#   a) publish only an A record for the relay hostname (no AAAA) - the default assumption here;
+#   b) give the `public` network IPv6 (`enable_ipv6: true`, Docker Engine 27+ or ip6tables
+#      enabled in /etc/docker/daemon.json) and set RELAY_BIND=:: in relay.env;
+#   c) run the relay with `network_mode: host` (drop `ports` and `networks` for it, and
+#      give postgres a host port bound to 127.0.0.1).
+# Smoke test after any change: connect from an IPv4 and (if published) an IPv6 client and check
+# that the relay's "connection opened" log lines show the clients' real addresses (`peer`), not
+# the bridge gateway.
+
+name: lmu-relay
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: relay
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d relay"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [backend]
+
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: lmu-relay:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: relay.env
+    environment:
+      # Use an alphanumeric POSTGRES_PASSWORD (it is embedded in a URL).
+      DATABASE_URL: postgres://relay:${POSTGRES_PASSWORD}@postgres:5432/relay
+      RELAY_PORT: "8443"
+      # Inside the container; published on the host loopback only (see ports).
+      ADMIN_BIND: 0.0.0.0:9090
+      JWT_KEY_FILE: /run/secrets/jwt.key
+    ports:
+      - "443:8443"
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - /etc/lmu-relay/tls:/etc/lmu-relay/tls:ro
+      - ./secrets/jwt.key:/run/secrets/jwt.key:ro
+    healthcheck:
+      # Distroless has no shell or curl: the binary queries its own /health with ADMIN_TOKEN.
+      test: ["CMD", "/usr/local/bin/lmu-relay", "healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    stop_grace_period: 15s
+    networks: [backend, public]
+
+volumes:
+  pgdata:
+
+networks:
+  backend:
+    internal: true
+  public:
