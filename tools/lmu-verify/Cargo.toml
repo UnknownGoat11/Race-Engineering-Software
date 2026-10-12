@@ -1,0 +1,24 @@
+[package]
+name = "lmu-verify"
+description = "Offline Gate-1 evidence tool: replays .lmuraw captures into a verification report; opt-in GET-only REST probe (D-018)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+lmu-reader.workspace = true
+lmu-normalizer.workspace = true
+telemetry-model.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+lmu-reader = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
