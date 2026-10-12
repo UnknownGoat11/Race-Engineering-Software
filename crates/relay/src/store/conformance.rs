@@ -155,6 +155,111 @@ async fn refresh_tokens(store: &Store, suffix: &str) {
         assert_eq!(rec.revoked_at, None);
     }
 
+    // Rotating a live token supersedes every other live token of the family exactly like a use
+    // (one live refresh token per login); used and revoked tokens keep their state.
+    let state = |rec: Option<super::RefreshTokenRecord>| {
+        rec.map(|r| (r.rotated_at, r.revoked_at))
+            .expect("token found")
+    };
+    let successor = token(family, bob.id, "successor", 15);
+    assert_eq!(
+        store
+            .rotate_refresh_token(a.id, &successor, t(15))
+            .await
+            .expect("rotate"),
+        RotateOutcome::Rotated
+    );
+    for old in [&a, &b] {
+        let rec = store
+            .refresh_token_by_hash(&old.token_hash)
+            .await
+            .expect("q");
+        assert_eq!(state(rec), (Some(t(15)), None), "rotated / superseded");
+    }
+    let rec = store
+        .refresh_token_by_hash(&first.token_hash)
+        .await
+        .expect("q");
+    assert_eq!(
+        state(rec),
+        (Some(t(5)), None),
+        "a used token keeps its use time"
+    );
+    let rec = store
+        .refresh_token_by_hash(&second.token_hash)
+        .await
+        .expect("q");
+    assert!(state(rec).1.is_some(), "a revoked token stays revoked");
+    let rec = store
+        .refresh_token_by_hash(&successor.token_hash)
+        .await
+        .expect("q");
+    assert_eq!(state(rec), (None, None), "the successor is the live token");
+    // A superseded token cannot be rotated (it is used); nothing changes.
+    let late = token(family, bob.id, "late", 16);
+    assert_eq!(
+        store
+            .rotate_refresh_token(b.id, &late, t(16))
+            .await
+            .expect("rotate"),
+        RotateOutcome::Lost
+    );
+    // A tolerated use (insert without superseding) leaves the live token live.
+    let tolerated = token(family, bob.id, "tolerated", 17);
+    store
+        .insert_refresh_token(&tolerated, 4)
+        .await
+        .expect("insert");
+    for live in [&successor, &tolerated] {
+        let rec = store
+            .refresh_token_by_hash(&live.token_hash)
+            .await
+            .expect("q");
+        assert_eq!(state(rec), (None, None), "both live");
+    }
+    // A failed rotation (duplicate digest) changes nothing.
+    let mut duplicate = token(family, bob.id, "duplicate", 18);
+    duplicate.token_hash = tolerated.token_hash;
+    assert!(
+        store
+            .rotate_refresh_token(successor.id, &duplicate, t(18))
+            .await
+            .is_err()
+    );
+    for live in [&successor, &tolerated] {
+        let rec = store
+            .refresh_token_by_hash(&live.token_hash)
+            .await
+            .expect("q");
+        assert_eq!(
+            state(rec),
+            (None, None),
+            "unchanged after a failed rotation"
+        );
+    }
+
+    // Concurrent writers of one family (a rotation and a tolerated insert) neither fail nor
+    // deadlock (review relay2 F4; PostgreSQL: both lock the family row before any token row).
+    // At most three tokens are live at any point, below the cap of 4, so none is revoked.
+    const RACES: u32 = 8;
+    let mut live = successor.clone();
+    for i in 0..RACES {
+        let next = token(family, bob.id, &format!("race-rotate-{i}"), 19);
+        let extra = token(family, bob.id, &format!("race-insert-{i}"), 19);
+        let (rotated, inserted) = tokio::join!(
+            store.rotate_refresh_token(live.id, &next, t(19)),
+            store.insert_refresh_token(&extra, 4),
+        );
+        assert_eq!(rotated.expect("rotate"), RotateOutcome::Rotated);
+        inserted.expect("insert");
+        live = next;
+    }
+    let rec = store
+        .refresh_token_by_hash(&live.token_hash)
+        .await
+        .expect("q");
+    assert_eq!(state(rec), (None, None), "the last successor is live");
+
     // Family revocation revokes every token and marks the family.
     store.revoke_family(family, t(20)).await.expect("revoke");
     assert_eq!(store.family_revoked(family).await.expect("q"), Some(true));

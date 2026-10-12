@@ -8,11 +8,24 @@
 //! before the tombstone lock, and outbox locks are leaves. The hot path
 //! ([`Registry::forward_driver_frame`]) only locks the one session it serves.
 //!
-//! Secrets: connection codes are known only by keyed digest ([`CodeHasher`]); resume tokens and
-//! tickets only by SHA-256 digest. A message that has to show a code or carry a ticket therefore
-//! carries a freshly issued one (the previous one is invalidated at the same time): every
-//! CONNECT_CODE that shows a code shows a new code, and every SESSION_INFO to an engineer
-//! carries a new ticket. All comparisons are constant-time.
+//! Secrets: connection codes are matched only by keyed digest ([`CodeHasher`]); resume tokens and
+//! tickets are known only by SHA-256 digest. The one exception is the plaintext of a session's
+//! single unused code ([`CodePlaintext`], memory only, redacted, wiped on redemption, rotation,
+//! expiry, session end and shutdown): a resuming driver is shown that same code with its original
+//! expiry; the same holds when an engineer leaves or its ticket expires (the driver may have
+//! shared the code already). A redemption and a kick (the code may have leaked) show a freshly
+//! issued code (the unused one is invalidated at the same time), as does every CONNECT_CODE
+//! request, and every SESSION_INFO to an engineer carries a new ticket. All comparisons are
+//! constant-time.
+//!
+//! Engineer tickets (D-022, PROTOCOL.md §6): a slot knows its newest ticket and up to two
+//! (`MAX_PREVIOUS_TICKETS`) earlier ones the engineer may still hold (the SESSION_INFO with a newer
+//! one may have been lost in a second blip). Each earlier ticket is accepted
+//! `previous_ticket_grace` after the ticket that replaced it was issued. A resume with any accepted
+//! ticket leaves the presented one as the only earlier ticket of the fresh one, so once the newest
+//! ticket is used the older ones are dead; a driver-restart notice adds the current ticket and
+//! keeps the earlier ones still inside their grace. Kick, DISCONNECT, takeover, ticket expiry and
+//! session end remove the slot and all of its tickets.
 //!
 //! Relay restarts (D-020, D-022): engineer slot changes are queued per session as [`SlotWrite`]s
 //! in registry order and persisted by the caller (`SessionCell::take_slot_writes`). After a
@@ -36,7 +49,7 @@ use telemetry_model::enums::SessionType;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::codes::{CodeHasher, generate_connect_code};
+use crate::codes::{CodeHasher, CodePlaintext, generate_connect_code};
 use crate::config::RelayConfig;
 use crate::metrics::{Metrics, RegistryGauges};
 use crate::outbox::{ConnHandle, Forwarded, OutboxStats, Outgoing, PushError};
@@ -66,6 +79,8 @@ pub struct RegistryConfig {
     pub max_engineers: u16,
     pub connect_code_ttl: Duration,
     pub engineer_ticket_ttl: Duration,
+    /// How long a slot's previous ticket is still accepted after a newer one was issued.
+    pub previous_ticket_grace: Duration,
     pub driver_grace: Duration,
     pub join_cache_max_age: Duration,
     pub snapshot_request_min_interval: Duration,
@@ -82,6 +97,7 @@ impl RegistryConfig {
             max_engineers: config.limits.max_engineers_per_session,
             connect_code_ttl: config.timeouts.connect_code_ttl,
             engineer_ticket_ttl: config.timeouts.engineer_ticket_ttl,
+            previous_ticket_grace: config.timeouts.previous_ticket_grace,
             driver_grace: config.timeouts.driver_grace,
             join_cache_max_age: config.timeouts.join_cache_max_age,
             snapshot_request_min_interval: Duration::from_millis(
@@ -395,6 +411,11 @@ struct EngineerSlot {
     /// Digest of the newest ticket this process issued for the slot. `None` for a slot restored
     /// from the store after a relay restart: its ticket is checked by tag ([`TicketSealer`]).
     ticket: Option<TokenHash>,
+    /// Earlier tickets the engineer may still hold, oldest first, each accepted within
+    /// `previous_ticket_grace` after the ticket that replaced it was issued (the SESSION_INFO
+    /// carrying the newer one may have been lost). See [`EngineerSlot::install_ticket`]. Always
+    /// empty while `ticket` is `None`.
+    previous: [Option<PreviousTicket>; MAX_PREVIOUS_TICKETS],
     link: SlotLink,
     announced: EngineerLink,
     last_seq: u64,
@@ -428,25 +449,115 @@ impl EngineerSlot {
         }
     }
 
-    /// Whether `ticket` (with digest `digest`) is the slot's current ticket.
+    /// Whether `ticket` (with digest `digest`) is the slot's current ticket (checked by tag for a
+    /// slot restored after a relay restart), or one of its earlier ones less than `grace` after
+    /// the ticket that replaced it was issued.
     fn ticket_matches(
         &self,
         session_id: u64,
         ticket: &Secret,
         digest: &TokenHash,
         sealer: &TicketSealer,
+        grace: Duration,
+        now: Instant,
     ) -> bool {
-        match &self.ticket {
+        let current = match &self.ticket {
             Some(current) => current.ct_eq(digest),
             None => sealer.verify(ticket, self.slot_ref(session_id)),
-        }
+        };
+        // Every comparison always runs (no early exit revealing which ticket matched).
+        let previous = self.previous.iter().flatten().fold(false, |matched, p| {
+            matched
+                | (p.digest.ct_eq(digest)
+                    & (now.saturating_duration_since(p.newer_issued_at) < grace))
+        });
+        current | previous
     }
+
+    /// Makes `digest` (issued at `now`) the slot's newest ticket. `handover` says which earlier
+    /// tickets the engineer may still hold: none after a join; after a resume only the presented
+    /// one (so using the newest ticket kills every older one); after a driver-restart notice the
+    /// current ticket plus the earlier ones still inside `grace` (the notice and an earlier
+    /// SESSION_INFO may both have been lost), at most [`MAX_PREVIOUS_TICKETS`], the oldest dropped.
+    fn install_ticket(
+        &mut self,
+        digest: TokenHash,
+        handover: TicketHandover,
+        grace: Duration,
+        now: Instant,
+    ) {
+        let replaced = |digest| PreviousTicket {
+            digest,
+            newer_issued_at: now,
+        };
+        let candidates: Vec<PreviousTicket> = match handover {
+            TicketHandover::Join => Vec::new(),
+            TicketHandover::Resume(presented) => vec![replaced(presented)],
+            TicketHandover::Reissue => self
+                .previous
+                .iter()
+                .flatten()
+                .copied()
+                .filter(|p| now.saturating_duration_since(p.newer_issued_at) < grace)
+                .chain(self.ticket.map(replaced))
+                .collect(),
+        };
+        let mut previous = [None; MAX_PREVIOUS_TICKETS];
+        // Newest last: fill from the end, so the oldest candidates fall off beyond the bound.
+        for (entry, p) in previous.iter_mut().rev().zip(candidates.into_iter().rev()) {
+            *entry = Some(p);
+        }
+        self.ticket = Some(digest);
+        self.previous = previous;
+    }
+}
+
+/// Most earlier tickets an engineer slot keeps besides its newest one (bounded memory): the one
+/// presented in the last resume, plus one more when a driver-restart notice follows a resume whose
+/// SESSION_INFO may have been lost.
+const MAX_PREVIOUS_TICKETS: usize = 2;
+
+/// An earlier resume ticket of an engineer slot (see [`EngineerSlot::previous`]).
+#[derive(Debug, Clone, Copy)]
+struct PreviousTicket {
+    digest: TokenHash,
+    /// When the ticket that replaced it was issued: the grace runs from here.
+    newer_issued_at: Instant,
+}
+
+/// What a change of the engineer slots means for the session's unused connection code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CodeAfterSlotChange {
+    /// The code was redeemed, or the driver kicked an engineer (the code may have leaked): a
+    /// fresh code.
+    Fresh,
+    /// A slot was released (DISCONNECT, ticket expiry): the unused, unexpired code stays valid,
+    /// since the driver may have shared it already (else a fresh code, as for `Fresh`).
+    Keep,
+}
+
+/// Which earlier tickets an engineer may hold when its slot gets a fresh ticket
+/// ([`EngineerSlot::install_ticket`]).
+#[derive(Debug, Clone, Copy)]
+enum TicketHandover {
+    /// A new slot (join or takeover): no earlier ticket.
+    Join,
+    /// A resume presented the ticket with this digest: the only earlier one it can still hold.
+    Resume(TokenHash),
+    /// A driver-restart notice on the engineer's open connection: it holds the current ticket, or
+    /// an earlier one whose newer SESSION_INFO was lost.
+    Reissue,
 }
 
 #[derive(Debug)]
 struct ActiveCode {
     digest: TokenHash,
     issued_at: Instant,
+    /// The expiry announced with the code (wall clock ns), re-sent unchanged with the same code.
+    expires_at_ns: u64,
+    /// The code itself while it is unused and unexpired (relay memory only, wiped on drop), so a
+    /// resuming driver is shown the same code. `None` once expired; never set after a restart.
+    plaintext: Option<CodePlaintext>,
     expiry_announced: bool,
 }
 
@@ -604,16 +715,36 @@ impl Session {
     fn issue_code(&mut self, ctx: &Ctx<'_>, now: Instant) -> Result<IssuedCode, RandomError> {
         let code = generate_connect_code()?;
         let digest = ctx.hasher.digest(&code);
+        let expires_at_ns = unix_now_ns().saturating_add(duration_ns(ctx.cfg.connect_code_ttl));
         self.retire_code();
         self.code = Some(ActiveCode {
             digest,
             issued_at: now,
+            expires_at_ns,
+            plaintext: Some(CodePlaintext::new(&code)),
             expiry_announced: false,
         });
         Ok(IssuedCode {
             code,
-            expires_at_ns: unix_now_ns().saturating_add(duration_ns(ctx.cfg.connect_code_ttl)),
+            expires_at_ns,
         })
+    }
+
+    /// The code to show a resuming driver: the unused code again, with its original expiry, while
+    /// it is unexpired and its plaintext is in memory; otherwise as [`Session::fresh_code_or_none`]
+    /// (a fresh code, none while every slot is taken).
+    fn current_code_or_fresh(&mut self, ctx: &Ctx<'_>, now: Instant) -> Option<IssuedCode> {
+        if !self.is_full(ctx.cfg)
+            && let Some(code) = &self.code
+            && now.saturating_duration_since(code.issued_at) < ctx.cfg.connect_code_ttl
+            && let Some(plaintext) = &code.plaintext
+        {
+            return Some(IssuedCode {
+                code: plaintext.to_secret(),
+                expires_at_ns: code.expires_at_ns,
+            });
+        }
+        self.fresh_code_or_none(ctx, now)
     }
 
     /// The code to announce now: none while every slot is taken, otherwise a fresh one.
@@ -681,16 +812,20 @@ impl Session {
         self.send_driver(&Message::EngineerList(list));
     }
 
-    /// After the slot usage changed: tell the driver (fresh code if a slot is free) and update the
-    /// list. While the driver is away nothing is sent; its resume sends the current state.
-    fn on_slots_changed(&mut self, ctx: &Ctx<'_>, now: Instant) {
+    /// After the slot usage changed: tell the driver (the code per `code`, none while every slot
+    /// is taken) and update the list. While the driver is away nothing is sent; its resume sends
+    /// the current state.
+    fn on_slots_changed(&mut self, code: CodeAfterSlotChange, ctx: &Ctx<'_>, now: Instant) {
         if self.driver_conn().is_none() {
             if self.is_full(ctx.cfg) {
                 self.retire_code();
             }
             return;
         }
-        let code = self.fresh_code_or_none(ctx, now);
+        let code = match code {
+            CodeAfterSlotChange::Fresh => self.fresh_code_or_none(ctx, now),
+            CodeAfterSlotChange::Keep => self.current_code_or_fresh(ctx, now),
+        };
         self.send_connect_code(code, ctx);
         self.send_engineer_list(ctx, now);
     }
@@ -753,8 +888,17 @@ impl Session {
     }
 
     /// SESSION_INFO with a fresh ticket, then the join cache (REPLAYED), to a connected engineer
-    /// slot. A dropped slot keeps its ticket (its engineer still holds it).
-    fn welcome_engineer(&mut self, index: usize, ctx: &Ctx<'_>) -> Result<(), RandomError> {
+    /// slot. A dropped slot keeps its tickets (its engineer still holds one). `handover` says
+    /// which earlier tickets the engineer may hold; they stay accepted within
+    /// `previous_ticket_grace` in case this SESSION_INFO is lost
+    /// ([`EngineerSlot::install_ticket`]).
+    fn welcome_engineer(
+        &mut self,
+        index: usize,
+        handover: TicketHandover,
+        ctx: &Ctx<'_>,
+        now: Instant,
+    ) -> Result<(), RandomError> {
         let Some((conn, slot_ref)) = self.engineers.get(index).and_then(|slot| {
             slot.conn()
                 .map(|conn| (Arc::clone(conn), slot.slot_ref(self.id)))
@@ -765,7 +909,7 @@ impl Session {
         let info = self.info(ResumeCredential::EngineerTicket(ticket));
         let replay = self.cache.replay();
         if let Some(slot) = self.engineers.get_mut(index) {
-            slot.ticket = Some(digest);
+            slot.install_ticket(digest, handover, ctx.cfg.previous_ticket_grace, now);
         }
         conn.send(&Message::SessionInfo(info), self.id);
         for frame in replay {
@@ -1042,7 +1186,8 @@ impl Registry {
     }
 
     /// SESSION_RESUME::Driver for a session in relay memory. The resume token is echoed back in
-    /// SESSION_INFO (it is not rotated: a driver that misses this reply can still resume). With
+    /// SESSION_INFO (it is not rotated: a driver that misses this reply can still resume), and an
+    /// unused, unexpired connection code is re-sent unchanged (same code, same expiry). With
     /// `new_sequence_space` the per-driver sequence state, the join cache and every pending live
     /// frame are dropped and each connected engineer gets SESSION_INFO before any frame of the new
     /// space (§6).
@@ -1115,6 +1260,7 @@ impl Registry {
                     engineer: slot.engineer.clone(),
                     connected_since_ns: datetime_to_ns(slot.record.connected_since),
                     ticket: None,
+                    previous: [None; MAX_PREVIOUS_TICKETS],
                     link: SlotLink::Dropped {
                         since: now,
                         carried: dropped_for,
@@ -1290,7 +1436,10 @@ impl Registry {
                     let dropped = conn.outbox.clear_live(now);
                     ctx.metrics.live_frames_dropped.add(u64::from(dropped));
                 }
-                if let Err(e) = s.welcome_engineer(index, ctx) {
+                // The engineer holds the slot's current ticket (its SESSION_INFO went out on this
+                // connection earlier), or an earlier one if that SESSION_INFO was lost: all of
+                // them stay valid within their grace.
+                if let Err(e) = s.welcome_engineer(index, TicketHandover::Reissue, ctx, now) {
                     tracing::error!(component = COMPONENT, session_id = s.id, error = %e, "engineer ticket not issued");
                 }
             }
@@ -1299,7 +1448,9 @@ impl Registry {
             &Message::SessionInfo(s.info(ResumeCredential::DriverToken(token.clone()))),
             s.id,
         );
-        let code = s.fresh_code_or_none(ctx, now);
+        // The unused code stays valid across a driver resume: the driver may already have sent it
+        // to an engineer. After a relay restart its plaintext is gone and a fresh code is issued.
+        let code = s.current_code_or_fresh(ctx, now);
         s.send_connect_code(code, ctx);
         s.send_engineer_list(ctx, now);
         if s.engineers.iter().any(|e| e.conn().is_some()) {
@@ -1393,7 +1544,7 @@ impl Registry {
             connection_id,
             "engineer removed by the driver"
         );
-        s.on_slots_changed(&ctx, now);
+        s.on_slots_changed(CodeAfterSlotChange::Fresh, &ctx, now);
         true
     }
 
@@ -1492,6 +1643,7 @@ impl Registry {
             connected_since_ns: unix_now_ns(),
             // Set by welcome_engineer before anything is sent.
             ticket: None,
+            previous: [None; MAX_PREVIOUS_TICKETS],
             link: SlotLink::Connected(Arc::clone(conn)),
             announced: EngineerLink::Healthy,
             last_seq: 0,
@@ -1500,14 +1652,14 @@ impl Registry {
             )),
         });
         let index = s.engineers.len() - 1;
-        if let Err(e) = s.welcome_engineer(index, &ctx) {
+        if let Err(e) = s.welcome_engineer(index, TicketHandover::Join, &ctx, now) {
             s.engineers.pop();
             return Err(JoinError::Random(e));
         }
         // A takeover replaces the account's stored slot (same key).
         s.queue_put(index, None);
         s.request_snapshot(SnapshotReason::EngineerJoined, &ctx);
-        s.on_slots_changed(&ctx, now);
+        s.on_slots_changed(CodeAfterSlotChange::Fresh, &ctx, now);
         let session_id = s.id;
         drop(s);
         tracing::info!(
@@ -1557,7 +1709,14 @@ impl Registry {
         else {
             return Err(ResumeError::NotAuthorized);
         };
-        if !s.engineers[index].ticket_matches(session_id, ticket, &digest, &self.sealer) {
+        if !s.engineers[index].ticket_matches(
+            session_id,
+            ticket,
+            &digest,
+            &self.sealer,
+            self.cfg.previous_ticket_grace,
+            now,
+        ) {
             return Err(ResumeError::NotAuthorized);
         }
         // Past the window the ticket is dead; housekeeping frees the slot (and its store row).
@@ -1584,7 +1743,9 @@ impl Registry {
             slot.link = SlotLink::Connected(Arc::clone(conn));
             slot.last_seq = 0;
         }
-        s.welcome_engineer(index, &ctx)
+        // The presented ticket (current or previous) becomes the previous one of the fresh ticket:
+        // if this SESSION_INFO is lost too, the engineer can present it again within the grace.
+        s.welcome_engineer(index, TicketHandover::Resume(digest), &ctx, now)
             .map_err(|e| ResumeError::Registry(RegistryError::Random(e)))?;
         if !was_connected {
             s.queue_put(index, None);
@@ -1657,7 +1818,7 @@ impl Registry {
             connection_id = slot.connection_id,
             "engineer disconnected"
         );
-        s.on_slots_changed(&ctx, now);
+        s.on_slots_changed(CodeAfterSlotChange::Keep, &ctx, now);
     }
 
     /// Whether `conn_id` is a connected engineer of the session.
@@ -1858,8 +2019,13 @@ impl Registry {
                 );
             }
             let code_expired = s.code.as_mut().is_some_and(|c| {
-                let due = !c.expiry_announced
-                    && now.saturating_duration_since(c.issued_at) >= self.cfg.connect_code_ttl;
+                let expired =
+                    now.saturating_duration_since(c.issued_at) >= self.cfg.connect_code_ttl;
+                if expired {
+                    // The digest stays (CodeExpired answers); the plaintext is wiped.
+                    c.plaintext = None;
+                }
+                let due = expired && !c.expiry_announced;
                 if due {
                     c.expiry_announced = true;
                 }
@@ -1867,7 +2033,7 @@ impl Registry {
             });
             s.cache.expire(now, self.cfg.join_cache_max_age);
             if slots_changed {
-                s.on_slots_changed(&ctx, now);
+                s.on_slots_changed(CodeAfterSlotChange::Keep, &ctx, now);
             } else {
                 if code_expired {
                     s.send_connect_code(None, &ctx);
@@ -1897,10 +2063,13 @@ impl Registry {
 
     /// Relay shutdown: engineers get SESSION_CLOSE{RelayShutdown} (they may try to resume),
     /// drivers DISCONNECT{ServerShutdown}; every connection flushes and closes. Sessions stay
-    /// open in the store so drivers resume after the restart.
+    /// open in the store so drivers resume after the restart. Code plaintexts are wiped.
     pub fn shutdown(&self) {
         for cell in self.cells() {
-            let s = cell.inner.lock();
+            let mut s = cell.inner.lock();
+            if let Some(code) = s.code.as_mut() {
+                code.plaintext = None;
+            }
             let close = Message::SessionClose(SessionClose {
                 session_id: s.id,
                 reason: SessionCloseReason::RelayShutdown,
@@ -2225,6 +2394,137 @@ mod tests {
             .expect("valid until the TTL");
     }
 
+    /// Plaintext of the session's unused code still held in relay memory.
+    fn held_code(cell: &SessionCell) -> Option<Secret> {
+        cell.inner
+            .lock()
+            .code
+            .as_ref()
+            .and_then(|c| c.plaintext.as_ref().map(CodePlaintext::to_secret))
+    }
+
+    /// Driver connection drops and resumes on a new connection; returns its messages.
+    fn driver_blip(
+        w: &mut World,
+        cell: &SessionCell,
+        driver: &mut Arc<ConnHandle>,
+        token: &Secret,
+        now: Instant,
+    ) -> Vec<Message> {
+        let account = cell.inner.lock().driver.account;
+        assert!(w.registry.driver_detached(cell, driver.id, now));
+        *driver = w.conn();
+        w.registry
+            .resume_driver(7, account, token, false, driver, now)
+            .expect("driver resumed");
+        drain(driver)
+    }
+
+    #[test]
+    fn a_resuming_driver_is_shown_the_same_unused_code() {
+        let mut w = World::new();
+        let t0 = w.epoch;
+        let ttl = w.registry.config().connect_code_ttl;
+        let (cell, mut driver, token, _) = w.session(t0);
+        // The first CONNECT_CODE is gone with `session()`: rotate once to see the expiry too.
+        assert!(w.registry.request_code(&cell, driver.id, t0));
+        let issued = last_connect_code(&drain(&driver))
+            .and_then(|c| c.code)
+            .expect("code");
+        assert_eq!(held_code(&cell).as_ref(), Some(&issued.code));
+        assert!(
+            !format!("{cell:?}").contains(issued.code.expose()),
+            "the held plaintext never reaches a log"
+        );
+        // A driver blip: the same code with its original expiry, still single use.
+        let t1 = t0 + Duration::from_secs(30);
+        let again = last_connect_code(&driver_blip(&mut w, &cell, &mut driver, &token, t1))
+            .and_then(|c| c.code)
+            .expect("code re-sent");
+        assert_eq!(again, issued);
+        let erin = w.conn();
+        w.registry
+            .join(&issued.code, World::identity("erin"), &erin, t1)
+            .expect("the code the driver already shared still works");
+        let eddie = w.conn();
+        assert!(matches!(
+            w.registry
+                .join(&issued.code, World::identity("eddie"), &eddie, t1),
+            Err(JoinError::CodeInvalid)
+        ));
+        // Redeemed: its plaintext is gone, the driver holds the fresh code issued after the join.
+        let fresh = last_code(&drain(&driver)).expect("fresh code after the join");
+        assert_ne!(fresh, issued.code);
+        assert_eq!(held_code(&cell).as_ref(), Some(&fresh));
+        // Rotation: a resume shows the rotated code, not an older one.
+        assert!(w.registry.request_code(&cell, driver.id, t1));
+        let rotated = last_code(&drain(&driver)).expect("rotated");
+        let shown = last_code(&driver_blip(&mut w, &cell, &mut driver, &token, t1)).expect("code");
+        assert_eq!(shown, rotated);
+        // Expiry: the plaintext is wiped and a resume gets a fresh code with a new expiry.
+        let expired_at = t1 + ttl;
+        w.registry.housekeeping(expired_at);
+        assert!(held_code(&cell).is_none());
+        let after = last_connect_code(&driver_blip(&mut w, &cell, &mut driver, &token, expired_at))
+            .and_then(|c| c.code)
+            .expect("fresh code");
+        assert_ne!(after.code, rotated);
+        // An expired code that housekeeping has not seen yet is not re-sent either.
+        let late = expired_at + ttl;
+        let renewed =
+            last_code(&driver_blip(&mut w, &cell, &mut driver, &token, late)).expect("code");
+        assert_ne!(renewed, after.code);
+        // Every slot taken: no code is held or shown.
+        let eddie = w.conn();
+        w.registry
+            .join(&renewed, World::identity("eddie"), &eddie, late)
+            .expect("second engineer");
+        assert!(held_code(&cell).is_none());
+        let full = last_connect_code(&driver_blip(&mut w, &cell, &mut driver, &token, late))
+            .expect("CONNECT_CODE");
+        assert!(full.code.is_none());
+    }
+
+    #[test]
+    fn shutdown_and_session_end_drop_the_held_code() {
+        let mut w = World::new();
+        let t0 = w.epoch;
+        let (cell, mut driver, token, code) = w.session(t0);
+        assert_eq!(held_code(&cell), Some(code.clone()));
+        w.registry.shutdown();
+        assert!(held_code(&cell).is_none(), "wiped on shutdown");
+        // Without the plaintext a resume issues a fresh code (as after a restart).
+        let shown = last_code(&driver_blip(&mut w, &cell, &mut driver, &token, t0)).expect("code");
+        assert_ne!(shown, code);
+        assert_eq!(held_code(&cell), Some(shown));
+        assert!(w.registry.close_by_driver(&cell, driver.id, t0));
+        assert!(cell.inner.lock().code.is_none(), "dropped at session end");
+    }
+
+    #[test]
+    fn after_a_relay_restart_the_resuming_driver_gets_a_fresh_code() {
+        let mut old = World::new();
+        let t0 = old.epoch;
+        let (cell, _driver, token, code) = old.session(t0);
+        let stored = stored_session(&cell, wall_now());
+        let mut new = World::new();
+        let now = new.epoch;
+        let driver2 = new.conn();
+        let cell2 = new
+            .registry
+            .restore_session(&stored, &token, false, &driver2, now)
+            .expect("restored");
+        let fresh = last_code(&drain(&driver2)).expect("a code");
+        assert_ne!(fresh, code, "the old plaintext did not survive the restart");
+        assert_eq!(held_code(&cell2), Some(fresh));
+        let erin = new.conn();
+        assert!(matches!(
+            new.registry
+                .join(&code, World::identity("erin"), &erin, now),
+            Err(JoinError::CodeInvalid)
+        ));
+    }
+
     #[test]
     fn kick_frees_the_slot_and_kills_the_ticket() {
         let mut w = World::new();
@@ -2300,13 +2600,14 @@ mod tests {
             .expect("resumed");
         let new_ticket = ticket_of(&drain(&back));
         assert_ne!(new_ticket, ticket);
+        let after_grace = t1 + w.registry.config().previous_ticket_grace;
         assert!(
             matches!(
                 w.registry
-                    .resume_engineer(7, &ticket, erin_identity.account, &back, t1),
+                    .resume_engineer(7, &ticket, erin_identity.account, &back, after_grace),
                 Err(ResumeError::NotAuthorized)
             ),
-            "the old ticket died with the rotation"
+            "the old ticket dies once the previous-ticket grace is over"
         );
         // Dropped again, then the window passes: the slot is freed by housekeeping.
         w.registry.engineer_detached(&cell, back.id, t1);
@@ -2346,6 +2647,401 @@ mod tests {
                 .resume_engineer(7, &ticket, erin_identity.account, &again, now),
             Err(ResumeError::NotAuthorized)
         ));
+    }
+
+    /// An engineer of session 7 holding two live tickets: joined with `code`, dropped and resumed
+    /// (the resume's SESSION_INFO arrived). Returns (account, connection, joined ticket = the
+    /// previous one, current ticket).
+    fn engineer_with_two_tickets(
+        w: &mut World,
+        cell: &SessionCell,
+        code: &Secret,
+        name: &str,
+        now: Instant,
+    ) -> (Uuid, Arc<ConnHandle>, Secret, Secret) {
+        let identity = World::identity(name);
+        let account = identity.account;
+        let first = w.conn();
+        w.registry
+            .join(code, identity, &first, now)
+            .expect("joined");
+        let joined = ticket_of(&drain(&first));
+        w.registry.engineer_detached(cell, first.id, now);
+        let conn = w.conn();
+        w.registry
+            .resume_engineer(7, &joined, account, &conn, now)
+            .expect("resumed");
+        let current = ticket_of(&drain(&conn));
+        (account, conn, joined, current)
+    }
+
+    fn refused(w: &mut World, ticket: &Secret, account: Uuid, now: Instant) -> bool {
+        let probe = w.conn();
+        w.registry
+            .resume_engineer(7, ticket, account, &probe, now)
+            .is_err()
+    }
+
+    #[test]
+    fn a_resume_reply_lost_in_a_second_blip_is_retried_with_the_previous_ticket() {
+        let mut w = World::new();
+        let t0 = w.epoch;
+        let grace = w.registry.config().previous_ticket_grace;
+        let just_inside = grace - Duration::from_millis(1);
+        let (cell, _driver, _, code) = w.session(t0);
+        let erin_identity = World::identity("erin");
+        let account = erin_identity.account;
+        let erin = w.conn();
+        w.registry
+            .join(&code, erin_identity, &erin, t0)
+            .expect("joined");
+        let joined = ticket_of(&drain(&erin));
+        // Blip 1: the resume is accepted, but its SESSION_INFO is lost in blip 2.
+        w.registry.engineer_detached(&cell, erin.id, t0);
+        let lost_link = w.conn();
+        w.registry
+            .resume_engineer(7, &joined, account, &lost_link, t0)
+            .expect("resumed");
+        let lost = ticket_of(&drain(&lost_link));
+        w.registry.engineer_detached(&cell, lost_link.id, t0);
+        // The engineer still holds the joined ticket: honoured within the grace, with a fresh one.
+        let t1 = t0 + just_inside;
+        let back = w.conn();
+        w.registry
+            .resume_engineer(7, &joined, account, &back, t1)
+            .expect("the previous ticket works within the grace");
+        let fresh = ticket_of(&drain(&back));
+        assert!(fresh != joined && fresh != lost);
+        assert!(!back.outbox.is_closing());
+        // The never-delivered ticket is dead: the engineer showed it holds the older one.
+        w.registry.engineer_detached(&cell, back.id, t1);
+        assert!(refused(&mut w, &lost, account, t1));
+        // Further lost replies keep working: the presented ticket is the previous one of each
+        // fresh ticket.
+        let t2 = t1 + just_inside;
+        let again = w.conn();
+        w.registry
+            .resume_engineer(7, &joined, account, &again, t2)
+            .expect("a third blip with the same ticket");
+        let newest = ticket_of(&drain(&again));
+        assert!(refused(&mut w, &fresh, account, t2));
+        // Once the newest ticket is used, the joined one is dead even inside the grace.
+        w.registry.engineer_detached(&cell, again.id, t2);
+        let used = w.conn();
+        w.registry
+            .resume_engineer(7, &newest, account, &used, t2)
+            .expect("newest ticket");
+        drain(&used);
+        assert!(refused(&mut w, &joined, account, t2));
+        // Every accepted resume kept the slot (no second slot, no new connection id).
+        assert_eq!(
+            w.registry
+                .session_debug(7, t2)
+                .expect("session")
+                .engineers
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_previous_ticket_dies_after_the_grace_or_once_the_newer_one_is_used() {
+        let mut w = World::new();
+        let t0 = w.epoch;
+        let grace = w.registry.config().previous_ticket_grace;
+        let (cell, driver, _, code) = w.session(t0);
+        // After the grace: the previous ticket is refused, the current one still works.
+        let (erin, conn, joined, current) =
+            engineer_with_two_tickets(&mut w, &cell, &code, "erin", t0);
+        w.registry.engineer_detached(&cell, conn.id, t0);
+        let after_grace = t0 + grace;
+        assert!(refused(&mut w, &joined, erin, after_grace));
+        let back = w.conn();
+        w.registry
+            .resume_engineer(7, &current, erin, &back, after_grace)
+            .expect("the current ticket lives for the whole ticket window");
+        drain(&back);
+        // Newer used: a second engineer resumes with its current ticket inside the grace; its
+        // previous ticket is dead at once.
+        let second = last_code(&drain(&driver)).expect("second code");
+        let (eddie, conn, joined, current) =
+            engineer_with_two_tickets(&mut w, &cell, &second, "eddie", t0);
+        w.registry.engineer_detached(&cell, conn.id, t0);
+        let soon = t0 + Duration::from_secs(1);
+        let back = w.conn();
+        w.registry
+            .resume_engineer(7, &current, eddie, &back, soon)
+            .expect("current ticket");
+        drain(&back);
+        assert!(refused(&mut w, &joined, eddie, soon));
+    }
+
+    #[test]
+    fn kick_disconnect_expiry_and_session_end_kill_both_tickets() {
+        const TTL: Duration = Duration::from_secs(5);
+        let mut w = World::with(|c| c.engineer_ticket_ttl = TTL);
+        let t0 = w.epoch;
+        assert!(TTL < w.registry.config().previous_ticket_grace);
+        let (cell, driver, _, code) = w.session(t0);
+        let ids = |w: &World| -> Vec<u64> {
+            w.registry
+                .session_debug(7, t0)
+                .map(|d| d.engineers.iter().map(|e| e.connection_id).collect())
+                .unwrap_or_default()
+        };
+        // Kick.
+        let (erin, _conn, previous, current) =
+            engineer_with_two_tickets(&mut w, &cell, &code, "erin", t0);
+        let kicked = ids(&w)[0];
+        assert!(w.registry.kick(&cell, driver.id, kicked, t0));
+        assert!(refused(&mut w, &previous, erin, t0));
+        assert!(refused(&mut w, &current, erin, t0));
+        // DISCONNECT.
+        let code = last_code(&drain(&driver)).expect("code after the kick");
+        let (eddie, conn, previous, current) =
+            engineer_with_two_tickets(&mut w, &cell, &code, "eddie", t0);
+        w.registry.engineer_left(&cell, conn.id, t0);
+        assert!(refused(&mut w, &previous, eddie, t0));
+        assert!(refused(&mut w, &current, eddie, t0));
+        // Ticket expiry (inside the previous ticket's grace).
+        let code = last_code(&drain(&driver)).expect("code after the disconnect");
+        let (emma, conn, previous, current) =
+            engineer_with_two_tickets(&mut w, &cell, &code, "emma", t0);
+        w.registry.engineer_detached(&cell, conn.id, t0);
+        w.registry.housekeeping(t0 + TTL);
+        assert!(ids(&w).is_empty(), "the slot expired");
+        assert!(refused(&mut w, &previous, emma, t0 + TTL));
+        assert!(refused(&mut w, &current, emma, t0 + TTL));
+        // Session end.
+        let code = last_code(&drain(&driver)).expect("code after the expiry");
+        let (fred, _conn, previous, current) =
+            engineer_with_two_tickets(&mut w, &cell, &code, "fred", t0);
+        assert!(w.registry.close_by_driver(&cell, driver.id, t0));
+        for ticket in [&previous, &current] {
+            let probe = w.conn();
+            assert!(matches!(
+                w.registry.resume_engineer(7, ticket, fred, &probe, t0),
+                Err(ResumeError::Closed)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_driver_restart_notice_keeps_the_ticket_the_engineer_held() {
+        let mut w = World::new();
+        let t0 = w.epoch;
+        let (cell, driver, token, code) = w.session(t0);
+        let erin_identity = World::identity("erin");
+        let account = erin_identity.account;
+        let erin = w.conn();
+        w.registry
+            .join(&code, erin_identity, &erin, t0)
+            .expect("joined");
+        let joined = ticket_of(&drain(&erin));
+        let driver_account = cell.inner.lock().driver.account;
+        assert!(w.registry.driver_detached(&cell, driver.id, t0));
+        let restarted = w.conn();
+        w.registry
+            .resume_driver(7, driver_account, &token, true, &restarted, t0)
+            .expect("driver resumed");
+        // The restart notice carries a new ticket, but the link drops before it arrives.
+        let notice = ticket_of(&drain(&erin));
+        assert_ne!(notice, joined);
+        w.registry.engineer_detached(&cell, erin.id, t0);
+        let back = w.conn();
+        w.registry
+            .resume_engineer(7, &joined, account, &back, t0 + Duration::from_secs(1))
+            .expect("the ticket held before the notice works within the grace");
+    }
+
+    /// The SESSION_INFO of a resume and the driver-restart notice sent right after it are both
+    /// lost on one half-open link. Returns (account, presented ticket, lost resume ticket, lost
+    /// notice ticket, when the notice was sent); the engineer's connection is down.
+    fn lost_resume_reply_then_lost_restart_notice(
+        w: &mut World,
+        t0: Instant,
+    ) -> (Uuid, Secret, Secret, Secret, Instant) {
+        let (cell, driver, token, code) = w.session(t0);
+        let erin_identity = World::identity("erin");
+        let account = erin_identity.account;
+        let erin = w.conn();
+        w.registry
+            .join(&code, erin_identity, &erin, t0)
+            .expect("joined");
+        let joined = ticket_of(&drain(&erin));
+        w.registry.engineer_detached(&cell, erin.id, t0);
+        let half_open = w.conn();
+        w.registry
+            .resume_engineer(7, &joined, account, &half_open, t0)
+            .expect("resumed");
+        let lost_reply = ticket_of(&drain(&half_open));
+        let t1 = t0 + Duration::from_secs(5);
+        let driver_account = cell.inner.lock().driver.account;
+        assert!(w.registry.driver_detached(&cell, driver.id, t1));
+        let restarted = w.conn();
+        w.registry
+            .resume_driver(7, driver_account, &token, true, &restarted, t1)
+            .expect("driver resumed");
+        let lost_notice = ticket_of(&drain(&half_open));
+        assert!(lost_notice != joined && lost_notice != lost_reply);
+        w.registry.engineer_detached(&cell, half_open.id, t1);
+        (account, joined, lost_reply, lost_notice, t1)
+    }
+
+    /// Review finding F5 (relay2): a driver-restart notice no longer replaces an earlier ticket
+    /// that is still inside its grace, so the ticket the engineer actually holds keeps working.
+    #[test]
+    fn a_restart_notice_after_a_lost_resume_reply_keeps_the_presented_ticket() {
+        let mut w = World::new();
+        let t0 = w.epoch;
+        let grace = w.registry.config().previous_ticket_grace;
+        let (account, joined, lost_reply, lost_notice, _) =
+            lost_resume_reply_then_lost_restart_notice(&mut w, t0);
+        let back = w.conn();
+        let t2 = t0 + grace - Duration::from_millis(1);
+        w.registry
+            .resume_engineer(7, &joined, account, &back, t2)
+            .expect("the presented ticket survives the restart notice");
+        drain(&back);
+        // That resume shows which ticket the engineer holds: the undelivered ones are dead.
+        let cell = w.registry.cell(7).expect("session");
+        w.registry.engineer_detached(&cell, back.id, t2);
+        for dead in [&lost_reply, &lost_notice] {
+            assert!(refused(&mut w, dead, account, t2));
+        }
+    }
+
+    #[test]
+    fn each_earlier_ticket_keeps_its_own_grace() {
+        let mut w = World::new();
+        let t0 = w.epoch;
+        let grace = w.registry.config().previous_ticket_grace;
+        let (account, joined, lost_reply, _, t1) =
+            lost_resume_reply_then_lost_restart_notice(&mut w, t0);
+        // The joined ticket's grace ran from the resume (t0), the lost reply's from the notice.
+        let late = t0 + grace;
+        assert!(late < t1 + grace);
+        assert!(refused(&mut w, &joined, account, late));
+        let back = w.conn();
+        w.registry
+            .resume_engineer(7, &lost_reply, account, &back, late)
+            .expect("the ticket replaced by the notice is still inside its grace");
+    }
+
+    /// Review finding F7 (relay2): a slot released by DISCONNECT or ticket expiry keeps the
+    /// driver's unused code (it may have been shared already); a kick replaces it.
+    #[test]
+    fn a_released_slot_keeps_the_unused_code_and_a_kick_replaces_it() {
+        const TTL: Duration = Duration::from_secs(5);
+        let mut w = World::with(|c| c.engineer_ticket_ttl = TTL);
+        let t0 = w.epoch;
+        let (cell, driver, _, code) = w.session(t0);
+        let erin = w.conn();
+        w.registry
+            .join(&code, World::identity("erin"), &erin, t0)
+            .expect("erin joined");
+        drain(&erin);
+        let shared = last_code(&drain(&driver)).expect("code for the second slot");
+        // DISCONNECT: the same code is shown again and still works.
+        w.registry.engineer_left(&cell, erin.id, t0);
+        assert_eq!(last_code(&drain(&driver)).as_ref(), Some(&shared));
+        let eddie = w.conn();
+        w.registry
+            .join(&shared, World::identity("eddie"), &eddie, t0)
+            .expect("the shared code survived the DISCONNECT");
+        drain(&eddie);
+        let shared = last_code(&drain(&driver)).expect("fresh code after the redemption");
+        // Ticket expiry: likewise.
+        w.registry.engineer_detached(&cell, eddie.id, t0);
+        w.registry.housekeeping(t0 + TTL);
+        assert_eq!(last_code(&drain(&driver)).as_ref(), Some(&shared));
+        let emma = w.conn();
+        w.registry
+            .join(&shared, World::identity("emma"), &emma, t0 + TTL)
+            .expect("the shared code survived the expiry");
+        drain(&emma);
+        let unused = last_code(&drain(&driver)).expect("fresh code after the redemption");
+        // Kick: the code may have leaked, so a fresh one replaces it.
+        let kicked = w
+            .registry
+            .session_debug(7, t0 + TTL)
+            .expect("session")
+            .engineers[0]
+            .connection_id;
+        assert!(w.registry.kick(&cell, driver.id, kicked, t0 + TTL));
+        let fresh = last_code(&drain(&driver)).expect("fresh code after the kick");
+        assert_ne!(fresh, unused);
+        let probe = w.conn();
+        assert!(matches!(
+            w.registry
+                .join(&unused, World::identity("fred"), &probe, t0 + TTL),
+            Err(JoinError::CodeInvalid)
+        ));
+    }
+
+    #[test]
+    fn slot_tickets_are_recognised_by_their_tag_after_a_relay_restart() {
+        let mut old = World::new();
+        let t0 = old.epoch;
+        let (cell, _driver, _, code) = old.session(t0);
+        let (erin, conn, previous, current) =
+            engineer_with_two_tickets(&mut old, &cell, &code, "erin", t0);
+        old.registry.engineer_detached(&cell, conn.id, t0);
+        let stored = stored_session(&cell, wall_now());
+        // Either ticket resumes after a restart (the tag is checked, no digest is stored).
+        for ticket in [&previous, &current] {
+            let mut new = World::new();
+            let now = new.epoch;
+            let link = new.conn();
+            new.registry
+                .restore_for_engineer(&stored, Duration::ZERO, ticket, erin, &link, now)
+                .expect("resumed after the restart");
+            assert_ne!(&ticket_of(&drain(&link)), ticket);
+        }
+        // And the grace works in the new process: the reply to the restored resume is lost, the
+        // same ticket is presented again.
+        let mut new = World::new();
+        let now = new.epoch;
+        let lost_link = new.conn();
+        let cell2 = new
+            .registry
+            .restore_for_engineer(&stored, Duration::ZERO, &previous, erin, &lost_link, now)
+            .expect("resumed");
+        drain(&lost_link);
+        new.registry.engineer_detached(&cell2, lost_link.id, now);
+        let back = new.conn();
+        new.registry
+            .resume_engineer(7, &previous, erin, &back, now + Duration::from_secs(1))
+            .expect("previous ticket by digest after the restart");
+
+        // Review finding F6 (relay2), documented in PROTOCOL.md §6: the tag cannot tell the
+        // tickets of one slot apart, so until the first resume after a restart every ticket
+        // issued for the slot verifies, also one the old process already treated as dead. The
+        // first resume ends that: only the presented ticket (within the grace) and the fresh one
+        // work from then on.
+        let back = old.conn();
+        old.registry
+            .resume_engineer(7, &current, erin, &back, t0)
+            .expect("newest ticket used");
+        let newest = ticket_of(&drain(&back));
+        assert!(
+            refused(&mut old, &previous, erin, t0),
+            "dead in the old process"
+        );
+        old.registry.engineer_detached(&cell, back.id, t0);
+        let stored = stored_session(&cell, wall_now());
+        let mut new = World::new();
+        let now = new.epoch;
+        let link = new.conn();
+        let cell3 = new
+            .registry
+            .restore_for_engineer(&stored, Duration::ZERO, &previous, erin, &link, now)
+            .expect("any ticket of the slot verifies by its tag until the first resume");
+        drain(&link);
+        new.registry.engineer_detached(&cell3, link.id, now);
+        for other in [&current, &newest] {
+            assert!(refused(&mut new, other, erin, now));
+        }
     }
 
     #[test]
@@ -2927,16 +3623,18 @@ mod tests {
             cell2.take_slot_writes().as_slice(),
             [SlotWrite::Put(s)] if s.dropped_at.is_none() && s.connection_id == connection_id
         ));
-        // The old ticket died with the rotation; the new one works after the next blip.
+        // The presented ticket is now the previous one: dead once the grace is over. The new one
+        // works after the next blip.
         new.registry.engineer_detached(&cell2, erin2.id, now);
         let erin3 = new.conn();
+        let after_grace = now + new.registry.config().previous_ticket_grace;
         assert!(matches!(
             new.registry
-                .resume_engineer(7, &ticket, erin_identity.account, &erin3, now),
+                .resume_engineer(7, &ticket, erin_identity.account, &erin3, after_grace),
             Err(ResumeError::NotAuthorized)
         ));
         new.registry
-            .resume_engineer(7, &fresh, erin_identity.account, &erin3, now)
+            .resume_engineer(7, &fresh, erin_identity.account, &erin3, after_grace)
             .expect("resumed");
         drain(&erin3);
 

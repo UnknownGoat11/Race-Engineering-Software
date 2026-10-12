@@ -188,6 +188,18 @@ async fn insert_token(
     Ok(())
 }
 
+/// Row-locks a token family. Every transaction that writes a family's refresh tokens takes this
+/// lock **before** touching any token row, so writers of one family are serialized and lock in
+/// one order. Without it a rotation (token row, then the family row through the foreign-key check
+/// of its INSERT) and a family-wide UPDATE (family row, then token rows) could deadlock.
+async fn lock_family(tx: &mut Transaction<'_, Postgres>, family: Uuid) -> Result<(), StoreError> {
+    sqlx::query("SELECT id FROM token_families WHERE id = $1 FOR UPDATE")
+        .bind(family)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(())
+}
+
 // Column lists as literal-producing macros: sqlx 0.9 accepts only `&'static str` SQL (no
 // `format!`), and `concat!` needs literals.
 macro_rules! account_columns {
@@ -327,6 +339,7 @@ impl AccountStore for PgStore {
     ) -> Result<(), StoreError> {
         let keep = i64::try_from(keep_active).unwrap_or(i64::MAX);
         let mut tx = self.pool.begin().await?;
+        lock_family(&mut tx, token.family_id).await?;
         insert_token(&mut tx, token).await?;
         // Revoke the oldest active tokens of the family beyond `keep` (newest first).
         sqlx::query(
@@ -366,6 +379,19 @@ impl AccountStore for PgStore {
         at: DateTime<Utc>,
     ) -> Result<RotateOutcome, StoreError> {
         let mut tx = self.pool.begin().await?;
+        // The family row first (see `lock_family`); `old` names it.
+        let family: Option<Uuid> = sqlx::query_scalar(
+            "SELECT f.id FROM token_families f \
+             JOIN refresh_tokens t ON t.family_id = f.id WHERE t.id = $1 \
+             FOR UPDATE OF f",
+        )
+        .bind(old)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(family) = family else {
+            tx.rollback().await?;
+            return Ok(RotateOutcome::Lost);
+        };
         let updated = sqlx::query(
             "UPDATE refresh_tokens SET rotated_at = $2 \
              WHERE id = $1 AND rotated_at IS NULL AND revoked_at IS NULL",
@@ -379,6 +405,16 @@ impl AccountStore for PgStore {
             tx.rollback().await?;
             return Ok(RotateOutcome::Lost);
         }
+        // One live token per login: every other live token of the family is superseded. The
+        // family lock makes this see every successor committed by an earlier writer.
+        sqlx::query(
+            "UPDATE refresh_tokens SET rotated_at = $2 \
+             WHERE family_id = $1 AND rotated_at IS NULL AND revoked_at IS NULL",
+        )
+        .bind(family)
+        .bind(at)
+        .execute(&mut *tx)
+        .await?;
         insert_token(&mut tx, successor).await?;
         tx.commit().await?;
         Ok(RotateOutcome::Rotated)

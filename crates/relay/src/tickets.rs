@@ -5,12 +5,18 @@
 //! connection id ‖ r). Clients treat it as an opaque [`Secret`].
 //!
 //! * The running relay knows the tickets it issued by SHA-256 digest only ([`TokenHash`], relay
-//!   memory) and accepts only the newest ticket of a slot (tickets rotate on every SESSION_INFO).
+//!   memory) and accepts the newest ticket of a slot (tickets rotate on every SESSION_INFO) plus,
+//!   each for `previous_ticket_grace` after the ticket that replaced it was issued, up to two
+//!   earlier ones the engineer may still hold (`crate::registry`; the SESSION_INFO with a newer
+//!   ticket may have been lost).
 //! * After a relay restart those digests are gone. The tag lets the new process recognise a ticket
 //!   of an engineer slot the store still lists ([`crate::store::EngineerSlotRecord`]: session
 //!   metadata without any ticket material), so a running engineer app resumes without user action
-//!   (D-019, D-020, D-022). A slot ends (DISCONNECT, ENGINEER_KICK, expiry, session end) by its
-//!   store row being deleted, so a ticket of an ended slot never works again, restart or not.
+//!   (D-019, D-020, D-022). Until the slot's first successful resume after the restart this accepts
+//!   **any** ticket ever issued for the slot (same session, account and connection id), including
+//!   ones that had died by grace or by use: it only resumes the same account into its own slot. A
+//!   slot ends (DISCONNECT, ENGINEER_KICK, expiry, session end) by its store row being deleted, so
+//!   a ticket of an ended slot never works again, restart or not.
 //! * K is derived from the access-token signing key (`JWT_KEY_FILE`, [`TICKET_KEY_LABEL`]), so
 //!   tickets survive a restart exactly when that key does. Tickets and their digests are never
 //!   stored or logged.

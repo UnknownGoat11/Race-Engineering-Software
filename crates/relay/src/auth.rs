@@ -9,9 +9,17 @@
 //!   so a client that starts at least once per lifetime stays logged in indefinitely. A rotated
 //!   token presented again within `refresh_reuse_grace` is accepted (the client may have missed the
 //!   AUTH_OK with its successor); later reuse revokes the whole family (theft detection).
-//! * An access-token AUTH also returns a refresh token: the relay knows refresh tokens only by
-//!   digest and clients keep the refresh token of the newest AUTH_OK, so a successor in the same
-//!   family is issued (older ones age out through the family cap).
+//! * One live refresh token per login, confirmed before anything is killed: using a live token
+//!   (the client provably holds it) also supersedes every other live token of its family, exactly
+//!   like a use. A used token tolerated within the grace gets a successor without superseding
+//!   anything, because a delayed duplicate of an AUTH may be processed after the AUTH whose reply
+//!   the client actually kept; the next use of a live token removes such extras.
+//! * An access-token AUTH issues a fresh access token and **no refresh token** (the AUTH_OK
+//!   carries an empty one, "none issued") and writes nothing: the client keeps the refresh token it
+//!   holds. A lost or overlapping AUTH_OK therefore never leaves the client holding a token the
+//!   relay superseded (D-020: log in once).
+//! * Access tokens are signed before any token is written, so a signing or RNG failure leaves the
+//!   store unchanged.
 //! * Credentials never reach a log: they are [`Secret`]s and only digests are stored.
 
 use std::sync::Arc;
@@ -273,6 +281,20 @@ impl AuthMethod {
     }
 }
 
+/// Wire form of "no refresh token issued" in AUTH_OK (PROTOCOL.md §6): an empty token...
+const NO_REFRESH_TOKEN: &str = "";
+/// ...with expiry 0.
+const NO_REFRESH_EXPIRY_NS: u64 = 0;
+
+/// A refresh token issued with an AUTH_OK.
+#[derive(Debug, Clone)]
+pub struct RefreshGrant {
+    /// The refresh token plaintext, for the client only (the store knows its digest).
+    pub token: Secret,
+    /// Expiry, wall clock ns since the Unix epoch.
+    pub expires_at_ns: u64,
+}
+
 /// A successful authentication: the account and its fresh tokens.
 #[derive(Debug, Clone)]
 pub struct LoginOk {
@@ -284,26 +306,37 @@ pub struct LoginOk {
     pub access_token: Secret,
     /// Access token expiry, wall clock ns since the Unix epoch.
     pub access_expires_at_ns: u64,
-    pub refresh_token: Secret,
-    /// Refresh token expiry, wall clock ns since the Unix epoch.
-    pub refresh_expires_at_ns: u64,
+    /// The refresh token issued with this login. `None` for an access-token AUTH, which issues
+    /// none: the client keeps the refresh token it holds.
+    pub refresh: Option<RefreshGrant>,
 }
 
 impl LoginOk {
     /// AUTH_OK for a connection whose HELLO asked for `requested` (see
-    /// [`AccountRole::effective_role`]).
+    /// [`AccountRole::effective_role`]). Without a refresh token the AUTH_OK carries an empty one
+    /// with expiry 0 ("none issued").
     pub fn auth_ok(&self, requested: ClientRole) -> AuthOk {
+        let (refresh_token, refresh_expires_at_ns) = match &self.refresh {
+            Some(grant) => (grant.token.clone(), grant.expires_at_ns),
+            None => (Secret::new(NO_REFRESH_TOKEN), NO_REFRESH_EXPIRY_NS),
+        };
         AuthOk {
             account: AccountId(*self.account.id.as_bytes()),
             username: self.account.username.clone(),
             display_name: self.account.display_name.clone(),
             role: self.account.role.effective_role(requested),
             access_token: self.access_token.clone(),
-            refresh_token: self.refresh_token.clone(),
+            refresh_token,
             access_expires_at_ns: self.access_expires_at_ns,
-            refresh_expires_at_ns: self.refresh_expires_at_ns,
+            refresh_expires_at_ns,
         }
     }
+}
+
+/// A signed access token and its expiry (wall clock ns since the Unix epoch).
+struct SignedAccess {
+    token: Secret,
+    expires_at_ns: u64,
 }
 
 /// A refresh token about to be stored, with its plaintext for the client.
@@ -412,14 +445,17 @@ impl AuthService {
         if self.store.family_revoked(family).await? != Some(false) {
             return Err(AuthError::InvalidCredentials);
         }
-        let successor = self.new_refresh_token(&account, family, now)?;
-        self.store
-            .insert_refresh_token(
-                &successor.record,
-                self.settings.max_active_refresh_per_family,
-            )
-            .await?;
-        self.issue(account, AuthMethod::AccessToken, family, successor, now)
+        // No refresh token is issued and nothing is written: the client keeps the refresh token
+        // it holds, which stays the family's live one. A lost AUTH_OK, or one the client applies
+        // after that of an overlapping AUTH, can then never leave it holding a superseded token.
+        let access = self.sign_access_token(&account, family, now)?;
+        Ok(Self::login_ok(
+            account,
+            AuthMethod::AccessToken,
+            family,
+            access,
+            None,
+        ))
     }
 
     /// AUTH with a refresh token: rotates it (sliding expiry).
@@ -449,9 +485,13 @@ impl AuthService {
         }
         let keep = self.settings.max_active_refresh_per_family;
         let successor = self.new_refresh_token(&account, record.family_id, now)?;
+        // Signed before anything is written: a signing or RNG failure leaves the store unchanged.
+        let access = self.sign_access_token(&account, record.family_id, now)?;
         let grace =
             TimeDelta::from_std(self.settings.refresh_reuse_grace).unwrap_or(TimeDelta::MAX);
         match record.rotated_at {
+            // A live token: the client provably holds it, so its rotation also supersedes every
+            // other live token of the family (one live refresh token per login).
             None => match self
                 .store
                 .rotate_refresh_token(record.id, &successor.record, now)
@@ -459,7 +499,8 @@ impl AuthService {
             {
                 RotateOutcome::Rotated => {}
                 RotateOutcome::Lost => {
-                    // Rotated (or revoked) concurrently a moment ago.
+                    // Rotated (or revoked) concurrently a moment ago: tolerated like a use within
+                    // the grace (no supersede, see below).
                     let current = self.store.refresh_token_by_hash(&hash).await?;
                     if current.is_none_or(|c| c.revoked_at.is_some()) {
                         return Err(AuthError::InvalidCredentials);
@@ -469,6 +510,9 @@ impl AuthService {
                         .await?;
                 }
             },
+            // The client may have missed the AUTH_OK with the successor. Nothing is superseded:
+            // this may be a delayed duplicate processed after the AUTH whose reply the client kept,
+            // and the next use of a live token removes the extra successor anyway.
             Some(rotated_at) if now.signed_duration_since(rotated_at) <= grace => {
                 self.store
                     .insert_refresh_token(&successor.record, keep)
@@ -486,13 +530,13 @@ impl AuthService {
                 return Err(AuthError::RefreshReuse);
             }
         }
-        self.issue(
+        Ok(Self::login_ok(
             account,
             AuthMethod::RefreshToken,
             record.family_id,
-            successor,
-            now,
-        )
+            access,
+            Some(successor),
+        ))
     }
 
     /// ACCOUNT_REGISTER (open registration only): creates the account in `role` and logs in.
@@ -570,14 +614,21 @@ impl AuthService {
         let now = self.clock.now_utc();
         self.store.record_login(account.id, now).await?;
         let family = Uuid::new_v4();
+        let refresh = self.new_refresh_token(&account, family, now)?;
+        let access = self.sign_access_token(&account, family, now)?;
         self.store
             .create_token_family(family, account.id, now)
             .await?;
-        let refresh = self.new_refresh_token(&account, family, now)?;
         self.store
             .insert_refresh_token(&refresh.record, self.settings.max_active_refresh_per_family)
             .await?;
-        self.issue(account, method, family, refresh, now)
+        Ok(Self::login_ok(
+            account,
+            method,
+            family,
+            access,
+            Some(refresh),
+        ))
     }
 
     fn new_refresh_token(
@@ -604,14 +655,13 @@ impl AuthService {
         })
     }
 
-    fn issue(
+    /// A fresh access token for `account` in login `family`, valid `access_token_ttl` from `now`.
+    fn sign_access_token(
         &self,
-        account: Account,
-        method: AuthMethod,
+        account: &Account,
         family: Uuid,
-        refresh: IssuedRefresh,
         now: DateTime<Utc>,
-    ) -> Result<LoginOk, AuthError> {
+    ) -> Result<SignedAccess, AuthError> {
         let iat = u64::try_from(now.timestamp()).unwrap_or(0);
         let exp = iat.saturating_add(self.settings.access_token_ttl.as_secs().max(1));
         let claims = AccessClaims {
@@ -623,16 +673,30 @@ impl AuthService {
             exp,
             jti: new_jti()?,
         };
-        let access_token = self.keys.sign(&claims)?;
-        Ok(LoginOk {
+        Ok(SignedAccess {
+            token: self.keys.sign(&claims)?,
+            expires_at_ns: exp.saturating_mul(NANOS_PER_SEC),
+        })
+    }
+
+    fn login_ok(
+        account: Account,
+        method: AuthMethod,
+        family: Uuid,
+        access: SignedAccess,
+        refresh: Option<IssuedRefresh>,
+    ) -> LoginOk {
+        LoginOk {
             account,
             method,
             family,
-            access_token,
-            access_expires_at_ns: exp.saturating_mul(NANOS_PER_SEC),
-            refresh_token: refresh.token,
-            refresh_expires_at_ns: datetime_to_ns(refresh.record.expires_at),
-        })
+            access_token: access.token,
+            access_expires_at_ns: access.expires_at_ns,
+            refresh: refresh.map(|r| RefreshGrant {
+                token: r.token,
+                expires_at_ns: datetime_to_ns(r.record.expires_at),
+            }),
+        }
     }
 }
 
@@ -669,6 +733,29 @@ mod tests {
 
     fn advance(clock: &AtomicU64, d: Duration) {
         clock.fetch_add(crate::time::duration_ns(d), Ordering::SeqCst);
+    }
+
+    /// The refresh token `ok` issued (password and refresh-token logins always issue one).
+    fn refresh(ok: &LoginOk) -> &Secret {
+        &ok.refresh
+            .as_ref()
+            .expect("a refresh token was issued")
+            .token
+    }
+
+    /// Creates `username` (engineer) and logs in with the password.
+    async fn logged_in(svc: &AuthService, username: &str) -> LoginOk {
+        svc.create_account(
+            username,
+            username,
+            AccountRole::Engineer,
+            &Secret::new(PASSWORD),
+        )
+        .await
+        .expect("create");
+        svc.login_password(username, &Secret::new(PASSWORD))
+            .await
+            .expect("login")
     }
 
     #[test]
@@ -720,8 +807,8 @@ mod tests {
         assert_eq!(ok.account.username, "alice");
         assert_eq!(ok.access_expires_at_ns, T0_NS + 15 * 60 * NANOS_PER_SEC);
         assert_eq!(
-            ok.refresh_expires_at_ns,
-            T0_NS + 90 * 86_400 * NANOS_PER_SEC
+            ok.refresh.as_ref().map(|r| r.expires_at_ns),
+            Some(T0_NS + 90 * 86_400 * NANOS_PER_SEC)
         );
         assert!(matches!(
             svc.login_password("alice", &Secret::new("wrong password!"))
@@ -738,7 +825,8 @@ mod tests {
             ClientRole::Driver,
             "a driver account stays a driver"
         );
-        assert!(!format!("{auth_ok:?}").contains(ok.refresh_token.expose()));
+        assert_eq!(&auth_ok.refresh_token, refresh(&ok));
+        assert!(!format!("{auth_ok:?}").contains(refresh(&ok).expose()));
     }
 
     #[tokio::test]
@@ -758,29 +846,29 @@ mod tests {
             .expect("login");
         advance(&clock, Duration::from_secs(3_600));
         let second = svc
-            .login_refresh_token(&first.refresh_token)
+            .login_refresh_token(refresh(&first))
             .await
             .expect("refresh");
-        assert_ne!(second.refresh_token, first.refresh_token);
+        assert_ne!(refresh(&second), refresh(&first));
         assert_eq!(second.family, first.family, "a refresh continues the login");
         // Sliding expiry: 90 days from this use.
         assert_eq!(
-            second.refresh_expires_at_ns,
-            T0_NS + (3_600 + 90 * 86_400) * NANOS_PER_SEC
+            second.refresh.as_ref().map(|r| r.expires_at_ns),
+            Some(T0_NS + (3_600 + 90 * 86_400) * NANOS_PER_SEC)
         );
         // Within the reuse grace the rotated token still works once the client missed AUTH_OK.
         advance(&clock, Duration::from_secs(10));
         let retry = svc
-            .login_refresh_token(&first.refresh_token)
+            .login_refresh_token(refresh(&first))
             .await
             .expect("grace reuse");
         // After the grace, reuse is theft: the family is revoked, successors die too.
         advance(&clock, Duration::from_secs(120));
         assert!(matches!(
-            svc.login_refresh_token(&first.refresh_token).await,
+            svc.login_refresh_token(refresh(&first)).await,
             Err(AuthError::RefreshReuse)
         ));
-        for token in [&second.refresh_token, &retry.refresh_token] {
+        for token in [refresh(&second), refresh(&retry)] {
             assert!(matches!(
                 svc.login_refresh_token(token).await,
                 Err(AuthError::InvalidCredentials)
@@ -788,6 +876,117 @@ mod tests {
         }
         assert!(matches!(
             svc.login_access_token(&second.access_token).await,
+            Err(AuthError::InvalidCredentials)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_access_token_login_issues_no_refresh_token_and_writes_nothing() {
+        let (svc, clock) = service(false).await;
+        let login = logged_in(&svc, "erin").await;
+        advance(&clock, Duration::from_secs(60));
+        let via_access = svc
+            .login_access_token(&login.access_token)
+            .await
+            .expect("access token");
+        assert_eq!(via_access.method, AuthMethod::AccessToken);
+        assert_eq!(via_access.family, login.family);
+        assert!(via_access.refresh.is_none(), "no refresh token is issued");
+        // A fresh access token, 15 minutes from this AUTH.
+        assert_ne!(via_access.access_token, login.access_token);
+        assert_eq!(
+            via_access.access_expires_at_ns,
+            T0_NS + (60 + 15 * 60) * NANOS_PER_SEC
+        );
+        assert!(
+            svc.login_access_token(&via_access.access_token)
+                .await
+                .is_ok()
+        );
+        // On the wire: an empty refresh token with expiry 0 ("none issued", PROTOCOL.md §6).
+        let wire = via_access.auth_ok(ClientRole::Engineer);
+        assert!(wire.refresh_token.expose().is_empty());
+        assert_eq!(wire.refresh_expires_at_ns, 0);
+        // Nothing was written: the token the app holds is still the family's only live one and
+        // rotates normally much later.
+        advance(&clock, Duration::from_secs(24 * 3_600));
+        let next = svc
+            .login_refresh_token(refresh(&login))
+            .await
+            .expect("the held refresh token is still live");
+        assert_eq!(next.family, login.family);
+    }
+
+    /// Review findings F1/F2 (relay2): overlapping access-token AUTHs whose AUTH_OKs the app
+    /// applies in either order, or an AUTH_OK lost on a dead link, never leave the app holding a
+    /// refresh token the relay superseded (D-020: log in once).
+    #[tokio::test]
+    async fn lost_or_overlapping_access_token_auth_replies_never_force_a_relogin() {
+        let (svc, clock) = service(false).await;
+        let login = logged_in(&svc, "erin").await;
+        let grace = AuthSettings::default().refresh_reuse_grace;
+        // Two overlapping AUTHs (stop/start) and one whose reply is lost.
+        let first = svc
+            .login_access_token(&login.access_token)
+            .await
+            .expect("AUTH #1");
+        let second = svc
+            .login_access_token(&login.access_token)
+            .await
+            .expect("AUTH #2");
+        let _lost = svc
+            .login_access_token(&second.access_token)
+            .await
+            .expect("AUTH #3 (reply lost)");
+        assert!(first.refresh.is_none() && second.refresh.is_none());
+        // Hours later (app restart, access token expired): the only refresh token the app ever
+        // received still works, long after the reuse grace.
+        advance(&clock, grace * 100);
+        let next = svc
+            .login_refresh_token(refresh(&login))
+            .await
+            .expect("no reuse: nothing was superseded");
+        assert_eq!(next.family, login.family);
+        assert!(svc.login_access_token(&next.access_token).await.is_ok());
+    }
+
+    /// Review finding F3 (relay2): using a live token supersedes the family's other live tokens
+    /// (one live refresh token per login), while a use tolerated within the grace never kills the
+    /// token the client kept.
+    #[tokio::test]
+    async fn using_a_live_refresh_token_supersedes_the_other_live_tokens_of_its_family() {
+        let (svc, clock) = service(false).await;
+        let login = logged_in(&svc, "erin").await;
+        let grace = AuthSettings::default().refresh_reuse_grace;
+        // The client rotates R0 and keeps R1.
+        let kept = svc
+            .login_refresh_token(refresh(&login))
+            .await
+            .expect("rotate R0");
+        // A duplicate of that AUTH (or a thief within the grace) presents R0 again: tolerated, it
+        // gets its own successor and supersedes nothing.
+        advance(&clock, grace / 2);
+        let parallel = svc
+            .login_refresh_token(refresh(&login))
+            .await
+            .expect("tolerated within the grace");
+        assert_eq!(parallel.family, login.family);
+        // Long after the grace the client uses the token it kept: still live, and its use
+        // supersedes the parallel successor.
+        advance(&clock, grace * 100);
+        let next = svc
+            .login_refresh_token(refresh(&kept))
+            .await
+            .expect("the kept token was never superseded");
+        assert!(svc.login_access_token(&next.access_token).await.is_ok());
+        // Presented after the grace, the superseded parallel token is reuse: the login is revoked.
+        advance(&clock, grace + Duration::from_secs(1));
+        assert!(matches!(
+            svc.login_refresh_token(refresh(&parallel)).await,
+            Err(AuthError::RefreshReuse)
+        ));
+        assert!(matches!(
+            svc.login_refresh_token(refresh(&next)).await,
             Err(AuthError::InvalidCredentials)
         ));
     }
@@ -814,7 +1013,7 @@ mod tests {
         ));
         advance(&clock, Duration::from_secs(91 * 86_400));
         assert!(matches!(
-            svc.login_refresh_token(&via_access.refresh_token).await,
+            svc.login_refresh_token(refresh(&ok)).await,
             Err(AuthError::TokenExpired)
         ));
         assert!(matches!(
@@ -845,7 +1044,7 @@ mod tests {
         assert_ne!(a.family, b.family, "every password login is its own login");
         assert_eq!(svc.revoke_tokens("erin").await.expect("revoke"), 2);
         for ok in [&a, &b] {
-            assert!(svc.login_refresh_token(&ok.refresh_token).await.is_err());
+            assert!(svc.login_refresh_token(refresh(ok)).await.is_err());
             assert!(svc.login_access_token(&ok.access_token).await.is_err());
         }
     }

@@ -85,6 +85,8 @@ subtle = "2"
 base64 = "0.22"
 # relay: keyed (HMAC-SHA256) connection-code hashes
 hmac = "0.12"
+# relay: wipes the in-memory plaintext of the unused connection code (already in the lock file)
+zeroize = "1"
 
 [profile.release]
 lto = "thin"

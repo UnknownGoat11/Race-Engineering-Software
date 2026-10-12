@@ -181,6 +181,24 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
   - **Engineer connections are the deliberate exception (D-022):** the engineer app never remembers or
     auto-connects to a previous driver. Every new connection needs a fresh one-time code from the driver.
 - **Date:** 2026-10-02
+- **Clarification (2026-10-07, revised 2026-10-11 after review relay2): one live refresh token per login
+  family (D-008), confirmed before anything is killed.**
+  - An access-token AUTH issues a fresh access token and **no refresh token** (AUTH_OK carries an empty
+    one, expiry 0) and writes nothing; the app keeps the refresh token it holds. The first version
+    superseded the family's live token on every access-token AUTH, which turned a lost AUTH_OK, or two
+    overlapping AUTHs (stop/start) whose replies the app applied out of order, into a forced re-login,
+    against "log in once". Rejected alternative: a refresh-token id claim in the access token that marks
+    the token the client holds; it still supersedes the token the app keeps when overlapping AUTH_OKs are
+    applied out of order.
+  - Rotating a *live* refresh token (the client provably holds it) supersedes every other live token of
+    the family exactly like a used one: presented again within the 60 s reuse grace it is tolerated, later
+    it is reuse and revokes the whole login (its open connections are closed). This stops a stolen refresh
+    token from running a parallel chain next to the legitimate client.
+  - A used token tolerated within the grace, and a rotation that lost a race, get a successor without
+    superseding (that AUTH may be a delayed duplicate processed after the one whose reply the app kept);
+    the next rotation of a live token removes such extras (at most 4 per family meanwhile).
+  - Residual risk, unchanged from D-008: a refresh-token AUTH_OK lost for longer than the grace forces a
+    new login (PROTOCOL.md §6 "Login tokens").
 
 ## D-021 Driver ↔ engineer pairing via standing grants — SUPERSEDED by D-022
 - The owner revised the requirement on 2026-10-02: no standing grants, no "My drivers" list, no
@@ -242,6 +260,29 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
 - **Unchanged from D-020:** login once (refresh token in Credential Manager), all preferences persist, and
   the driver session auto-resumes after a driver app restart.
 - **Date:** 2026-10-02
+- **Clarification (2026-10-07): previous-ticket grace.** Every SESSION_INFO carries a new resume ticket,
+  so a SESSION_INFO lost in a second blip would otherwise strand the engineer (a blip is not a new
+  connection). An engineer slot therefore also keeps up to two earlier tickets: after a resume the one the
+  engineer presented; after a driver-restart notice also the slot's then-current ticket, keeping an earlier
+  one still inside its grace (revised 2026-10-11, review relay2: a resume reply and a restart notice can
+  both be lost on one half-open link). Each earlier ticket is accepted until the newest ticket is used in a
+  resume or 60 s after the ticket that replaced it was issued (relay `previous_ticket_grace`), within the
+  ticket window. An accepted resume issues a fresh ticket as usual. Kick, Disconnect, ticket expiry and
+  session end kill all of them. After a relay restart no ticket digest is known: until the slot's first
+  successful resume, **any** ticket ever issued for that slot (same session, engineer account and
+  connection id) is recognised by its HMAC tag, including ones that had died by grace or by use. Accepted
+  because such a ticket only resumes the same engineer account into its own slot; per-slot ticket epochs
+  that would keep dead tickets dead are deferred (they need a persisted counter and a store write per
+  SESSION_INFO).
+- **Clarification (2026-10-07): the connection code survives a driver resume.** At rest (database, logs) a
+  code exists only as its keyed digest, but the relay may hold the plaintext of the session's single unused
+  code in memory only (never persisted or logged, redacted, wiped on redemption, rotation, expiry, session
+  end and shutdown). A resuming driver is shown the same unused code with its original expiry, so a code it
+  already sent to an engineer keeps working; without the plaintext (relay restart) or after expiry a fresh
+  code is issued. The same holds when a slot is released (an engineer's DISCONNECT, or its ticket expiry):
+  the unused code stays (revised 2026-10-11, review relay2). A redemption, a kick (the code may have
+  leaked) and a CONNECT_CODE_REQUEST still issue a fresh code. Single use, a fresh code for every new
+  engineer connection, no auto-connect and the 2-engineer maximum are unchanged.
 
 ## D-017 Channel IDs and schema versioning
 - **Chosen:** A single registry in `telemetry-model::registry` defines every channel (id, canonical name,

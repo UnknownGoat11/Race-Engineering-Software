@@ -204,7 +204,8 @@ AUTH{Password|AccessToken|RefreshToken}→
                                          or ERROR{AuthFailed}
 Driver:   SESSION_CREATE                   → SESSION_INFO{.., DriverToken} + CONNECT_CODE{code, 0/2}
                                              + ENGINEER_LIST{[]}
-          SESSION_RESUME::Driver{token}    → SESSION_INFO + CONNECT_CODE + ENGINEER_LIST (current state)
+          SESSION_RESUME::Driver{token}    → SESSION_INFO + CONNECT_CODE + ENGINEER_LIST (current state;
+                                             an unused, unexpired code is re-sent unchanged)
           CONNECT_CODE_REQUEST             → CONNECT_CODE (fresh code; the unused one is invalidated)
           ENGINEER_KICK{connection_id}     → ENGINEER_LIST + CONNECT_CODE; that engineer gets
                                              SESSION_CLOSE{RemovedByDriver} and is disconnected
@@ -217,6 +218,30 @@ Engineer: SESSION_JOIN{code}               → SESSION_INFO{identity, EngineerTi
           SESSION_RESUME::Engineer{ticket} → as SESSION_JOIN, or ERROR{NotAuthorized} (ticket dead: only a
                                              new code connects)
 ```
+Login tokens (D-008, D-020, normative):
+* AUTH{Password} (and ACCOUNT_REGISTER) starts a login family and its AUTH_OK carries the family's first
+  refresh token. AUTH{RefreshToken} rotates the presented token: it becomes used, and its successor is in
+  the AUTH_OK. Clients keep the refresh token of the newest AUTH_OK that carries one.
+* **AUTH{AccessToken} issues no refresh token** (2026-10-11): its AUTH_OK has a fresh access token, an
+  empty `refresh_token` and `refresh_expires_at_ns = 0` ("none issued"). The client keeps the refresh token
+  it holds and never overwrites it with the empty one. The relay writes nothing for this AUTH, so a lost
+  AUTH_OK, or overlapping AUTHs whose replies the client applies in any order, can never leave the client
+  holding a superseded token (D-020: log in once).
+* **One live refresh token per login family, confirmed before anything is killed** (2026-10-11). Rotating
+  a *live* refresh token (the client provably holds it) also supersedes every other live token of the
+  family; a superseded token is treated exactly like a used one. A used token tolerated within the grace
+  (below), and a rotation that lost a race against a concurrent rotation of the same token, get a successor
+  **without** superseding anything: such an AUTH may be a delayed duplicate processed after the AUTH whose
+  reply the client kept. The family may then briefly hold a few live tokens (at most
+  `max_active_refresh_per_family`, default 4, the oldest dropped); the next rotation of a live token
+  removes the extras.
+* A used or superseded refresh token presented again within `refresh_reuse_grace` (default 60 s, the client
+  may have lost the AUTH_OK carrying the successor) is tolerated and gets a successor; presented later it is
+  reuse: the relay revokes the whole family (every refresh and access token of that login) and, within its
+  revocation check interval (default 30 s), closes the login's open connections (ERROR AuthFailed, fatal).
+  A refresh-token AUTH_OK lost for longer than the grace therefore still forces a new login; access-token
+  AUTHs (the common reconnect) never do.
+
 Engineer access (D-022, normative):
 * **Connection codes.** 8 random Crockford base32 characters (40 bits) issued by the relay, stored only as a
   hash, compared in constant time and never logged (`Secret` on the wire). Wire form is canonical: upper
@@ -227,6 +252,18 @@ Engineer access (D-022, normative):
   SESSION_CREATE and after every redemption the relay issues a fresh code if a slot is free; while every slot
   is taken there is no code (`ConnectCode.code = None`). The relay sends CONNECT_CODE whenever the code or the
   slot usage changes, and in reply to every CONNECT_CODE_REQUEST.
+* **Code across a driver resume** (2026-10-07). At rest (database, logs) a code exists only as its keyed
+  digest, but the relay may hold the plaintext of the session's single unused code in memory (never
+  persisted, never logged, redacted in debug output, wiped on redemption, rotation, expiry, session end and
+  shutdown). When a driver resumes (`SESSION_RESUME::Driver`, with or without a new sequence space) while
+  that code is unused and unexpired, CONNECT_CODE carries the **same code with its original `expires_at`**:
+  a code the driver already shared keeps working. Without the plaintext (e.g. after a relay restart), or
+  once the code expired, the relay issues a fresh code as usual. The code stays single use and every new
+  engineer connection still needs a code.
+* **Code across a slot change** (2026-10-11). When a slot is released by the engineer's DISCONNECT or its
+  ticket expiry, an unused, unexpired code stays valid and CONNECT_CODE re-sends it unchanged (the driver may
+  have shared it already). A redemption and an ENGINEER_KICK (the code may have leaked) invalidate the unused
+  code and issue a fresh one if a slot is free, as does every CONNECT_CODE_REQUEST.
 * **Redemption.** The relay accepts SESSION_JOIN only if the connection is authenticated with role ENGINEER
   (else NotAuthorized), the code is valid, unused and unexpired (else CodeInvalid / CodeExpired), the session
   is live (else SessionClosed) and an engineer slot is free (else SessionFull, shown as "Driver already has
@@ -251,6 +288,20 @@ Engineer access (D-022, normative):
   answers like a join (SESSION_INFO, which may carry a new ticket; replay; live). The ticket dies when the
   engineer app closes or sends DISCONNECT, when the driver removes the engineer, when the session ends or
   when it expires. Driver app restarts within the session grace window do not disconnect engineers.
+* **Previous-ticket grace** (2026-10-07, revised 2026-10-11). Every SESSION_INFO to an engineer carries a
+  new ticket, and that SESSION_INFO can be lost in a second blip. So a slot also keeps up to two **earlier**
+  tickets: after a resume, the ticket the engineer presented in it; after a driver-restart SESSION_INFO,
+  the slot's then-current ticket plus the earlier ones still inside their grace (a resume's SESSION_INFO and
+  the restart's can both be lost on one half-open link), the oldest dropped beyond two. A resume presenting
+  an earlier ticket is accepted until the newest ticket has been used in a successful resume, or until
+  `previous_ticket_grace` (relay config, default 60 s) after the ticket that replaced it was issued,
+  whichever comes first, and inside the ticket window above. An accepted resume, with any accepted ticket,
+  issues a fresh ticket as usual and the presented ticket becomes its only earlier one, so repeated lost
+  replies keep working while using the newest ticket kills every older one. Kick, DISCONNECT, a takeover
+  join, ticket expiry and session end invalidate all of them. After a relay restart no ticket material is
+  known (none is stored): until the slot's first successful resume, **any** ticket issued for that slot
+  (same session, engineer account and connection id) is recognised by its HMAC tag, including tickets that
+  had died by grace or by use. Such a ticket can only resume the same engineer account into its own slot.
 * **Driver controls.** ENGINEER_LIST lists every engineer holding a slot (connection id, display name,
   username, connected since, link state `Healthy | Degraded | Reconnecting`) and is sent whenever it
   changes. ENGINEER_KICK{connection_id} (also for a `Reconnecting` entry, to free a dead slot) makes the

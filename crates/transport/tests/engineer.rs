@@ -932,10 +932,10 @@ async fn the_ticket_of_a_driver_restart_notice_is_adopted_for_the_next_resume() 
 
 #[tokio::test(start_paused = true)]
 async fn a_resume_reply_lost_in_a_second_blip_is_retried_with_the_previous_ticket() {
-    // The relay requirement this relies on (PROTOCOL.md §6): a superseded ticket stays valid for a
-    // grace period, because the client can learn the new one only from the reply it lost.
+    // The relay rule this relies on (PROTOCOL.md §6, the FakeRelay default like the real relay):
+    // the previous ticket stays valid for PREVIOUS_TICKET_GRACE, because the client can learn the
+    // new one only from the reply it lost.
     let relay = FakeRelay::new(Environment::Development);
-    relay.set_ticket_grace(Some(Duration::from_secs(60)));
     let config = dev_config(&relay);
     let driver = streaming_driver(&relay, &config).await;
     let mut e = joined_engineer(&relay, &config, &driver, ENGINEER).await;
@@ -976,11 +976,51 @@ async fn a_resume_reply_lost_in_a_second_blip_is_retried_with_the_previous_ticke
 }
 
 #[tokio::test(start_paused = true)]
-async fn without_a_ticket_grace_a_lost_resume_reply_ends_the_connection_cleanly() {
-    // Documents the interop requirement above: a relay that honours only the newest ticket (the
-    // real relay at the time of writing) cannot be resumed after a lost reply. The client then
-    // ends with the clear "new code" state, without a retry loop.
+async fn a_lost_resume_reply_followed_by_an_outage_past_the_grace_ends_cleanly() {
+    // The relay honours the previous ticket only for PREVIOUS_TICKET_GRACE (PROTOCOL.md §6). If it
+    // stays unreachable longer than that after a lost resume reply, the retry is refused and the
+    // client ends with the clear "new code" state, without a retry loop.
     let relay = FakeRelay::new(Environment::Development);
+    let config = dev_config(&relay);
+    let driver = streaming_driver(&relay, &config).await;
+    let mut e = joined_engineer(&relay, &config, &driver, ENGINEER).await;
+    let joined_ticket = relay.engineer_ticket(ENGINEER).expect("ticket");
+    relay.lose_next_session_replies(1);
+    relay.disconnect_all();
+    // The first resume reaches the relay (new ticket issued, reply lost); then the relay is
+    // unreachable for longer than the grace. Reconnects are at least RECONNECT_MIN_MS apart.
+    for _ in 0..10_000 {
+        if !presented_tickets(&relay, ENGINEER).is_empty() {
+            break;
+        }
+        advance(Duration::from_millis(1)).await;
+    }
+    relay.set_down(true);
+    assert_eq!(
+        presented_tickets(&relay, ENGINEER),
+        vec![joined_ticket.clone()]
+    );
+    advance(PREVIOUS_TICKET_GRACE + Duration::from_secs(1)).await;
+    relay.set_down(false);
+    assert_eq!(ended(&mut e.events).await, EngineerEndReason::TicketExpired);
+    assert_eq!(
+        presented_tickets(&relay, ENGINEER),
+        vec![joined_ticket.clone(), joined_ticket]
+    );
+    let attempts = relay.hellos(ClientRole::Engineer);
+    advance(Duration::from_secs(60)).await;
+    assert_eq!(relay.hellos(ClientRole::Engineer), attempts);
+    e.client.shutdown().await;
+    driver.client.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn without_a_ticket_grace_a_lost_resume_reply_ends_the_connection_cleanly() {
+    // A relay that honours only the newest ticket (`previous_ticket_grace` = 0, or a relay older
+    // than the grace) cannot be resumed after a lost reply. The client then ends with the clear
+    // "new code" state, without a retry loop.
+    let relay = FakeRelay::new(Environment::Development);
+    relay.set_ticket_grace(None);
     let config = dev_config(&relay);
     let driver = streaming_driver(&relay, &config).await;
     let mut e = joined_engineer(&relay, &config, &driver, ENGINEER).await;

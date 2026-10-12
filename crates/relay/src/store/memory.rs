@@ -215,9 +215,18 @@ impl AccountStore for MemoryStore {
         if current.record.rotated_at.is_some() || current.record.revoked_at.is_some() {
             return Ok(RotateOutcome::Lost);
         }
+        let family = current.record.family_id;
+        // Insert first: a failed insert (duplicate digest, unknown family) changes nothing.
         inner.insert_token(successor)?;
-        if let Some(t) = inner.tokens.get_mut(&old) {
-            t.record.rotated_at = Some(at);
+        // `old` itself is rotated here too; every other live token of the family is superseded.
+        for t in inner.tokens.values_mut() {
+            if t.record.family_id == family
+                && t.record.id != successor.id
+                && t.record.rotated_at.is_none()
+                && t.record.revoked_at.is_none()
+            {
+                t.record.rotated_at = Some(at);
+            }
         }
         Ok(RotateOutcome::Rotated)
     }

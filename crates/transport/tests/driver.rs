@@ -1324,3 +1324,161 @@ async fn a_reliable_message_cut_off_by_a_dead_connection_is_sent_again_after_the
     assert_eq!(relay.header_violations(), 0);
     client.shutdown().await;
 }
+
+/// AUTH messages the relay received, oldest first.
+fn auths(relay: &FakeRelay) -> Vec<protocol::messages::Auth> {
+    relay
+        .received()
+        .into_iter()
+        .filter_map(|r| match r.message {
+            Message::Auth(auth) => Some(auth),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Waits (paused clock) until the relay holds `n` AUTH replies back.
+async fn wait_held_auth_replies(relay: &FakeRelay, n: usize) {
+    for _ in 0..1_000 {
+        if relay.held_auth_replies() == n {
+            break;
+        }
+        advance(Duration::from_millis(1)).await;
+    }
+    assert_eq!(relay.held_auth_replies(), n, "AUTH reached the relay");
+}
+
+#[tokio::test(start_paused = true)]
+async fn overlapping_access_token_auths_applied_out_of_order_keep_the_login() {
+    // Review finding F1 (relay2): the user stops while AUTH#1{AccessToken} is in flight (the
+    // detached AUTH keeps running) and starts again at once: AUTH#2{AccessToken} goes out on a new
+    // connection. The AUTH_OKs reach the app in reverse order. An access-token AUTH issues no
+    // refresh token (PROTOCOL.md §6), so whichever AUTH_OK the app applies last, it keeps the
+    // refresh token of its login, and hours later a restarted app still logs in silently.
+    let relay = FakeRelay::new(Environment::Development);
+    let config = dev_config(&relay);
+    let (store, auth) = logged_in_app(&relay, &config, ClientRole::Driver, DRIVER).await;
+    let ns = auth.namespace().to_owned();
+    let stored = || {
+        store
+            .load(&ns, CredentialKind::RefreshToken)
+            .expect("store")
+            .expect("refresh token")
+    };
+    let before = stored();
+    let (client, mut events) = DriverClient::spawn(
+        config.clone(),
+        relay.transport(),
+        std::sync::Arc::clone(&auth),
+    )
+    .expect("valid config");
+    let mut status = client.status();
+    relay.hold_auth_replies(true);
+    client.start(session_create()).await.expect("start");
+    wait_held_auth_replies(&relay, 1).await;
+    client.stop().await.expect("stop");
+    wait_state(&mut status, ConnectionState::Disconnected).await;
+    client.start(session_create()).await.expect("start again");
+    wait_held_auth_replies(&relay, 2).await;
+    let sent = auths(&relay);
+    assert!(
+        sent.len() >= 2
+            && sent[sent.len() - 2..]
+                .iter()
+                .all(|a| matches!(a, protocol::messages::Auth::AccessToken { .. })),
+        "both AUTHs use the still valid access token"
+    );
+    // AUTH_OK #2 first, then AUTH_OK #1.
+    relay.release_newest_held_auth_reply();
+    advance(Duration::from_millis(100)).await;
+    relay.hold_auth_replies(false);
+    let (_, kind) = session_ready(&mut events).await;
+    assert_eq!(kind, SessionReadyKind::Created);
+    advance(Duration::from_millis(100)).await;
+    assert_eq!(stored(), before, "no AUTH_OK replaced the refresh token");
+    client.shutdown().await;
+
+    // Hours later (access token expired, far beyond the reuse grace): silent login.
+    advance(Duration::from_secs(3 * 3_600)).await;
+    let (client, mut events) = DriverClient::spawn(
+        config.clone(),
+        relay.transport(),
+        restart_app(&store, &config),
+    )
+    .expect("valid config");
+    client.start(session_create()).await.expect("start");
+    // Ready at all means the login survived (the stored session may be resumed or replaced).
+    let (_, kind) = session_ready(&mut events).await;
+    assert!(matches!(
+        kind,
+        SessionReadyKind::Created | SessionReadyKind::ResumedAfterRestart
+    ));
+    assert!(matches!(
+        auths(&relay).last(),
+        Some(protocol::messages::Auth::RefreshToken { .. })
+    ));
+    assert_ne!(stored(), before, "the refresh-token AUTH rotated it");
+    client.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_lost_access_token_auth_reply_does_not_force_a_relogin() {
+    // Review finding F2 (relay2): the relay processed AUTH{AccessToken} but the link died before
+    // its AUTH_OK arrived. That AUTH changed no refresh token, so the token the app holds is still
+    // the live one: an app restart long after the reuse grace (and the access token's expiry)
+    // logs in silently.
+    let relay = FakeRelay::new(Environment::Development);
+    let config = dev_config(&relay);
+    let (store, auth) = logged_in_app(&relay, &config, ClientRole::Driver, DRIVER).await;
+    let ns = auth.namespace().to_owned();
+    let before = store
+        .load(&ns, CredentialKind::RefreshToken)
+        .expect("store")
+        .expect("refresh token");
+    let (client, _events) = DriverClient::spawn(
+        config.clone(),
+        relay.transport(),
+        std::sync::Arc::clone(&auth),
+    )
+    .expect("valid config");
+    let mut status = client.status();
+    relay.hold_auth_replies(true);
+    client.start(session_create()).await.expect("start");
+    wait_held_auth_replies(&relay, 1).await;
+    assert!(matches!(
+        auths(&relay).last(),
+        Some(protocol::messages::Auth::AccessToken { .. })
+    ));
+    client.stop().await.expect("stop");
+    wait_state(&mut status, ConnectionState::Disconnected).await;
+    // The link dies before the held AUTH_OK leaves the relay.
+    relay.disconnect_all();
+    advance(Duration::from_millis(100)).await;
+    relay.hold_auth_replies(false);
+    advance(Duration::from_millis(100)).await;
+    assert_eq!(
+        store
+            .load(&ns, CredentialKind::RefreshToken)
+            .expect("store")
+            .as_ref(),
+        Some(&before),
+        "the app never received that AUTH_OK"
+    );
+    client.shutdown().await;
+
+    advance(Duration::from_secs(20 * 60)).await;
+    let (client, mut events) = DriverClient::spawn(
+        config.clone(),
+        relay.transport(),
+        restart_app(&store, &config),
+    )
+    .expect("valid config");
+    client.start(session_create()).await.expect("start");
+    let (_, kind) = session_ready(&mut events).await;
+    assert_eq!(kind, SessionReadyKind::Created);
+    assert!(matches!(
+        auths(&relay).last(),
+        Some(protocol::messages::Auth::RefreshToken { .. })
+    ));
+    client.shutdown().await;
+}

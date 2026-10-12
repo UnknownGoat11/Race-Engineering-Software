@@ -622,6 +622,71 @@ async fn engineer_tickets_resume_within_the_window_only() {
     relay.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_reply_lost_in_a_second_blip_is_retried_with_the_previous_ticket() {
+    let relay = TestRelay::start(|_| {}).await;
+    let (mut driver, info, cc) = relay.driver_session(DRIVER).await;
+    let sid = info.session_id;
+    let (erin, erin_info) = relay.engineer_joined(ENGINEER, &code_of(&cc)).await;
+    let joined = engineer_ticket(&erin_info);
+    driver.engineer_list().await;
+    let resume = |ticket: &Secret| {
+        Message::SessionResume(SessionResume::Engineer {
+            session_id: sid,
+            ticket: ticket.clone(),
+        })
+    };
+
+    // Blip 1, then blip 2 before the engineer app read the resume's SESSION_INFO: the new ticket
+    // never reached it.
+    erin.kill();
+    let mut lost = relay.client().await;
+    lost.login(ClientRole::Engineer, ENGINEER).await;
+    lost.send(&resume(&joined)).await;
+    let never_seen = engineer_ticket(&session_info(&mut lost).await);
+    lost.kill();
+
+    // The app presents the ticket it holds again: accepted within the grace, with a new ticket.
+    let mut back = relay.client().await;
+    back.login(ClientRole::Engineer, ENGINEER).await;
+    back.send(&resume(&joined)).await;
+    let resumed = session_info(&mut back).await;
+    back.session_id = sid;
+    let fresh = engineer_ticket(&resumed);
+    assert!(fresh != joined && fresh != never_seen);
+    driver
+        .send_stream(
+            MsgType::TelemetryDelta,
+            FramePriority::P0,
+            b"after-two-blips",
+        )
+        .await;
+    assert_eq!(
+        back.stream_of(MsgType::TelemetryDelta).await.payload(),
+        b"after-two-blips"
+    );
+    let list = driver
+        .recv_until(|m| match m {
+            Message::EngineerList(l)
+                if l.engineers
+                    .first()
+                    .is_some_and(|e| e.link == EngineerLink::Healthy) =>
+            {
+                Some(l)
+            }
+            _ => None,
+        })
+        .await;
+    assert_eq!(list.engineers.len(), 1, "still the same single slot");
+
+    // The ticket that was never delivered is dead.
+    let mut probe = relay.client().await;
+    probe.login(ClientRole::Engineer, ENGINEER).await;
+    probe.send(&resume(&never_seen)).await;
+    assert_eq!(probe.error().await.code, ErrorCode::NotAuthorized);
+    relay.shutdown().await;
+}
+
 // -------------------------------------------------------------------------------------------------
 // Driver grace, resume and restart
 // -------------------------------------------------------------------------------------------------
@@ -635,6 +700,10 @@ async fn driver_reconnect_and_restart_keep_engineers_connected() {
     let sid = info.session_id;
     let token = driver_token(&info);
     let (mut erin, _) = relay.engineer_joined(ENGINEER, &code_of(&cc)).await;
+    // The code for a second engineer, which the driver may already have shared.
+    let shared = driver.connect_code().await;
+    assert_eq!(shared.engineers_connected, 1);
+    let shared = shared.code.expect("a slot is free");
     let seq1 = driver
         .send_stream(MsgType::TelemetryDelta, FramePriority::P0, b"before")
         .await;
@@ -677,6 +746,11 @@ async fn driver_reconnect_and_restart_keep_engineers_connected() {
     driver2.session_id = sid;
     let cc = driver2.connect_code().await;
     assert_eq!(cc.engineers_connected, 1);
+    assert_eq!(
+        cc.code.as_ref(),
+        Some(&shared),
+        "the unused code is re-sent unchanged (same code, same expiry)"
+    );
     let list = driver2.engineer_list().await;
     assert_eq!(list.engineers[0].username, ENGINEER);
     driver2.continue_seq(seq1);
@@ -714,6 +788,7 @@ async fn driver_reconnect_and_restart_keep_engineers_connected() {
         .await;
     assert_eq!(session_info(&mut driver3).await.session_id, sid);
     driver3.session_id = sid;
+    assert_eq!(driver3.connect_code().await.code.as_ref(), Some(&shared));
     driver3.reset_seq();
     let restarted_seq = driver3
         .send_stream(MsgType::TelemetryDelta, FramePriority::P0, b"new-space")
@@ -731,6 +806,14 @@ async fn driver_reconnect_and_restart_keep_engineers_connected() {
     let frame = erin.stream_of(MsgType::TelemetryDelta).await;
     assert_eq!(frame.header().sequence, 1);
     assert_eq!(frame.payload(), b"new-space");
+    // The code shared before both driver reconnects still admits the second engineer, once.
+    relay.engineer_joined(ENGINEER2, &shared.code).await;
+    let mut late = relay.client().await;
+    late.login(ClientRole::Engineer, ENGINEER3).await;
+    assert_eq!(
+        late.join(&shared.code).await.expect_err("single use").code,
+        ErrorCode::SessionFull
+    );
     relay.shutdown().await;
 }
 
@@ -1431,6 +1514,102 @@ async fn replayed_and_expired_tokens_are_rejected() {
     assert_eq!((e.code, e.fatal), (ErrorCode::RateLimited, true));
     assert!(c6.closed().await);
     assert!(relay.handle.metrics().auth_failures.get() >= 6);
+    relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_access_token_login_keeps_the_held_refresh_token_live() {
+    let now = Arc::new(AtomicU64::new(unix_now_ns()));
+    let clock_now = Arc::clone(&now);
+    let clock = WallClock::from_fn(move || clock_now.load(Ordering::SeqCst));
+    let advance = |d: Duration| {
+        now.fetch_add(u64::try_from(d.as_nanos()).expect("fits"), Ordering::SeqCst);
+    };
+    let mut config = test_config();
+    config.timeouts.revocation_check_interval = Duration::from_millis(100);
+    let grace = config.auth.refresh_reuse_grace;
+    let relay = TestRelay::start_with(
+        config,
+        Store::Memory(MemoryStore::new()),
+        None,
+        Some(clock),
+        true,
+    )
+    .await;
+
+    // A legit app logs in once, then connects with its access token (twice, overlapping, as on a
+    // quick stop/start). Those AUTH_OKs carry no refresh token ("none issued": empty, expiry 0),
+    // so whichever the app applies last, it keeps the refresh token of its login (review F1/F2).
+    let mut login_conn = relay.client().await;
+    login_conn.hello(ClientRole::Engineer).await;
+    let login = login_conn
+        .auth(Auth::Password {
+            username: ENGINEER.into(),
+            password: Secret::new(PASSWORD),
+        })
+        .await
+        .expect("login");
+    let mut app = relay.client().await;
+    app.hello(ClientRole::Engineer).await;
+    let mut overlapping = relay.client().await;
+    overlapping.hello(ClientRole::Engineer).await;
+    for conn in [&mut app, &mut overlapping] {
+        let via_access = conn
+            .auth(Auth::AccessToken {
+                token: login.access_token.clone(),
+            })
+            .await
+            .expect("access token");
+        assert!(via_access.refresh_token.expose().is_empty());
+        assert_eq!(via_access.refresh_expires_at_ns, 0);
+        assert!(!via_access.access_token.expose().is_empty());
+    }
+
+    // Far beyond the reuse grace (the app restarts after its access token expired): the refresh
+    // token of the login is still the live one and rotates normally; nothing is revoked.
+    advance(grace * 10);
+    let mut restarted = relay.client().await;
+    restarted.hello(ClientRole::Engineer).await;
+    let rotated = restarted
+        .auth(Auth::RefreshToken {
+            token: login.refresh_token.clone(),
+        })
+        .await
+        .expect("the held refresh token is live");
+    assert_eq!(rotated.username, ENGINEER);
+    assert_ne!(rotated.refresh_token, login.refresh_token);
+    assert!(
+        app.quiet(Duration::from_millis(400)).await,
+        "no revocation: the app's connection stays open"
+    );
+
+    // After the grace the rotated token is reuse: the login is revoked and its open connections
+    // are closed.
+    advance(grace + Duration::from_secs(1));
+    let mut thief = relay.client().await;
+    thief.hello(ClientRole::Engineer).await;
+    let reuse = thief
+        .auth(Auth::RefreshToken {
+            token: login.refresh_token.clone(),
+        })
+        .await
+        .expect_err("reuse after the grace");
+    assert_eq!(reuse.code, ErrorCode::AuthFailed);
+    for open in [&mut app, &mut overlapping, &mut restarted] {
+        let e = open.error().await;
+        assert_eq!((e.code, e.fatal), (ErrorCode::AuthFailed, true));
+        assert!(open.closed().await);
+    }
+    assert!(relay.handle.metrics().revoked_disconnects.get() >= 3);
+    let mut again = relay.client().await;
+    again.hello(ClientRole::Engineer).await;
+    let refused = again
+        .auth(Auth::RefreshToken {
+            token: rotated.refresh_token.clone(),
+        })
+        .await
+        .expect_err("the whole family is revoked");
+    assert_eq!(refused.code, ErrorCode::AuthFailed);
     relay.shutdown().await;
 }
 

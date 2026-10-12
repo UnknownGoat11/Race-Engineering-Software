@@ -8,11 +8,17 @@
 //!   without the key it cannot. Codes live in relay memory only and never outlive the process.
 //! * Comparison is constant-time ([`crate::secrets::TokenHash::ct_eq`]). Codes are never logged:
 //!   they travel as [`Secret`] whose `Debug` is redacted.
+//! * The plaintext of a session's single unused code may be held in relay memory
+//!   ([`CodePlaintext`]: redacted `Debug`, wiped on drop) so a resuming driver is shown the same
+//!   code with its original expiry (PROTOCOL.md §6). It is never persisted or logged and is dropped
+//!   on redemption, rotation, expiry, session end and shutdown; without it (e.g. after a relay
+//!   restart) the driver gets a fresh code.
 
 use hmac::{Hmac, Mac};
 use protocol::messages::{CONNECT_CODE_ALPHABET, CONNECT_CODE_LEN, Secret};
 use sha2::Sha256;
 use thiserror::Error;
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::secrets::{DIGEST_BYTES, RandomError, TokenHash, random_bytes};
 
@@ -25,7 +31,7 @@ const CHAR_MASK: u64 = 0b1_1111;
 
 /// Generates a fresh canonical connection code (upper case, no separator).
 pub fn generate_connect_code() -> Result<Secret, RandomError> {
-    let bytes = random_bytes::<CODE_RANDOM_BYTES>()?;
+    let mut bytes = random_bytes::<CODE_RANDOM_BYTES>()?;
     let mut value = bytes
         .iter()
         .fold(0u64, |acc, &b| (acc << u8::BITS) | u64::from(b));
@@ -36,9 +42,34 @@ pub fn generate_connect_code() -> Result<Secret, RandomError> {
         value >>= BITS_PER_CHAR;
     }
     // The alphabet is ASCII: one byte is one char.
-    Ok(Secret::new(
-        chars.iter().map(|&b| char::from(b)).collect::<String>(),
-    ))
+    let code = Secret::new(chars.iter().map(|&b| char::from(b)).collect::<String>());
+    // Scratch copies of the code (the returned `Secret` itself is not wiped on drop).
+    bytes.zeroize();
+    chars.zeroize();
+    Ok(code)
+}
+
+/// The plaintext of a session's single unused connection code, held in relay memory only (never
+/// persisted, never logged) so a resuming driver can be shown the same code. `Debug` is redacted
+/// and the bytes are wiped when it is dropped.
+pub struct CodePlaintext(Zeroizing<String>);
+
+impl CodePlaintext {
+    /// Keeps a copy of `code` (canonical form).
+    pub fn new(code: &Secret) -> Self {
+        Self(Zeroizing::new(code.expose().to_owned()))
+    }
+
+    /// The code for one CONNECT_CODE message.
+    pub fn to_secret(&self) -> Secret {
+        Secret::new(self.0.as_str())
+    }
+}
+
+impl std::fmt::Debug for CodePlaintext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CodePlaintext(<redacted>)")
+    }
 }
 
 /// Why a [`CodeHasher`] could not be created.
@@ -127,5 +158,15 @@ mod tests {
         assert!(!a.digest(&code).ct_eq(&b.digest(&code)));
         assert!(!a.digest(&code).ct_eq(&a.digest(&Secret::new("7KQ4MZ9V"))));
         assert_eq!(format!("{a:?}"), "CodeHasher(<key redacted>)");
+    }
+
+    #[test]
+    fn plaintext_round_trips_and_never_prints() {
+        let code = generate_connect_code().expect("rng");
+        let kept = CodePlaintext::new(&code);
+        assert_eq!(kept.to_secret(), code);
+        let printed = format!("{kept:?} {:?}", Some(&kept));
+        assert!(!printed.contains(code.expose()));
+        assert!(printed.contains("<redacted>"));
     }
 }

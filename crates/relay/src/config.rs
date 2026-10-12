@@ -28,6 +28,9 @@ pub const MIN_PAYLOAD_LIMIT: usize = 16 * 1024;
 pub const CLOSED_SESSION_RETENTION_DAYS: u64 = 30;
 /// Seconds per day.
 const DAY_S: u64 = 24 * 3_600;
+/// Default [`Timeouts::previous_ticket_grace`]: how long an engineer's previous resume ticket is
+/// still accepted after a newer one was issued (D-022: a SESSION_INFO lost in a second blip).
+pub const PREVIOUS_TICKET_GRACE: Duration = Duration::from_secs(60);
 
 /// Validated relay configuration.
 #[derive(Debug, Clone)]
@@ -121,6 +124,11 @@ pub struct Timeouts {
     pub connect_code_ttl: Duration,
     /// An engineer's resume ticket stays valid this long after its connection dropped (D-022).
     pub engineer_ticket_ttl: Duration,
+    /// After a new ticket was issued to an engineer slot, the ticket the engineer presented
+    /// before (its previous ticket) is still accepted for this long, until the new one is used in
+    /// a resume (PROTOCOL.md §6: the SESSION_INFO carrying the new ticket may be lost in a second
+    /// blip). Zero accepts only the newest ticket.
+    pub previous_ticket_grace: Duration,
     /// Period of the housekeeping pass (expiries, link health).
     pub housekeeping_interval: Duration,
     /// Period of `last_activity` updates of live sessions in the store.
@@ -232,6 +240,7 @@ impl Default for Timeouts {
             driver_grace: Duration::from_secs(timing::SESSION_DRIVER_GRACE_S),
             connect_code_ttl: Duration::from_secs(timing::CONNECT_CODE_TTL_S),
             engineer_ticket_ttl: Duration::from_secs(timing::ENGINEER_TICKET_TTL_S),
+            previous_ticket_grace: PREVIOUS_TICKET_GRACE,
             housekeeping_interval: Duration::from_millis(500),
             session_touch_interval: Duration::from_secs(30),
             degraded_drop_window: Duration::from_secs(5),
@@ -504,6 +513,7 @@ mod tests {
         assert_eq!(c.limits.code_redemptions_per_hour, 20);
         assert_eq!(c.timeouts.connect_code_ttl, Duration::from_secs(600));
         assert_eq!(c.timeouts.engineer_ticket_ttl, Duration::from_secs(600));
+        assert_eq!(c.timeouts.previous_ticket_grace, Duration::from_secs(60));
         assert_eq!(c.timeouts.driver_grace, Duration::from_secs(600));
         assert_eq!(c.auth.access_token_ttl, Duration::from_secs(900));
         assert_eq!(c.auth.refresh_token_ttl, Duration::from_secs(90 * 86_400));

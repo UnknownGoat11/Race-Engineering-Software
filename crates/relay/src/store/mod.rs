@@ -10,7 +10,9 @@
 //!   whether the connection dropped) are session metadata; they let engineers resume after a relay
 //!   restart (D-022 network blips, [`crate::tickets`]).
 //! * Refresh tokens form **families** (one per login). Using a token rotates it; a rotated token
-//!   presented again after the reuse grace revokes its whole family (theft detection). Revoking an
+//!   presented again after the reuse grace revokes its whole family (theft detection). Rotating a
+//!   live token also supersedes the family's other live tokens the same way
+//!   ([`AccountStore::rotate_refresh_token`]: one live refresh token per login). Revoking an
 //!   account revokes all of its families (logout everywhere).
 
 mod memory;
@@ -301,7 +303,8 @@ pub trait AccountStore: Send + Sync {
     ) -> impl Future<Output = Result<Vec<Uuid>, StoreError>> + Send;
 
     /// Inserts a refresh token and revokes the oldest active tokens of its family beyond
-    /// `keep_active` (orphans a client no longer holds).
+    /// `keep_active` (orphans a client no longer holds); nothing is superseded (a new login, a use
+    /// tolerated within the reuse grace). Writers of one family's tokens are serialized.
     fn insert_refresh_token(
         &self,
         token: &NewRefreshToken,
@@ -314,8 +317,12 @@ pub trait AccountStore: Send + Sync {
         hash: &TokenHash,
     ) -> impl Future<Output = Result<Option<RefreshTokenRecord>, StoreError>> + Send;
 
-    /// Atomically marks `old` rotated (only if neither rotated nor revoked) and inserts its
-    /// successor.
+    /// Atomically, only if `old` is neither rotated nor revoked: marks `old` rotated, supersedes
+    /// every other live (neither rotated nor revoked) token of its family exactly like a used one
+    /// (`rotated_at = at`: presented after the reuse grace it revokes the family) and inserts the
+    /// successor as the family's only live token (D-008, D-020: one live refresh token per login;
+    /// the client provably holds `old`, so no token it may still hold is killed). Otherwise
+    /// [`RotateOutcome::Lost`] and nothing changes. Writers of one family's tokens are serialized.
     fn rotate_refresh_token(
         &self,
         old: Uuid,

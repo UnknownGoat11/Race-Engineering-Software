@@ -5,13 +5,19 @@
 //!   PROTOCOL.md §6 for the clients, modelled on the real relay's rules (`crates/relay`): HELLO
 //!   with a configurable environment and limits; AUTH (password; refresh tokens rotated on every
 //!   use, a rotated token accepted again within `REFRESH_REUSE_GRACE`, later reuse revoking the
-//!   whole login family; access tokens, whose AUTH_OK carries a *successor* refresh token of the
-//!   same family; at most `MAX_ACTIVE_REFRESH_PER_FAMILY` refresh tokens per family);
-//!   SESSION_CREATE / SESSION_RESUME (driver); one-time connection codes; SESSION_JOIN /
-//!   SESSION_RESUME (engineer) with a **new resume ticket in every SESSION_INFO** (join, resume,
-//!   driver-restart notice) and only the newest one accepted, unless a grace period for the
-//!   superseded ticket is configured ([`FakeRelay::set_ticket_grace`]); ENGINEER_LIST /
-//!   ENGINEER_KICK, SESSION_CLOSE, PING/PONG, forwarding with relay trailers and the join replay.
+//!   whole login family; rotating a live token **supersedes the family's other live tokens**, a
+//!   token tolerated within the grace supersedes nothing; access tokens, whose AUTH_OK carries
+//!   **no refresh token** (empty, expiry 0) and changes none; at most
+//!   `MAX_ACTIVE_REFRESH_PER_FAMILY` refresh tokens per family); SESSION_CREATE / SESSION_RESUME
+//!   (driver; the unused, unexpired connection code is **re-sent unchanged**); one-time connection
+//!   codes (a redemption, kick or CONNECT_CODE_REQUEST issues a fresh one, a DISCONNECT or ticket
+//!   expiry keeps the unused one); SESSION_JOIN / SESSION_RESUME (engineer) with a **new resume
+//!   ticket in every SESSION_INFO** (join, resume, driver-restart notice), the newest ticket
+//!   accepted and up to two **earlier ones, each within `PREVIOUS_TICKET_GRACE`** after the ticket
+//!   that replaced it (configurable with [`FakeRelay::set_ticket_grace`]; a resume makes the
+//!   presented ticket the only earlier one of the fresh ticket, a driver-restart notice adds the
+//!   current one); ENGINEER_LIST / ENGINEER_KICK, SESSION_CLOSE, PING/PONG, forwarding with relay
+//!   trailers and the join replay.
 //!   Every client frame is checked with `protocol::frame::check_client_frame` (violations are
 //!   counted, see [`FakeRelay::header_violations`]). Faults are injected with its methods: stall,
 //!   slow reader, abrupt drop, down, token revocation, ticket loss, environment, held or lost
@@ -98,6 +104,9 @@ const REFRESH_REUSE_GRACE: Duration = Duration::from_secs(60);
 /// Refresh tokens kept per login family; older ones are deleted (real relay default
 /// `max_active_refresh_per_family`).
 const MAX_ACTIVE_REFRESH_PER_FAMILY: usize = 4;
+/// An engineer's previous resume ticket is accepted this long after a newer one was issued (real
+/// relay default `previous_ticket_grace`).
+pub const PREVIOUS_TICKET_GRACE: Duration = Duration::from_secs(60);
 /// Outbound frames queued per relay connection.
 const RELAY_OUT_CAPACITY: usize = 8_192;
 /// Channel id used in test TLV blocks (not in the registry: receivers skip it).
@@ -234,26 +243,53 @@ struct Slot {
     since_ns: u64,
     /// The newest ticket (sent in the latest SESSION_INFO).
     ticket: String,
-    /// The ticket it replaced and when (honoured only within [`Inner::ticket_grace`]).
-    previous: Option<(String, Instant)>,
+    /// Earlier tickets the engineer may still hold, oldest first, each with when the ticket that
+    /// replaced it was issued (honoured only within [`Inner::ticket_grace`]); at most
+    /// [`MAX_PREVIOUS_TICKETS`].
+    previous: VecDeque<(String, Instant)>,
     /// The engineer's connection, `None` while it is dropped (link `Reconnecting`).
     conn: Option<u64>,
 }
 
+/// Earlier tickets an engineer slot keeps besides its newest one (real relay
+/// `MAX_PREVIOUS_TICKETS`).
+const MAX_PREVIOUS_TICKETS: usize = 2;
+
 impl Slot {
-    /// Replaces the ticket with `fresh` (every SESSION_INFO carries a new one) and returns it.
-    fn rotate(&mut self, fresh: String) -> String {
+    /// Replaces the ticket with `fresh` (every SESSION_INFO carries a new one) and returns it,
+    /// like the real relay. After a resume (`presented`) that ticket becomes the only earlier one
+    /// (using the newest ticket kills every older one). After a driver-restart notice
+    /// (`presented` = `None`) the current ticket is added to the earlier ones still inside
+    /// `grace` (the notice and a resume reply may both have been lost), the oldest dropped.
+    fn rotate(
+        &mut self,
+        fresh: String,
+        presented: Option<String>,
+        grace: Option<Duration>,
+    ) -> String {
         let old = std::mem::replace(&mut self.ticket, fresh);
-        self.previous = Some((old, Instant::now()));
+        let now = Instant::now();
+        match presented {
+            Some(presented) => self.previous = VecDeque::from([(presented, now)]),
+            None => {
+                self.previous
+                    .retain(|(_, at)| grace.is_some_and(|g| at.elapsed() < g));
+                self.previous.push_back((old, now));
+                while self.previous.len() > MAX_PREVIOUS_TICKETS {
+                    self.previous.pop_front();
+                }
+            }
+        }
         self.ticket.clone()
     }
 
-    /// Whether `presented` is the current ticket, or the superseded one within `grace`.
+    /// Whether `presented` is the current ticket, or an earlier one within `grace`.
     fn accepts(&self, presented: &str, grace: Option<Duration>) -> bool {
         self.ticket == presented
-            || self.previous.as_ref().is_some_and(|(old, at)| {
-                old == presented && grace.is_some_and(|g| at.elapsed() <= g)
-            })
+            || self
+                .previous
+                .iter()
+                .any(|(old, at)| old == presented && grace.is_some_and(|g| at.elapsed() < g))
     }
 }
 
@@ -261,7 +297,8 @@ impl Slot {
 struct RefreshRecord {
     username: String,
     family: u64,
-    /// When it was presented (and rotated) the first time.
+    /// When it was presented (and rotated) the first time, or superseded by the rotation of
+    /// another live token of its family.
     rotated_at: Option<Instant>,
 }
 
@@ -326,6 +363,21 @@ impl State {
         token
     }
 
+    /// Marks every live (not yet used) refresh token of `family` used or superseded now (the
+    /// rotation of a live token): accepted again within `REFRESH_REUSE_GRACE`, reuse afterwards.
+    fn supersede_family(&mut self, family: u64) {
+        let Some(tokens) = self.families.get(&family) else {
+            return;
+        };
+        for token in tokens {
+            if let Some(record) = self.refresh.get_mut(token)
+                && record.rotated_at.is_none()
+            {
+                record.rotated_at = Some(Instant::now());
+            }
+        }
+    }
+
     /// Revokes a login family: its refresh and access tokens stop working.
     fn revoke_family(&mut self, family: u64) {
         self.revoked_families.insert(family);
@@ -379,8 +431,8 @@ struct Inner {
     /// Engineer SESSION_RESUMEs still to be "lost": processed (ticket rotated), then the
     /// connection drops before the reply leaves the relay.
     lose_session_replies: AtomicU32,
-    /// How long a superseded engineer ticket is still accepted (`None`: only the newest one,
-    /// like the real relay today).
+    /// How long an engineer slot's previous ticket is still accepted (default
+    /// [`PREVIOUS_TICKET_GRACE`] like the real relay; `None`: only the newest one).
     ticket_grace: Mutex<Option<Duration>>,
     /// A relay bug: SESSION_JOIN is answered with a SESSION_INFO carrying a driver token.
     join_reply_without_ticket: AtomicBool,
@@ -455,7 +507,7 @@ impl FakeRelay {
                 held_auth: Mutex::new(Vec::new()),
                 hold_session: AtomicBool::new(false),
                 lose_session_replies: AtomicU32::new(0),
-                ticket_grace: Mutex::new(None),
+                ticket_grace: Mutex::new(Some(PREVIOUS_TICKET_GRACE)),
                 join_reply_without_ticket: AtomicBool::new(false),
                 join_limit: Mutex::new(None),
                 state: Mutex::new(state),
@@ -577,6 +629,17 @@ impl FakeRelay {
         }
     }
 
+    /// Sends only the newest held AUTH reply (if its connection is still open) and keeps holding
+    /// the others, so overlapping AUTHs' AUTH_OKs reach the client out of order.
+    pub fn release_newest_held_auth_reply(&self) {
+        let newest = self.inner.held_auth.lock().pop();
+        if let Some((conn, frame)) = newest
+            && let Some(ctl) = self.inner.conns.lock().get(&conn)
+        {
+            ctl.send(frame);
+        }
+    }
+
     /// AUTH replies currently held back.
     pub fn held_auth_replies(&self) -> usize {
         self.inner.held_auth.lock().len()
@@ -600,7 +663,8 @@ impl FakeRelay {
         self.inner.lose_session_replies.store(n, Ordering::SeqCst);
     }
 
-    /// How long a superseded engineer ticket stays valid (`None`, the default: only the newest).
+    /// How long an engineer slot's previous ticket stays valid (default [`PREVIOUS_TICKET_GRACE`];
+    /// `None`: only the newest, like the relay before the grace existed).
     pub fn set_ticket_grace(&self, grace: Option<Duration>) {
         *self.inner.ticket_grace.lock() = grace;
     }
@@ -670,7 +734,7 @@ impl FakeRelay {
         for s in st.sessions.values_mut() {
             for slot in s.engineers.values_mut() {
                 slot.ticket = format!("dead-{}", slot.ticket);
-                slot.previous = None;
+                slot.previous.clear();
             }
         }
     }
@@ -1102,16 +1166,17 @@ impl Inner {
         true
     }
 
-    /// AUTH with the real relay's token rules (see the module docs). Every AUTH_OK carries a new
-    /// refresh token of the login's family.
+    /// AUTH with the real relay's token rules (see the module docs). A password or refresh-token
+    /// AUTH_OK carries a new refresh token of the login's family; an access-token AUTH_OK carries
+    /// none (empty token, expiry 0) and changes no refresh token.
     fn authenticate(&self, auth: &Auth, now: u64) -> Result<AuthOk, ErrorCode> {
         let mut guard = self.state.lock();
         let st = &mut *guard;
-        let (username, family) = match auth {
+        let (username, family, issue_refresh) = match auth {
             Auth::Password { username, password } => match st.accounts.get(username) {
                 Some(a) if a.password == password.expose() => {
                     let family = st.next();
-                    (username.clone(), family)
+                    (username.clone(), family, true)
                 }
                 _ => return Err(ErrorCode::AuthFailed),
             },
@@ -1119,14 +1184,19 @@ impl Inner {
                 if st.expired_refresh.contains(token.expose()) {
                     return Err(ErrorCode::TokenExpired);
                 }
-                let Some(record) = st.refresh.get_mut(token.expose()) else {
+                let Some(record) = st.refresh.get(token.expose()) else {
                     return Err(ErrorCode::AuthFailed);
                 };
-                let family = record.family;
+                let (family, username) = (record.family, record.username.clone());
+                if st.revoked_families.contains(&family) {
+                    return Err(ErrorCode::AuthFailed);
+                }
                 match record.rotated_at {
-                    // First use: rotated (the successor follows below).
-                    None => record.rotated_at = Some(Instant::now()),
-                    // The client missed the AUTH_OK with the successor: accepted again.
+                    // A live token (the client provably holds it): rotated, and every other live
+                    // token of the family is superseded (one live refresh token per login).
+                    None => st.supersede_family(family),
+                    // The client missed the AUTH_OK with the successor: accepted again, nothing
+                    // superseded (this may be a delayed duplicate).
                     Some(at) if at.elapsed() <= REFRESH_REUSE_GRACE => {}
                     // Reuse after the grace: theft detection revokes the whole login.
                     Some(_) => {
@@ -1134,18 +1204,24 @@ impl Inner {
                         return Err(ErrorCode::AuthFailed);
                     }
                 }
-                let username = record.username.clone();
-                if st.revoked_families.contains(&family) {
-                    return Err(ErrorCode::AuthFailed);
-                }
-                (username, family)
+                (username, family, true)
             }
+            // No refresh token is issued and none is touched: the client keeps the one it holds.
             Auth::AccessToken { token } => match st.access.get(token.expose()) {
-                Some((u, family)) if !st.revoked_families.contains(family) => (u.clone(), *family),
+                Some((u, family)) if !st.revoked_families.contains(family) => {
+                    (u.clone(), *family, false)
+                }
                 _ => return Err(ErrorCode::AuthFailed),
             },
         };
-        let refresh = st.issue_refresh(&username, family);
+        let (refresh, refresh_expires_at_ns) = if issue_refresh {
+            (
+                st.issue_refresh(&username, family),
+                now + duration_ns(REFRESH_TTL),
+            )
+        } else {
+            (String::new(), 0)
+        };
         let access = format!("access-{}", st.next());
         st.access.insert(access.clone(), (username.clone(), family));
         let account = st
@@ -1161,7 +1237,7 @@ impl Inner {
             access_token: Secret::new(access),
             refresh_token: Secret::new(refresh),
             access_expires_at_ns: now + duration_ns(ACCESS_TTL),
-            refresh_expires_at_ns: now + duration_ns(REFRESH_TTL),
+            refresh_expires_at_ns,
         })
     }
 
@@ -1233,6 +1309,7 @@ impl Inner {
             out.push(me, self.error(ErrorCode::NotAuthorized, false));
             return;
         };
+        let grace = *self.ticket_grace.lock();
         let mut st = self.state.lock();
         let rotated = self
             .rotate_driver_tokens
@@ -1271,11 +1348,21 @@ impl Inner {
                 else {
                     continue;
                 };
-                let ticket = slot.rotate(fresh);
+                // The engineer holds the current ticket, or an earlier one whose SESSION_INFO was
+                // lost: all of them stay valid within their grace.
+                let ticket = slot.rotate(fresh, None, grace);
                 let info =
                     self.session_info(s, ResumeCredential::EngineerTicket(Secret::new(ticket)));
                 out.push(c, self.control(Message::SessionInfo(info), session_id));
             }
+        }
+        // Like the real relay: the unused code is re-sent unchanged (same code, same expiry) while
+        // it is unexpired; an expired one is replaced by a fresh code.
+        if let Some(s) = st.sessions.get_mut(&session_id)
+            && s.code.as_ref().is_some_and(|(_, expires)| *expires <= now)
+            && let Some((expired, _)) = s.code.take()
+        {
+            s.spent.insert(expired);
         }
         self.refill_code(&mut st, session_id, now);
         let s = st.sessions.get(&session_id).expect("exists");
@@ -1347,7 +1434,7 @@ impl Inner {
                 display_name: account.display_name,
                 since_ns: now,
                 ticket: ticket.clone(),
-                previous: None,
+                previous: VecDeque::new(),
                 conn: Some(me),
             },
         );
@@ -1413,8 +1500,10 @@ impl Inner {
         {
             out.closes.push(old);
         }
-        // Like the real relay: the reply carries a new ticket, the presented one is superseded.
-        let ticket = slot.rotate(fresh);
+        // Like the real relay: the reply carries a new ticket, and the presented one (current or
+        // earlier) becomes its only earlier ticket, so a lost reply can be retried within the
+        // grace; using the newer ticket kills the older ones.
+        let ticket = slot.rotate(fresh, Some(ticket.expose().to_owned()), grace);
         conn.bound = Some(session_id);
         conn.slot = Some(slot_id);
         let info = self.session_info(s, ResumeCredential::EngineerTicket(Secret::new(ticket)));
@@ -1462,6 +1551,11 @@ impl Inner {
             });
             out.push(c, self.control(close, sid));
             out.closes.push(c);
+        }
+        // Like the real relay: a kick may mean the code leaked, so the unused one is replaced by a
+        // fresh code (a DISCONNECT keeps it, see `connection_closed`).
+        if let Some((old, _)) = s.code.take() {
+            s.spent.insert(old);
         }
         self.refill_code(&mut st, sid, now);
         if let Some(s) = st.sessions.get(&sid) {
