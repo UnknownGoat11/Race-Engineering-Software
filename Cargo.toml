@@ -12,6 +12,7 @@ members = [
     "crates/app-core",
     "crates/relay",
     "tools/lmu-diag",
+    "tools/gen-ts",
     "apps/desktop/src-tauri",
 ]
 

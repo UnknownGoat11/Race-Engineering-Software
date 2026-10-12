@@ -1,0 +1,16 @@
+[package]
+name = "gen-ts"
+description = "Generates the desktop UI's channel metadata and golden TLV/UiBatch vectors from telemetry-model (D-023)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+telemetry-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

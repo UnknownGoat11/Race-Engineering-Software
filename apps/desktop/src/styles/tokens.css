@@ -39,6 +39,50 @@
   --color-env-staging: var(--color-info);
   --color-env-production: var(--color-text-muted);
 
+  /*
+   * Telemetry data quality (spec §87, §126, §162: normal / warning / critical / stale). Colour is never the
+   * only signal: every state also carries a text label and a distinct marker shape.
+   * Stale on --color-bg: 7.2:1 (AA).
+   */
+  --color-quality-live: var(--color-ok);
+  --color-quality-degraded: var(--color-warn);
+  --color-quality-stale: #a78bfa;
+  --color-quality-invalid: var(--color-error);
+  /* No data, unavailable, not supported, disconnected: nothing to show, so it recedes. */
+  --color-quality-none: var(--color-text-dim);
+
+  /* Provenance badges (spec §107) are neutral; the border style tells them apart. */
+  --color-provenance: var(--color-text-muted);
+  --color-provenance-border: var(--color-border-strong);
+
+  /*
+   * Telemetry graphs (src/graph). Series colours are categorical only: they never carry a state, so they avoid
+   * the status hues above; a stale or gap state is always also drawn as a dashed line or a labelled band.
+   */
+  --graph-series-1: #5aa9ff;
+  --graph-series-2: #ff8c42;
+  --graph-series-3: #3dd6c6;
+  --graph-series-4: #f06fb0;
+  --graph-series-5: #d4d46a;
+  --graph-series-6: #e0a96d;
+  --graph-series-7: #b0e05c;
+  --graph-series-8: #6fd3ff;
+  --graph-bg: var(--color-surface);
+  --graph-grid: #1d2229;
+  --graph-axis: var(--color-border-strong);
+  --graph-axis-text: var(--color-text-muted);
+  --graph-cursor: var(--color-text);
+  --graph-zoom-fill: #4c9dff26;
+  --graph-zoom-stroke: var(--color-accent);
+  --graph-marker-sector: var(--color-text-dim);
+  --graph-marker-lap: var(--color-text-muted);
+  --graph-marker-event: var(--color-info);
+  --graph-current-car: var(--color-accent-strong);
+  --graph-current-car-stale: var(--color-quality-stale);
+  --graph-gap-fill: #ffffff0f;
+  --graph-gap-text: var(--color-text-dim);
+  --graph-reference: var(--color-text-muted);
+
   /* Typography */
   --font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
@@ -71,6 +115,11 @@
   --radius-md: 3px;
   --border-width: 1px;
   --focus-ring-width: 2px;
+
+  /* Numeric readouts (spec §161): fixed-width value slot so digits never shift the layout. */
+  --font-size-readout: 22px;
+  --readout-value-min-width: 7ch;
+  --quality-marker-size: 8px;
 
   /* Layout */
   --header-height: 40px;

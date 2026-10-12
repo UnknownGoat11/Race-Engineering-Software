@@ -1,0 +1,194 @@
+/*
+ * Telemetry presentation primitives: ValueReadout, ProvenanceBadge, DataQualityIndicator.
+ * Every colour comes from tokens.css. A state is always also written as text and, for quality markers, drawn
+ * as a distinct shape, so colour is never the only signal (spec §162).
+ */
+
+/* ------------------------------------------------------------------- Readout */
+
+.telemetry-readout {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  grid-template-areas:
+    'label state'
+    'body body';
+  align-items: baseline;
+  column-gap: var(--space-2);
+  row-gap: var(--space-1);
+  min-width: 0;
+}
+
+.telemetry-readout__label {
+  grid-area: label;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.telemetry-readout__state {
+  grid-area: state;
+  justify-self: end;
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-caps);
+  white-space: nowrap;
+}
+
+.telemetry-readout__body {
+  grid-area: body;
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+}
+
+/* Fixed-width slot with tabular figures: digits never shift as values change (spec §161). */
+.telemetry-readout__value {
+  display: inline-block;
+  min-width: var(--readout-value-min-width);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-readout);
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--line-height-tight);
+  text-align: right;
+}
+
+.telemetry-readout__unit {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.telemetry-readout[data-state='degraded'] .telemetry-readout__state {
+  color: var(--color-quality-degraded);
+}
+
+.telemetry-readout[data-state='stale'] .telemetry-readout__value,
+.telemetry-readout[data-state='stale'] .telemetry-readout__state {
+  color: var(--color-quality-stale);
+}
+
+.telemetry-readout[data-state='invalid'] .telemetry-readout__value,
+.telemetry-readout[data-state='invalid'] .telemetry-readout__state {
+  color: var(--color-quality-invalid);
+}
+
+.telemetry-readout[data-state='unavailable'] .telemetry-readout__value,
+.telemetry-readout[data-state='unavailable'] .telemetry-readout__state,
+.telemetry-readout[data-state='notSupported'] .telemetry-readout__value,
+.telemetry-readout[data-state='notSupported'] .telemetry-readout__state,
+.telemetry-readout[data-state='noData'] .telemetry-readout__value,
+.telemetry-readout[data-state='noData'] .telemetry-readout__state {
+  color: var(--color-quality-none);
+}
+
+/* --------------------------------------------------------------- Provenance */
+
+.telemetry-provenance {
+  border-color: var(--color-provenance-border);
+  color: var(--color-provenance);
+}
+
+.telemetry-provenance[data-provenance='Derived'] {
+  border-style: dashed;
+}
+
+.telemetry-provenance[data-provenance='Estimated'] {
+  border-style: dotted;
+}
+
+/* ------------------------------------------------------------------ Quality */
+
+.telemetry-quality {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+
+.telemetry-quality__marker {
+  flex: none;
+  width: var(--quality-marker-size);
+  height: var(--quality-marker-size);
+  border: var(--border-width) solid currentColor;
+}
+
+.telemetry-quality__label {
+  color: var(--color-text-muted);
+}
+
+.telemetry-quality__state {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: var(--letter-spacing-caps);
+}
+
+.telemetry-quality__age {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* LINK ONLY: the state covers the link to the Rust core, not LMU's own refresh (freshness.ts). */
+.telemetry-quality__basis {
+  padding: 0 var(--space-1);
+  border: var(--border-width) dashed currentColor;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  letter-spacing: var(--letter-spacing-caps);
+}
+
+/* Shapes: live ● filled circle, degraded ◆ diamond, stale ○ hollow circle, invalid ■ square,
+   no data / disconnected □ hollow square. */
+.telemetry-quality[data-state='live'] {
+  color: var(--color-quality-live);
+}
+
+.telemetry-quality[data-state='live'] .telemetry-quality__marker {
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.telemetry-quality[data-state='degraded'] {
+  color: var(--color-quality-degraded);
+}
+
+.telemetry-quality[data-state='degraded'] .telemetry-quality__marker {
+  transform: rotate(45deg);
+  background: currentColor;
+}
+
+.telemetry-quality[data-state='stale'] {
+  color: var(--color-quality-stale);
+}
+
+.telemetry-quality[data-state='stale'] .telemetry-quality__marker {
+  border-radius: 50%;
+}
+
+.telemetry-quality[data-state='invalid'] {
+  color: var(--color-quality-invalid);
+}
+
+.telemetry-quality[data-state='invalid'] .telemetry-quality__marker {
+  background: currentColor;
+}
+
+.telemetry-quality[data-state='noData'],
+.telemetry-quality[data-state='disconnected'] {
+  color: var(--color-quality-none);
+}
+
+/* ------------------------------------------------------------------ Utility */
+
+.telemetry-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
