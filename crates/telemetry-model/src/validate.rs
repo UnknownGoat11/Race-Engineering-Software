@@ -6,7 +6,7 @@
 
 use thiserror::Error;
 
-use crate::channel::ChannelDef;
+use crate::channel::{ChannelDef, ChannelId};
 use crate::frame::TelemetryFrame;
 use crate::registry;
 use crate::value::{Quality, Sample, Value};
@@ -136,7 +136,7 @@ pub fn validate_sample(
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FrameValidation {
     /// Samples downgraded to `Invalid`, with the reason (registry order).
-    pub rejected: Vec<(crate::channel::ChannelId, Rejection)>,
+    pub rejected: Vec<(ChannelId, Rejection)>,
 }
 
 /// Validates whole frames, keeping one [`RateGuard`] per registry channel.
@@ -188,9 +188,23 @@ impl FrameValidator {
         report
     }
 
-    /// Forgets all rate history (session change, reconnect, ET regression).
+    /// Forgets all rate history (session change, reconnect, ET regression, teleport).
     pub fn reset(&mut self) {
         self.guards.iter_mut().for_each(RateGuard::reset);
+    }
+
+    /// Forgets the rate history of `ids` only, so that their next value is accepted as a new reference
+    /// (a known discontinuity such as a refuel or a tyre change). Range checks still apply. Ids that are not
+    /// registry channels are ignored; returns how many guards were reset.
+    pub fn reset_channels(&mut self, ids: &[ChannelId]) -> usize {
+        let mut count = 0;
+        for id in ids {
+            if let Some(guard) = registry::index_of(*id).and_then(|i| self.guards.get_mut(i)) {
+                guard.reset();
+                count += 1;
+            }
+        }
+        count
     }
 }
 
@@ -377,6 +391,47 @@ mod tests {
         assert_eq!(g.get(ch::SPEED_FORWARD), &Sample::invalid());
         assert_eq!(g.get(ch::RPM), &Sample::invalid());
         v.reset();
+    }
+
+    #[test]
+    fn reset_channels_accepts_a_known_step_and_keeps_other_guards() {
+        let mut v = FrameValidator::new();
+        let frame = |seq: u64, t: f64, fuel: f32, pos: f64| {
+            let mut f = TelemetryFrame::new(seq, 0, Some(t));
+            f.set_valid(ch::FUEL, Value::F32(fuel)).expect("set");
+            f.set_valid(ch::POS_X, Value::F64(pos)).expect("set");
+            f
+        };
+        assert!(
+            v.validate(&mut frame(1, 10.00, 40.0, 100.0))
+                .rejected
+                .is_empty()
+        );
+        // Refuel step (+30 L in 10 ms) announced as a discontinuity of the fuel channel only.
+        assert_eq!(
+            v.reset_channels(&[ch::FUEL, ChannelId(0xFFFF)]),
+            1,
+            "unknown id ignored"
+        );
+        let mut refuel = frame(2, 10.01, 70.0, 2_000.0);
+        let report = v.validate(&mut refuel);
+        assert_eq!(refuel.get(ch::FUEL), &Sample::valid(Value::F32(70.0)));
+        // The position guard was not reset: a 1.9 km jump in 10 ms is still rejected.
+        assert_eq!(report.rejected.len(), 1);
+        assert_eq!(report.rejected[0].0, ch::POS_X);
+        assert_eq!(refuel.get(ch::POS_X), &Sample::invalid());
+        // The new fuel level is the reference now: a spike after it is rejected again.
+        let mut spike = frame(3, 10.02, 10.0, 100.2);
+        let report = v.validate(&mut spike);
+        assert_eq!(report.rejected.len(), 1);
+        assert_eq!(report.rejected[0].0, ch::FUEL);
+        // Range checks still apply after a reset.
+        v.reset_channels(&[ch::FUEL]);
+        let mut garbage = frame(4, 10.03, 5_000.0, 100.3);
+        assert!(matches!(
+            v.validate(&mut garbage).rejected.as_slice(),
+            [(id, Rejection::OutOfRange { .. })] if *id == ch::FUEL
+        ));
     }
 
     #[test]

@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use lmu_normalizer::discontinuity::{CarSample, TELEPORT_MIN_STEP_M, is_teleport};
+use lmu_normalizer::mapping::decode_current_sector;
 use lmu_normalizer::{NormalizedOutput, TelemetryDisposition};
 use lmu_reader::{RawSnapshot, ReaderStats};
 use serde::Serialize;
@@ -36,6 +38,18 @@ const MAX_IDENTITY_CHANGES: usize = 1_000;
 pub const RESTART_ET_MAX_S: f64 = 10.0;
 /// A regression within this capture time of an identity change is explained by it (s).
 const REGRESSION_IDENTITY_WINDOW_S: f64 = 2.0;
+/// Fastest real motion (m/s) between two telemetry samples: a longer step in the elapsed ET, ending at rest,
+/// is a teleport (the normalizer's rule, `lmu_normalizer::discontinuity::is_teleport`, with the registry's
+/// position rate bound).
+const MAX_MOTION_MPS: f64 = 200.0;
+/// A regression within this capture time of a teleport is explained by it (s): when a practice session ran
+/// out with the car in the pit box, LMU moved it 19.6 m into its garage stall, reset fuel and lap counter and
+/// published ET 315.830 before 315.820 (Gate 1).
+const REGRESSION_TELEPORT_WINDOW_S: f64 = 0.5;
+/// Largest step back (s) a teleport explains: one or a few updates, never a session-sized jump.
+const TELEPORT_REGRESSION_MAX_S: f64 = 1.0;
+/// Teleports remembered for explaining regressions.
+const MAX_TELEPORTS: usize = 1_000;
 /// Plausible `mDeltaTime` values recorded in the histogram are below this (s).
 const MAX_DELTA_TIME_S: f64 = 1.0;
 /// Parts per million.
@@ -485,6 +499,9 @@ pub struct TimingAcc {
     abs_offset: Summary,
     dispositions: BTreeMap<&'static str, u64>,
     identity_changes_s: Vec<f64>,
+    /// Slot, id and teleport facts of the last player sample (same rule as the normalizer).
+    last_player_pos: Option<(u8, i32, CarSample)>,
+    teleports_s: Vec<f64>,
 }
 
 /// Label of a normalizer disposition.
@@ -537,7 +554,17 @@ impl TimingAcc {
         if snapshot.telemetry_updated {
             self.telemetry.record(now, capture_s, player_et);
             if let Some(p) = &snapshot.player {
-                self.observe_player(now, capture_s, p.slot, &p.telemetry);
+                // The pit area as the normalizer sees it: the pit-lane bit, or the player's scoring row (joined
+                // by `mID`) in the pits or in its garage stall.
+                let row = snapshot
+                    .scoring
+                    .vehicles
+                    .iter()
+                    .find(|r| r.is_player && r.id == p.telemetry.id);
+                let (_, pit_lane_bit) = decode_current_sector(p.telemetry.current_sector);
+                let in_pit_area =
+                    pit_lane_bit || row.is_some_and(|r| r.in_pits || r.in_garage_stall);
+                self.observe_player(now, capture_s, p.slot, &p.telemetry, in_pit_area);
             }
         }
         if snapshot.scoring_updated {
@@ -563,12 +590,26 @@ impl TimingAcc {
         }
     }
 
-    fn observe_player(&mut self, now: u64, capture_s: f64, slot: u8, t: &lmu_reader::RawTelemetry) {
+    fn observe_player(
+        &mut self,
+        now: u64,
+        capture_s: f64,
+        slot: u8,
+        t: &lmu_reader::RawTelemetry,
+        in_pit_area: bool,
+    ) {
         let dt = t.delta_time;
         if dt.is_finite() && dt > 0.0 && dt < MAX_DELTA_TIME_S {
             // Bounded above, so the cast cannot saturate.
             self.delta_time.record((dt * NS_PER_S) as u64);
         }
+        let sample = CarSample {
+            et_s: t.elapsed_time,
+            pos: [t.pos.x, t.pos.y, t.pos.z],
+            speed_mps: lmu_normalizer::convention::speed_mps(t.local_vel),
+            in_pit_area,
+        };
+        self.note_teleport(capture_s, slot, t.id, sample);
         let et = t.elapsed_time;
         if !et.is_finite() {
             return;
@@ -604,6 +645,23 @@ impl TimingAcc {
         self.last_player = Some(current);
     }
 
+    /// Records a teleport of the player car at `capture_s`. Exactly the normalizer's rule
+    /// (`lmu_normalizer::discontinuity::is_teleport`: a positive ET step, at rest afterwards, in the pit area),
+    /// so the verify tool never excuses an ET defect the product would not.
+    fn note_teleport(&mut self, capture_s: f64, slot: u8, id: i32, sample: CarSample) {
+        if let Some((last_slot, last_id, prev)) = self.last_player_pos
+            && last_slot == slot
+            && last_id == id
+            && is_teleport(&prev, &sample, MAX_MOTION_MPS)
+            && self.teleports_s.len() < MAX_TELEPORTS
+        {
+            self.teleports_s.push(capture_s);
+        }
+        if sample.pos.iter().all(|v| v.is_finite()) && sample.et_s.is_finite() {
+            self.last_player_pos = Some((slot, id, sample));
+        }
+    }
+
     /// Builds the report.
     pub fn finish(mut self, reader: &ReaderStats) -> TimingReport {
         let changes = std::mem::take(&mut self.identity_changes_s);
@@ -617,6 +675,15 @@ impl TimingAcc {
                 .any(|&c| (c - r.at_capture_s).abs() <= REGRESSION_IDENTITY_WINDOW_S)
             {
                 Some("session/track/vehicle identity changed within 2 s".to_owned())
+            } else if r.from_et_s - r.to_et_s <= TELEPORT_REGRESSION_MAX_S
+                && self
+                    .teleports_s
+                    .iter()
+                    .any(|&c| (c - r.at_capture_s).abs() <= REGRESSION_TELEPORT_WINDOW_S)
+            {
+                Some(format!(
+                    "the car was teleported (moved > {TELEPORT_MIN_STEP_M} m faster than {MAX_MOTION_MPS} m/s, then at rest, e.g. into the garage) within {REGRESSION_TELEPORT_WINDOW_S} s"
+                ))
             } else {
                 None
             };
@@ -670,6 +737,56 @@ impl TimingAcc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn car(et_s: f64, x: f64, speed_mps: f64, in_pit_area: bool) -> CarSample {
+        CarSample {
+            et_s,
+            pos: [x, 0.0, 0.0],
+            speed_mps,
+            in_pit_area,
+        }
+    }
+
+    /// gate1c review: the verify tool's teleport rule is the normalizer's, not a looser copy.
+    #[test]
+    fn teleports_follow_the_normalizer_rule() {
+        let teleports = |samples: &[CarSample]| {
+            let mut acc = TimingAcc::default();
+            for (i, s) in samples.iter().enumerate() {
+                acc.note_teleport(i as f64, 0, 7, *s);
+            }
+            acc.teleports_s.len()
+        };
+        // Garage return (Gate 1): 652 m in 7.5 ms, at rest, in the pit area.
+        assert_eq!(
+            teleports(&[
+                car(397.0325, 0.0, 0.0, false),
+                car(397.040, 652.0, 0.11, true)
+            ]),
+            1
+        );
+        // The same jump out on track is a garbage position, not a teleport.
+        assert_eq!(
+            teleports(&[
+                car(397.0325, 0.0, 0.0, false),
+                car(397.040, 652.0, 0.11, false)
+            ]),
+            0
+        );
+        // A jump with ET stepping back is not a teleport either (the normalizer requires dt > 0).
+        assert_eq!(
+            teleports(&[
+                car(397.040, 0.0, 0.0, true),
+                car(397.0325, 652.0, 0.11, true)
+            ]),
+            0
+        );
+        // Another car (different id) is never compared.
+        let mut acc = TimingAcc::default();
+        acc.note_teleport(0.0, 0, 7, car(1.0, 0.0, 0.0, true));
+        acc.note_teleport(1.0, 0, 8, car(1.01, 652.0, 0.0, true));
+        assert!(acc.teleports_s.is_empty());
+    }
 
     #[test]
     fn drift_segment_fits_a_line() {

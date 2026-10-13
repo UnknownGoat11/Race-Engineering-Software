@@ -19,7 +19,9 @@ const WRAP_FROM_SHARE: f64 = 0.9;
 const WRAP_TO_SHARE: f64 = 0.1;
 /// A wrap and a lap increment within this many scoring updates belong together.
 const WRAP_PAIR_UPDATES: u64 = 2;
-/// Lap distance outside `-margin..=length + margin` is out of range (m, registry range).
+/// Lap distance outside `-margin..=length + margin` is out of range on a counted lap (m). Before the first
+/// line crossing (lap counter 0) and in the pit area the car can be behind the line: LMU reports down to
+/// −1 track length there (Gate 1 race: −1,586.8 m in the garage, −1,023.4 m on the grid; A-LMU-070).
 const LAP_DIST_MARGIN_M: f64 = 50.0;
 /// Backward share accepted (fraction of scoring updates).
 const BACKWARD_PASS_SHARE: f64 = 0.005;
@@ -43,6 +45,11 @@ pub struct LapDistCheck {
     increments: u64,
     pit_increments: u64,
     paired: u64,
+    /// Updates behind the line (negative distance) before the first crossing or in the pit area.
+    behind_line: u64,
+    /// Start re-bases: the distance re-measured across the line before the first crossing (Gate 1 race:
+    /// −1,023 → +4,797 m at the formation start, +5,726 → −87 m at the green flag), not line crossings.
+    start_rebases: u64,
     since_wrap: Option<u64>,
     since_increment: Option<u64>,
     examples: Vec<String>,
@@ -71,12 +78,36 @@ impl LapDistCheck {
         self.updates += 1;
         self.since_wrap = self.since_wrap.map(|n| n + 1);
         self.since_increment = self.since_increment.map(|n| n + 1);
-        if d < -LAP_DIST_MARGIN_M || d > length + LAP_DIST_MARGIN_M {
+        let in_pit_area = row.in_pits || row.in_garage_stall;
+        let before_first_crossing = laps == 0;
+        let behind_line_allowed = before_first_crossing || in_pit_area;
+        if d < -length - LAP_DIST_MARGIN_M
+            || d > length + LAP_DIST_MARGIN_M
+            || (d < -LAP_DIST_MARGIN_M && !behind_line_allowed)
+        {
             self.out_of_range += 1;
+        } else if d < -LAP_DIST_MARGIN_M {
+            self.behind_line += 1;
         }
         if let Some((prev_laps, prev_d)) = self.prev {
-            let wrap = prev_d > length * WRAP_FROM_SHARE && d < length * WRAP_TO_SHARE;
             let increment = laps == prev_laps.saturating_add(1);
+            let crossing = prev_d > length * WRAP_FROM_SHARE && d < length * WRAP_TO_SHARE;
+            // Before the first crossing LMU re-measures the distance across the line (to a negative value at
+            // the green flag, or by +1 lap at the formation start) without counting a lap.
+            let rebase = before_first_crossing
+                && laps == prev_laps
+                && ((crossing && d < 0.0)
+                    || (prev_d < 0.0 && d - prev_d > length * WRAP_FROM_SHARE));
+            if rebase {
+                self.start_rebases += 1;
+                if self.examples.len() < LISTED_EXAMPLES {
+                    self.examples.push(format!(
+                        "start re-base before the first crossing: {prev_d:.1} → {d:.1} m at capture {:.1} s",
+                        step.capture_s
+                    ));
+                }
+            }
+            let wrap = crossing && !rebase;
             if wrap || increment || laps != prev_laps {
                 tracing::debug!(
                     component = crate::COMPONENT,
@@ -99,7 +130,6 @@ impl LapDistCheck {
                     self.since_wrap = Some(0);
                 }
             }
-            let in_pit_area = row.in_pits || row.in_garage_stall;
             if increment && !wrap && in_pit_area {
                 // A lap counted on arrival in the pits / garage (e.g. a return to the garage from the
                 // track): the distance jumps to the pit area instead of wrapping at the line.
@@ -121,7 +151,11 @@ impl LapDistCheck {
                     }
                 }
             }
-            if !wrap && laps == prev_laps && d < prev_d - LAP_DIST_BACK_TOLERANCE_M && !row.in_pits
+            if !wrap
+                && !rebase
+                && laps == prev_laps
+                && d < prev_d - LAP_DIST_BACK_TOLERANCE_M
+                && !in_pit_area
             {
                 self.backward += 1;
                 if self.examples.len() < LISTED_EXAMPLES {
@@ -152,6 +186,8 @@ impl LapDistCheck {
             .metric("lap_increments_in_pits", self.pit_increments as f64)
             .metric("paired", self.paired as f64)
             .metric("out_of_range", self.out_of_range as f64)
+            .metric("behind_line_updates", self.behind_line as f64)
+            .metric("start_rebases", self.start_rebases as f64)
             .metric_opt("track_length_m", self.track_length.median());
         o.line(format!(
             "player scoring updates {}; track length {} m; within-lap steps back > {LAP_DIST_BACK_TOLERANCE_M} m outside the pits: {} ({})",
@@ -164,12 +200,22 @@ impl LapDistCheck {
             "wraps (> {WRAP_FROM_SHARE} L → < {WRAP_TO_SHARE} L) {}, lap-counter increments on track {}, paired within {WRAP_PAIR_UPDATES} updates {}; increments counted in the pits/garage without a wrap {}; out of range {}",
             self.wraps, self.increments, self.paired, self.pit_increments, self.out_of_range
         ));
+        o.line(format!(
+            "behind the line (< −{LAP_DIST_MARGIN_M} m) before the first crossing or in the pit area: {} updates; start re-bases (not line crossings): {}",
+            self.behind_line, self.start_rebases
+        ));
         for e in &self.examples {
             o.line(e.clone());
         }
         let summary = format!(
-            "{} wraps / {} on-track lap increments ({} paired), {} counted in the pits, {} steps back",
-            self.wraps, self.increments, self.paired, self.pit_increments, self.backward
+            "{} wraps / {} on-track lap increments ({} paired), {} counted in the pits, {} steps back, {} start re-base(s), {} out of range",
+            self.wraps,
+            self.increments,
+            self.paired,
+            self.pit_increments,
+            self.backward,
+            self.start_rebases,
+            self.out_of_range
         );
         let fail = backward_share.is_some_and(|s| s > BACKWARD_FAIL_SHARE)
             || paired_share.is_some_and(|s| s < PAIRED_FAIL_SHARE && events >= 2)

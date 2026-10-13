@@ -331,13 +331,31 @@ pub enum FractionScale {
     /// No decisive evidence yet (every value so far is in 0..1.5, which fits both scales): withheld
     /// (`UNAVAILABLE`), never guessed.
     Undecided,
-    /// 0..1, confirmed by [`FRACTION_CONFIRM_LAPS`] laps of changing values in (0, 1.5].
+    /// 0..1, confirmed by [`FRACTION_CONFIRM_LAPS`] laps of changing values in (0, 1.5], or verified with
+    /// real data for the running LMU version.
     Fraction,
     /// 0..100: divided by 100 (latched after a value above [`PERCENT_SCALE_THRESHOLD`]).
     Percent,
     /// A value outside every known scale (or a value above 1.5 after 0..1 was confirmed) was seen: the
     /// channel is INVALID for the session. Never converted to an invented unit (e.g. MJ).
     Unrecognized,
+    /// Session evidence contradicts the scale verified for the running LMU version (LMU changed it): the
+    /// channel is withheld (`UNAVAILABLE`) for the session, exactly like a brake-unit conflict.
+    Conflicting,
+}
+
+/// LMU `gameVersion`s whose `mVirtualEnergy` scale was verified with real data (A-LMU-013). 14200 (LMU
+/// 1.4.2.0): lmu-verify on the Gate-1 capture (Hypercar, Monza, 2026-10-12) read 0.839..1.000 over the whole
+/// session with 3.6 % used per lap: a 0..1 fraction (docs/GATE1_REPORT.md).
+pub const VERIFIED_VIRTUAL_ENERGY_SCALES: &[(i32, FractionScale)] =
+    &[(14_200, FractionScale::Fraction)];
+
+/// The `mVirtualEnergy` scale verified for an LMU `gameVersion`, if any.
+pub fn verified_virtual_energy_scale(game_version: i32) -> Option<FractionScale> {
+    VERIFIED_VIRTUAL_ENERGY_SCALES
+        .iter()
+        .find(|(version, _)| *version == game_version)
+        .map(|&(_, scale)| scale)
 }
 
 /// Running confirmation of the 0..1 scale.
@@ -349,50 +367,90 @@ struct FractionConfirmation {
 }
 
 /// Per-session scale detector for one fraction-like field (A-LMU-013/014).
+///
+/// The default detector decides from evidence only. For an LMU version listed in
+/// [`VERIFIED_VIRTUAL_ENERGY_SCALES`] the caller sets the verified scale
+/// ([`FractionScaleDetector::set_verified_scale`]): it applies from the first value, and session evidence
+/// for the other scale makes the detector [`FractionScale::Conflicting`] (values withheld), because it would
+/// mean LMU changed the scale. A value outside every scale is [`FractionScale::Unrecognized`] either way.
 #[derive(Debug, Clone)]
 pub struct FractionScaleDetector {
-    scale: FractionScale,
+    /// Scale decided from evidence alone (never `Conflicting`).
+    evidence: FractionScale,
     confirmation: Option<FractionConfirmation>,
+    /// Scale verified for the running LMU version, if any.
+    verified: Option<FractionScale>,
+    /// Evidence contradicted the verified scale (latched for the session).
+    conflicting: bool,
 }
 
 impl Default for FractionScaleDetector {
     fn default() -> Self {
         Self {
-            scale: FractionScale::Undecided,
+            evidence: FractionScale::Undecided,
             confirmation: None,
+            verified: None,
+            conflicting: false,
         }
     }
 }
 
 impl FractionScaleDetector {
-    /// Current scale.
+    /// Current scale (verified scale, evidence and conflicts combined).
     pub fn scale(&self) -> FractionScale {
-        self.scale
+        match (self.evidence, self.conflicting, self.verified) {
+            (FractionScale::Unrecognized, _, _) => FractionScale::Unrecognized,
+            (_, true, _) => FractionScale::Conflicting,
+            (FractionScale::Undecided, false, Some(verified)) => verified,
+            (evidence, _, _) => evidence,
+        }
+    }
+
+    /// Sets the scale verified for the running LMU version (`None` for an unverified version). Called with
+    /// every value, so it follows a version change; `Undecided`/`Unrecognized`/`Conflicting` are not scales
+    /// and are ignored.
+    pub fn set_verified_scale(&mut self, scale: Option<FractionScale>) {
+        self.verified =
+            scale.filter(|s| matches!(s, FractionScale::Fraction | FractionScale::Percent));
+    }
+
+    /// `true` while the scale in use is the one verified for this LMU version (not contradicted).
+    pub fn is_verified(&self) -> bool {
+        self.verified.is_some_and(|v| v == self.scale())
     }
 
     /// Feeds a raw value and the player's current lap number; returns the new scale if it changed (latched
     /// transitions only).
     pub fn observe(&mut self, raw: f64, lap: i32) -> Option<FractionScale> {
-        if !raw.is_finite() || self.scale == FractionScale::Unrecognized {
+        let before = self.scale();
+        if !raw.is_finite() || before == FractionScale::Unrecognized {
             return None;
         }
-        let next = if !(FRACTION_MIN_TOLERANT..=PERCENT_MAX_TOLERANT).contains(&raw) {
+        self.evidence = if !(FRACTION_MIN_TOLERANT..=PERCENT_MAX_TOLERANT).contains(&raw) {
             FractionScale::Unrecognized
         } else if raw > PERCENT_SCALE_THRESHOLD {
-            match self.scale {
+            match self.evidence {
                 // A 0..1 field confirmed over laps never reads above 1.5: conflicting evidence.
                 FractionScale::Fraction => FractionScale::Unrecognized,
                 _ => FractionScale::Percent,
             }
-        } else if self.scale == FractionScale::Undecided {
+        } else if self.evidence == FractionScale::Undecided {
             self.confirm_fraction(raw, lap)
         } else {
-            self.scale
+            self.evidence
         };
-        (next != self.scale).then(|| {
-            self.scale = next;
-            next
-        })
+        // Evidence for a decided scale other than the verified one: LMU changed something.
+        if let Some(verified) = self.verified
+            && matches!(
+                self.evidence,
+                FractionScale::Fraction | FractionScale::Percent
+            )
+            && self.evidence != verified
+        {
+            self.conflicting = true;
+        }
+        let after = self.scale();
+        (after != before).then_some(after)
     }
 
     /// Tracks the 0..1 confirmation with a value in the ambiguous range; returns the resulting scale.
@@ -420,12 +478,107 @@ impl FractionScaleDetector {
         }
     }
 
-    /// Converts `raw` to a 0..1 fraction under the current scale; `None` while undecided or unrecognized.
+    /// Converts `raw` to a 0..1 fraction under the current scale; `None` while undecided, unrecognized or
+    /// conflicting.
     pub fn to_fraction(&self, raw: f64) -> Option<f64> {
-        match self.scale {
+        match self.scale() {
             FractionScale::Fraction => Some(raw),
             FractionScale::Percent => Some(raw / PERCENT_FULL_SCALE),
-            FractionScale::Undecided | FractionScale::Unrecognized => None,
+            FractionScale::Undecided | FractionScale::Unrecognized | FractionScale::Conflicting => {
+                None
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// Channels LMU leaves at their first value (A-LMU-065)
+// ---------------------------------------------------------------------------------------------------------
+
+/// Distance (m) the car must have travelled in the session before a continuous channel that still holds its
+/// exact first value counts as not filled by LMU. A simulated aero force, ride height or boost pressure
+/// changes within metres of driving (drag grows with speed²); 200 m is 4 s at 50 m/s or 12 s at a 60 km/h
+/// pit limiter, so a working channel cannot be judged stuck.
+pub const STUCK_MIN_TRAVEL_M: f64 = 200.0;
+/// Largest time step (s) integrated into the travelled distance: a longer step is a pause or a gap, and the
+/// distance covered in it is not known.
+pub const TRAVEL_MAX_STEP_S: f64 = 0.5;
+/// Fastest speed (m/s) integrated into the travelled distance (the registry speed bound; faster is garbage).
+pub const TRAVEL_MAX_SPEED_MPS: f64 = 150.0;
+
+/// Distance travelled in the session, integrated from the vehicle speed between published samples.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Odometer {
+    last_et_s: Option<f64>,
+    travelled_m: f64,
+}
+
+impl Odometer {
+    /// Adds the distance covered since the previous sample (`speed × dt`, only for a plausible speed and a
+    /// short positive step) and returns the total.
+    pub fn observe(&mut self, et_s: f64, speed_mps: f64) -> f64 {
+        if let Some(prev) = self.last_et_s {
+            let dt = et_s - prev;
+            let plausible_speed = (0.0..=TRAVEL_MAX_SPEED_MPS).contains(&speed_mps);
+            if dt > 0.0 && dt <= TRAVEL_MAX_STEP_S && plausible_speed {
+                self.travelled_m += speed_mps * dt;
+            }
+        }
+        if et_s.is_finite() {
+            self.last_et_s = Some(et_s);
+        }
+        self.travelled_m
+    }
+
+    /// Distance travelled so far (m).
+    pub fn travelled_m(&self) -> f64 {
+        self.travelled_m
+    }
+}
+
+/// What is known about a continuous channel that may not be filled by LMU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FillState {
+    /// No finite value seen yet.
+    Unknown,
+    /// Every value so far is bit-identical to the first one and the car has not travelled
+    /// [`STUCK_MIN_TRAVEL_M`] yet: a stationary car can legitimately read a constant (0 N of drag at rest).
+    Initial,
+    /// The value changed at least once: LMU fills it (latched for the session).
+    Live,
+    /// The car travelled [`STUCK_MIN_TRAVEL_M`] and the value is still bit-identical to its first value: LMU
+    /// does not fill it for this car/version. Withheld (`UNAVAILABLE`) until it changes.
+    NotFilled,
+}
+
+/// Per-channel detector of a value LMU never updates (A-LMU-065). Pure and session scoped: it never invents a
+/// value, it only decides whether the raw value is a measurement.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct StuckValueDetector {
+    first_bits: Option<u64>,
+    changed: bool,
+}
+
+impl StuckValueDetector {
+    /// Feeds a raw value and the session's travelled distance; returns the fill state for this value.
+    /// Non-finite values are not evidence (validation publishes them `INVALID`).
+    pub fn observe(&mut self, raw: f64, travelled_m: f64) -> FillState {
+        if raw.is_finite() {
+            // Bitwise: "unchanged" means exactly the value LMU initialised the field with.
+            let bits = raw.to_bits();
+            let first = *self.first_bits.get_or_insert(bits);
+            self.changed |= bits != first;
+        }
+        self.state(travelled_m)
+    }
+
+    /// The fill state without a new value.
+    pub fn state(&self, travelled_m: f64) -> FillState {
+        match (self.first_bits, self.changed) {
+            (None, _) => FillState::Unknown,
+            (Some(_), true) => FillState::Live,
+            (Some(_), false) if travelled_m >= STUCK_MIN_TRAVEL_M => FillState::NotFilled,
+            (Some(_), false) => FillState::Initial,
         }
     }
 }
@@ -774,6 +927,97 @@ mod tests {
         back.observe(0.8, 2);
         assert_eq!(back.observe(0.7, 3), None);
         assert_eq!(back.observe(0.6, 4), Some(FractionScale::Fraction));
+    }
+
+    #[test]
+    fn verified_fraction_scale_applies_from_the_first_value() {
+        assert_eq!(
+            verified_virtual_energy_scale(14_200),
+            Some(FractionScale::Fraction)
+        );
+        assert_eq!(verified_virtual_energy_scale(14_300), None);
+        let mut d = FractionScaleDetector::default();
+        d.set_verified_scale(verified_virtual_energy_scale(14_200));
+        assert_eq!(d.scale(), FractionScale::Fraction, "before any value");
+        assert!(d.is_verified());
+        assert_eq!(d.observe(0.95, 0), None, "no transition: already Fraction");
+        assert_eq!(d.to_fraction(0.95), Some(0.95));
+        // Two laps of changing values agree with the verified scale: still verified, no transition.
+        d.observe(0.90, 1);
+        assert_eq!(d.observe(0.85, 2), None);
+        assert!(d.is_verified());
+        // An evidence-only detector (lmu-verify's independent check) still waits for the evidence.
+        let mut evidence_only = FractionScaleDetector::default();
+        assert_eq!(evidence_only.observe(0.95, 0), None);
+        assert_eq!(evidence_only.to_fraction(0.95), None);
+        assert!(!evidence_only.is_verified());
+    }
+
+    #[test]
+    fn evidence_against_the_verified_scale_withholds_the_values() {
+        let mut d = FractionScaleDetector::default();
+        d.set_verified_scale(Some(FractionScale::Fraction));
+        assert_eq!(d.observe(0.9, 1), None);
+        // A percent reading on a version verified as 0..1: LMU changed the scale.
+        assert_eq!(d.observe(87.0, 1), Some(FractionScale::Conflicting));
+        assert!(!d.is_verified());
+        assert_eq!(d.to_fraction(87.0), None);
+        assert_eq!(d.to_fraction(0.9), None, "withheld for the session");
+        assert_eq!(d.observe(0.9, 2), None, "latched");
+        // Garbage beyond every scale still makes it INVALID.
+        assert_eq!(d.observe(5_000.0, 2), Some(FractionScale::Unrecognized));
+
+        // Verified percent contradicted by two laps of changing values in 0..1.5.
+        let mut p = FractionScaleDetector::default();
+        p.set_verified_scale(Some(FractionScale::Percent));
+        assert_eq!(p.to_fraction(50.0), Some(0.5));
+        p.observe(0.95, 3);
+        p.observe(0.90, 4);
+        assert_eq!(p.observe(0.85, 5), Some(FractionScale::Conflicting));
+
+        // Non-scales are ignored as verified values; the detector stays evidence-only.
+        let mut u = FractionScaleDetector::default();
+        u.set_verified_scale(Some(FractionScale::Undecided));
+        assert_eq!(u.scale(), FractionScale::Undecided);
+        assert_eq!(u.to_fraction(0.9), None);
+    }
+
+    #[test]
+    fn odometer_integrates_plausible_motion_only() {
+        let mut o = Odometer::default();
+        assert_eq!(o.observe(10.0, 50.0), 0.0, "first sample: no distance");
+        assert!((o.observe(10.01, 50.0) - 0.5).abs() < 1e-9);
+        // A 2 s gap (pause, reconnect) adds nothing; nor do garbage or non-finite speeds.
+        assert!((o.observe(12.01, 50.0) - 0.5).abs() < 1e-9);
+        assert!((o.observe(12.02, 9_999.0) - 0.5).abs() < 1e-9);
+        assert!((o.observe(12.03, f64::NAN) - 0.5).abs() < 1e-9);
+        assert!((o.observe(12.03, 50.0) - 0.5).abs() < 1e-9, "no time step");
+        assert!((o.travelled_m() - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn stuck_value_needs_travel_and_flips_live_on_the_first_change() {
+        let mut d = StuckValueDetector::default();
+        assert_eq!(d.state(0.0), FillState::Unknown);
+        assert_eq!(d.observe(f64::NAN, 0.0), FillState::Unknown, "not evidence");
+        // Stationary car: 0 N of drag is real at rest.
+        assert_eq!(d.observe(0.0, 0.0), FillState::Initial);
+        assert_eq!(d.observe(0.0, STUCK_MIN_TRAVEL_M - 1.0), FillState::Initial);
+        // Still exactly the first value after the car moved: not filled by LMU.
+        assert_eq!(d.observe(0.0, STUCK_MIN_TRAVEL_M), FillState::NotFilled);
+        assert_eq!(d.observe(0.0, 5_000.0), FillState::NotFilled);
+        // The moment LMU writes a different value the channel is live, and stays live.
+        assert_eq!(d.observe(812.5, 5_000.0), FillState::Live);
+        assert_eq!(d.observe(0.0, 5_000.0), FillState::Live);
+
+        // A channel that changes while the car is still stationary is live at once.
+        let mut boost = StuckValueDetector::default();
+        assert_eq!(boost.observe(101_325.0, 0.0), FillState::Initial);
+        assert_eq!(boost.observe(101_325.5, 0.0), FillState::Live);
+        // -0.0 and 0.0 are different raw values (bitwise comparison).
+        let mut zero = StuckValueDetector::default();
+        zero.observe(0.0, 0.0);
+        assert_eq!(zero.observe(-0.0, 0.0), FillState::Live);
     }
 
     #[test]

@@ -79,8 +79,8 @@ pub struct Faults {
     pub fuel_rises_on_track: bool,
     /// `mInPits` false in the pit lane.
     pub in_pits_wrong: bool,
-    /// `mPitState` 5 (undocumented) in the garage.
-    pub pit_state_undocumented: bool,
+    /// `mPitState` 6 (a value LMU was never seen to use) in the garage.
+    pub pit_state_unknown: bool,
     /// Right wheels' L/C/R mirrored (inner/outer swapped on one side, A-LMU-016).
     pub tyre_mirror_right: bool,
     /// Tyre wear jitters up and down.
@@ -592,9 +592,10 @@ fn write_frame(b: &mut LayoutBuilder, car: &Car, f: &Faults, frame: u64, scoring
         let garage = matches!(car.phase, Phase::Garage { .. });
         b.set(r, veh_scoring::IN_GARAGE_STALL, garage);
         let pit_state: u8 = match car.phase {
-            Phase::Garage { .. } if f.pit_state_undocumented => 5,
-            Phase::Garage { .. } | Phase::PitBox { .. } => 3,
-            Phase::PitOut => 4,
+            // Observed on LMU 1.4.2.0 (A-LMU-029): 4 stopped in the box, 5 leaving it or the garage stall.
+            Phase::Garage { .. } if f.pit_state_unknown => 6,
+            Phase::PitBox { .. } => 4,
+            Phase::Garage { .. } | Phase::PitOut => 5,
             Phase::PitIn if lane => 2,
             _ if car.pit_requested => 1,
             _ => 0,

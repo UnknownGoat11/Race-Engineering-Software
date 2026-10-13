@@ -6,6 +6,7 @@
 //! INT32_MAX lap limit…) leave the channel at its "no data" default; values that cannot be represented become
 //! `Invalid`; capability-gated channels become `NotSupported`. Nothing is ever replaced by 0.
 
+use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 use lmu_reader::{RawGeneric, RawScoringInfo, RawTelemetry, RawVehicleScoring, TelemetryHeader};
@@ -18,9 +19,10 @@ use telemetry_model::{ChannelId, Quality};
 
 use crate::convention;
 use crate::detect::{
-    BrakeObservation, BrakePressureGuard, BrakeTempUnitDetector, BrakeUnitTransition,
-    FractionScale, FractionScaleDetector, KelvinLatch, TimeOfDayDetector, TurboReading,
-    TurboUnitDetector, verified_brake_temp_unit,
+    BrakeObservation, BrakePressureGuard, BrakeTempUnitDetector, BrakeUnitTransition, FillState,
+    FractionScale, FractionScaleDetector, KelvinLatch, Odometer, StuckValueDetector,
+    TimeOfDayDetector, TurboReading, TurboUnitDetector, verified_brake_temp_unit,
+    verified_virtual_energy_scale,
 };
 use crate::notice::{DiagnosticNotice, NoticeCode, NoticeLog};
 use crate::standings::{finite, lap_start_et, non_negative, qualification, text};
@@ -95,6 +97,66 @@ pub const DERIVED_HERE_PER_WHEEL: &[ChannelId] = &[
     ch::WHEEL_SPEED_FL,
 ];
 
+/// When a value that has not changed since the first reading is impossible before the travel evidence
+/// ([`crate::detect::STUCK_MIN_TRAVEL_M`]) is in (A-LMU-065).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FillRule {
+    /// This exact value is impossible even on a stationary car (a 0 m ride height).
+    ImpossibleAtRest(f64),
+    /// This unchanged first value is impossible once the car moves faster than [`FILL_MOVING_SPEED_MPS`]
+    /// (0 N of drag, exactly the standard atmosphere as boost pressure under way, a bit-exact 0 N of tyre
+    /// force or 0 N·m of torque from the physics model); plausible at rest.
+    ImpossibleWhileMoving(f64),
+}
+
+/// Speed (m/s) above which an aerodynamic force of exactly 0 N, or a boost pressure stuck at exactly the
+/// standard atmosphere, is not a measurement (drag is already tens of newtons at this speed).
+pub const FILL_MOVING_SPEED_MPS: f64 = 2.0;
+/// ISA standard atmosphere (Pa): the value LMU 1.4.2.0 initialises `mTurboBoostPressure` with.
+pub const STANDARD_ATMOSPHERE_PA: f64 = 101_325.0;
+
+/// Continuous channels LMU 1.4.2.0 leaves at their first value on some cars (A-LMU-065; Gate 1, Hypercar:
+/// exactly 0, or exactly 101,325 Pa, for the whole session while the car lapped Monza). Any of them that
+/// keeps its first value over [`crate::detect::STUCK_MIN_TRAVEL_M`] of driving is withheld; the rule says
+/// which first value is impossible even earlier.
+pub const FILL_CHECKED_CHANNELS: &[(ChannelId, FillRule)] = &[
+    // A car resting on its wheels never has a 0 m ride height or a front wing touching the ground.
+    (ch::RIDE_HEIGHT_FRONT, FillRule::ImpossibleAtRest(0.0)),
+    (ch::RIDE_HEIGHT_REAR, FillRule::ImpossibleAtRest(0.0)),
+    (ch::FRONT_WING_HEIGHT, FillRule::ImpossibleAtRest(0.0)),
+    (ch::DRAG, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::DOWNFORCE_FRONT, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::DOWNFORCE_REAR, FillRule::ImpossibleWhileMoving(0.0)),
+    // Absolute boost equals ambient with the engine off; exactly the ISA value under way is LMU's default.
+    (
+        ch::TURBO_BOOST,
+        FillRule::ImpossibleWhileMoving(STANDARD_ATMOSPHERE_PA),
+    ),
+    // LMGT3 (Gate 1: race at Sebring and practice at Laguna Seca, A-LMU-069): tyre load, forces, sliding
+    // fraction and engine torque read exactly 0 for the whole session while the car laps; the Hypercar fills
+    // them. A tyre carrying the moving car's weight never reads 0 N before its first change. A float force,
+    // sliding fraction or torque from the physics model that is still bit-exactly 0 with the car under way
+    // is not a measurement either; withholding a rare genuine 0 until the first change only costs a few
+    // samples of UNAVAILABLE, publishing LMGT3's unfilled 0 as VALID would be fabricated data.
+    (ch::TYRE_LOAD_FL, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LOAD_FR, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LOAD_RL, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LOAD_RR, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LAT_FORCE_FL, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LAT_FORCE_FR, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LAT_FORCE_RL, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LAT_FORCE_RR, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LONG_FORCE_FL, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LONG_FORCE_FR, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LONG_FORCE_RL, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_LONG_FORCE_RR, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_SLIDING_FL, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_SLIDING_FR, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_SLIDING_RL, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::TYRE_SLIDING_RR, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::ENGINE_TORQUE, FillRule::ImpossibleWhileMoving(0.0)),
+];
+
 /// Session-scoped detectors (reset on a session, track or vehicle change and on an ET regression).
 #[derive(Debug, Default)]
 pub struct SessionDetectors {
@@ -107,6 +169,19 @@ pub struct SessionDetectors {
     pub motor_water_temp: KelvinLatch,
     pub turbo: TurboUnitDetector,
     pub time_of_day: TimeOfDayDetector,
+    /// Distance driven in the session (evidence for [`FILL_CHECKED_CHANNELS`]).
+    pub odometer: Odometer,
+    /// Fill detectors of [`FILL_CHECKED_CHANNELS`] (bounded by that table).
+    pub fill: BTreeMap<ChannelId, StuckValueDetector>,
+}
+
+impl SessionDetectors {
+    /// The fill state of a [`FILL_CHECKED_CHANNELS`] channel (`Unknown` for any other channel).
+    pub fn fill_state(&self, id: ChannelId) -> FillState {
+        self.fill
+            .get(&id)
+            .map_or(FillState::Unknown, |d| d.state(self.odometer.travelled_m()))
+    }
 }
 
 /// Inputs of one mapping.
@@ -137,21 +212,82 @@ impl MapState<'_> {
 
 /// Maps one player telemetry sample (plus the current scoring/generic blocks) into `w`.
 pub fn map_frame(input: &MapInput<'_>, st: &mut MapState<'_>, w: &mut FrameWriter<'_>) {
+    let t = input.telemetry;
+    st.det
+        .odometer
+        .observe(t.elapsed_time, convention::speed_mps(t.local_vel));
     map_generic(input.generic, w);
     map_header(input.header, w);
-    map_inputs(input.telemetry, w);
-    map_identity(input.telemetry, w);
-    map_aids(input.telemetry, input.caps, w);
-    map_powertrain(input.telemetry, st, w);
-    map_dynamics(input.telemetry, w);
-    map_chassis(input.telemetry, w);
-    map_tyres(input.telemetry, input.caps, st, w);
+    map_inputs(t, w);
+    map_identity(t, w);
+    map_aids(t, input.caps, w);
+    map_powertrain(t, st, w);
+    map_dynamics(t, w);
+    map_chassis(t, st, w);
+    map_tyres(t, input.caps, st, w);
     map_brakes(input, st, w);
-    map_energy(input.telemetry, input.caps, st, w);
-    map_timing(input.telemetry, w);
-    map_track_position(input.telemetry, w);
+    map_energy(input, st, w);
+    map_timing(t, input.info, input.player_row, w);
+    map_track_position(t, w);
     map_session(input.info, st, w);
     map_player_scoring(input, w);
+}
+
+/// Publishes `value` (the converted form of `raw`) unless the fill detector of `id` says it is not a
+/// measurement (A-LMU-065): a value still bit-identical to its first reading after
+/// [`crate::detect::STUCK_MIN_TRAVEL_M`] of driving, or a first value its [`FillRule`] makes impossible now,
+/// is withheld as `UNAVAILABLE`. The first change publishes the channel again for the session. Returns
+/// whether the value was published.
+fn fill_checked(
+    st: &mut MapState<'_>,
+    w: &mut FrameWriter<'_>,
+    (id, raw, value): (ChannelId, f64, f64),
+    speed_mps: f64,
+) -> bool {
+    let rule = FILL_CHECKED_CHANNELS
+        .iter()
+        .find(|(rule_id, _)| *rule_id == id)
+        .map(|&(_, rule)| rule);
+    let travelled = st.det.odometer.travelled_m();
+    let state = st.det.fill.entry(id).or_default().observe(raw, travelled);
+    let same = |v: f64| v.to_bits() == raw.to_bits();
+    let moving = speed_mps > FILL_MOVING_SPEED_MPS;
+    let reason = match (state, rule) {
+        (FillState::NotFilled, _) => Some(
+            "value never changed from its first reading while the car drove: not filled by LMU for this \
+             car/version, withheld (UNAVAILABLE) until it changes (A-LMU-065)",
+        ),
+        (FillState::Initial, Some(FillRule::ImpossibleAtRest(v))) if same(v) => Some(
+            "first value is physically impossible even at rest (not filled by LMU?): withheld \
+             (UNAVAILABLE) until it changes (A-LMU-065)",
+        ),
+        (FillState::Initial, Some(FillRule::ImpossibleWhileMoving(v))) if same(v) && moving => {
+            Some(
+                "unchanged first value is physically impossible with the car moving (not filled by LMU?): \
+             withheld (UNAVAILABLE) until it changes (A-LMU-065)",
+            )
+        }
+        _ => None,
+    };
+    match reason {
+        Some(message) => {
+            st.raise(
+                DiagnosticNotice::new(
+                    NoticeCode::ChannelNotFilled,
+                    Severity::Notice,
+                    Some(id),
+                    message,
+                )
+                .with_raw(raw),
+            );
+            w.quality(id, Quality::Unavailable);
+            false
+        }
+        None => {
+            w.float(id, value);
+            true
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -315,7 +451,13 @@ fn map_powertrain(t: &RawTelemetry, st: &mut MapState<'_>, w: &mut FrameWriter<'
     w.int(ch::GEAR, i64::from(t.gear));
     w.float(ch::RPM, t.engine_rpm);
     w.float(ch::CLUTCH_RPM, t.clutch_rpm);
-    w.float(ch::ENGINE_TORQUE, t.engine_torque);
+    let speed = convention::speed_mps(t.local_vel);
+    let torque_published = fill_checked(
+        st,
+        w,
+        (ch::ENGINE_TORQUE, t.engine_torque, t.engine_torque),
+        speed,
+    );
     // Coolant and oil both exactly 0.000 °C: the engine model is not initialised (garage/reset transition,
     // A-LMU-062); a real cold engine reads near ambient, not two exact zeros.
     if t.engine_water_temp == 0.0 && t.engine_oil_temp == 0.0 {
@@ -331,11 +473,16 @@ fn map_powertrain(t: &RawTelemetry, st: &mut MapState<'_>, w: &mut FrameWriter<'
     w.boolean(ch::SPEED_LIMITER, t.speed_limiter != 0);
     w.boolean(ch::SPEED_LIMITER_ACTIVE, t.speed_limiter_active);
     w.boolean(ch::SPEED_LIMITER_AVAILABLE, t.speed_limiter_available != 0);
-    // Power = torque × angular speed (rpm × 2π / 60). Inherits the N·m assumption (A-LMU-053).
-    w.float(
-        ch::ENGINE_POWER,
-        t.engine_torque * t.engine_rpm * TAU / SECONDS_PER_MINUTE,
-    );
+    // Power = torque × angular speed (rpm × 2π / 60). Inherits the N·m assumption (A-LMU-053) and is
+    // withheld with the torque when LMU does not fill it (A-LMU-069).
+    if torque_published {
+        w.float(
+            ch::ENGINE_POWER,
+            t.engine_torque * t.engine_rpm * TAU / SECONDS_PER_MINUTE,
+        );
+    } else {
+        w.quality(ch::ENGINE_POWER, Quality::Unavailable);
+    }
 
     let (reading, latched) = st.det.turbo.read(t.turbo_boost_pressure);
     if let Some(unit) = latched.filter(|u| *u == crate::detect::TurboUnit::Kilopascal) {
@@ -351,7 +498,9 @@ fn map_powertrain(t: &RawTelemetry, st: &mut MapState<'_>, w: &mut FrameWriter<'
     }
     match reading {
         TurboReading::NotReported => w.quality(ch::TURBO_BOOST, Quality::NotSupported),
-        TurboReading::Pascal(pa) => w.float(ch::TURBO_BOOST, pa),
+        TurboReading::Pascal(pa) => {
+            let _ = fill_checked(st, w, (ch::TURBO_BOOST, t.turbo_boost_pressure, pa), speed);
+        }
         TurboReading::Invalid => w.quality(ch::TURBO_BOOST, Quality::Invalid),
     }
 
@@ -417,15 +566,20 @@ fn map_dynamics(t: &RawTelemetry, w: &mut FrameWriter<'_>) {
 // Chassis, aero, suspension, wheels (§10)
 // ---------------------------------------------------------------------------------------------------------
 
-fn map_chassis(t: &RawTelemetry, w: &mut FrameWriter<'_>) {
-    w.float(ch::RIDE_HEIGHT_FRONT, t.front_ride_height);
-    w.float(ch::RIDE_HEIGHT_REAR, t.rear_ride_height);
+fn map_chassis(t: &RawTelemetry, st: &mut MapState<'_>, w: &mut FrameWriter<'_>) {
+    let speed = convention::speed_mps(t.local_vel);
+    for (id, raw) in [
+        (ch::RIDE_HEIGHT_FRONT, t.front_ride_height),
+        (ch::RIDE_HEIGHT_REAR, t.rear_ride_height),
+        (ch::FRONT_WING_HEIGHT, t.front_wing_height),
+        (ch::DRAG, t.drag),
+        (ch::DOWNFORCE_FRONT, t.front_downforce),
+        (ch::DOWNFORCE_REAR, t.rear_downforce),
+    ] {
+        let _ = fill_checked(st, w, (id, raw, raw), speed);
+    }
     w.float(ch::THIRD_SPRING_FRONT, t.front3rd_deflection);
     w.float(ch::THIRD_SPRING_REAR, t.rear3rd_deflection);
-    w.float(ch::FRONT_WING_HEIGHT, t.front_wing_height);
-    w.float(ch::DRAG, t.drag);
-    w.float(ch::DOWNFORCE_FRONT, t.front_downforce);
-    w.float(ch::DOWNFORCE_REAR, t.rear_downforce);
     for wheel in Wheel::ALL {
         let raw = &t.wheels[wheel.index()];
         let id = |base| wheel_id(base, wheel);
@@ -512,6 +666,7 @@ fn map_tyres(
     st: &mut MapState<'_>,
     w: &mut FrameWriter<'_>,
 ) {
+    let speed = convention::speed_mps(t.local_vel);
     w.text(ch::TYRE_COMPOUND_FRONT, t.front_tire_compound_name.as_str());
     w.text(ch::TYRE_COMPOUND_REAR, t.rear_tire_compound_name.as_str());
     w.int(
@@ -599,10 +754,15 @@ fn map_tyres(
             Some(false) => w.quality(id(ch::TYRE_WEAR_FL), Quality::NotSupported),
             None => w.quality(id(ch::TYRE_WEAR_FL), Quality::Unavailable),
         }
-        w.float(id(ch::TYRE_SLIDING_FL), raw.grip_fract);
-        w.float(id(ch::TYRE_LOAD_FL), raw.tire_load);
-        w.float(id(ch::TYRE_LAT_FORCE_FL), raw.lateral_force);
-        w.float(id(ch::TYRE_LONG_FORCE_FL), raw.longitudinal_force);
+        // Not filled on LMGT3 (A-LMU-069): withheld while bit-identical to the first reading.
+        for (base, value) in [
+            (ch::TYRE_SLIDING_FL, raw.grip_fract),
+            (ch::TYRE_LOAD_FL, raw.tire_load),
+            (ch::TYRE_LAT_FORCE_FL, raw.lateral_force),
+            (ch::TYRE_LONG_FORCE_FL, raw.longitudinal_force),
+        ] {
+            let _ = fill_checked(st, w, (id(base), value, value), speed);
+        }
         w.float(id(ch::TYRE_LAT_PATCH_VEL_FL), raw.lateral_patch_vel);
         w.float(id(ch::TYRE_LONG_PATCH_VEL_FL), raw.longitudinal_patch_vel);
         w.float(id(ch::TYRE_LAT_GROUND_VEL_FL), raw.lateral_ground_vel);
@@ -771,6 +931,12 @@ fn scaled_fraction(
                 Severity::Info,
                 "values stayed in 0..1.5 and changed over two laps: scale confirmed as 0..1",
             ),
+            FractionScale::Conflicting => (
+                NoticeCode::FractionScaleConflict,
+                Severity::Warning,
+                "value contradicts the scale verified for this LMU version (LMU changed it?): withheld \
+                 (UNAVAILABLE) for the session (A-LMU-013/014)",
+            ),
             FractionScale::Unrecognized | FractionScale::Undecided => (
                 NoticeCode::FractionScaleUnrecognized,
                 Severity::Warning,
@@ -796,16 +962,15 @@ fn scaled_fraction(
             );
             w.quality(id, Quality::Unavailable);
         }
+        // Withheld, exactly like a brake-unit conflict: the scale is unknown, the value may be fine.
+        (FractionScale::Conflicting, None) => w.quality(id, Quality::Unavailable),
         (_, None) => w.quality(id, Quality::Invalid),
     }
 }
 
-fn map_energy(
-    t: &RawTelemetry,
-    caps: VehicleCapabilities,
-    st: &mut MapState<'_>,
-    w: &mut FrameWriter<'_>,
-) {
+fn map_energy(input: &MapInput<'_>, st: &mut MapState<'_>, w: &mut FrameWriter<'_>) {
+    let t = input.telemetry;
+    let caps = input.caps;
     let state = t.electric_boost_motor_state;
     w.int(ch::HYBRID_MOTOR_STATE, i64::from(state));
     w.int(ch::LIFT_AND_COAST, i64::from(t.lift_and_coast_progress));
@@ -854,8 +1019,12 @@ fn map_energy(
         Some(false) => w.quality(ch::VIRTUAL_ENERGY, Quality::NotSupported),
         None if ve == 0.0 => w.quality(ch::VIRTUAL_ENERGY, Quality::Unavailable),
         Some(true) | None => {
-            let input = (ve, t.lap_number);
-            scaled_fraction(st, w, ch::VIRTUAL_ENERGY, input, |d| &mut d.virtual_energy);
+            // 0..1 is verified for some LMU versions (A-LMU-013): applied from the first value there.
+            st.det
+                .virtual_energy
+                .set_verified_scale(verified_virtual_energy_scale(input.generic.game_version));
+            let raw = (ve, t.lap_number);
+            scaled_fraction(st, w, ch::VIRTUAL_ENERGY, raw, |d| &mut d.virtual_energy);
         }
     }
 }
@@ -864,7 +1033,15 @@ fn map_energy(
 // Timing (§3) and track position (§14)
 // ---------------------------------------------------------------------------------------------------------
 
-fn map_timing(t: &RawTelemetry, w: &mut FrameWriter<'_>) {
+/// `mNumVehicles` when the player is alone in the session.
+const SOLO_SESSION_VEHICLES: i32 = 1;
+
+fn map_timing(
+    t: &RawTelemetry,
+    info: &RawScoringInfo,
+    player_row: Option<&RawVehicleScoring>,
+    w: &mut FrameWriter<'_>,
+) {
     w.float(ch::ELAPSED_TIME, t.elapsed_time);
     w.float(ch::UPDATE_DELTA_TIME, t.delta_time);
     w.int(ch::LAP_NUMBER, i64::from(t.lap_number));
@@ -873,10 +1050,80 @@ fn map_timing(t: &RawTelemetry, w: &mut FrameWriter<'_>) {
     w.opt_float(ch::LAP_TIME, lap_start.map(|s| t.elapsed_time - s));
     w.boolean(ch::LAP_INVALID, t.lap_invalidated);
     w.float(ch::DELTA_BEST, t.delta_best);
-    w.float(ch::GAP_CAR_AHEAD, f64::from(t.time_gap_car_ahead));
-    w.float(ch::GAP_CAR_BEHIND, f64::from(t.time_gap_car_behind));
-    w.float(ch::GAP_PLACE_AHEAD, f64::from(t.time_gap_place_ahead));
-    w.float(ch::GAP_PLACE_BEHIND, f64::from(t.time_gap_place_behind));
+    // Alone in the session there is no car to measure a gap to: LMU's 0 is its "no car" value (Gate 1, solo
+    // practice: exactly 0 all session, A-LMU-066), not a 0 s gap. Left at "no data" (the map's "or NONE").
+    // The classification leader has no place ahead and the last car no place behind.
+    let solo = info.num_vehicles == SOLO_SESSION_VEHICLES;
+    let place = player_row.map(|r| r.place).filter(|&p| p >= 1);
+    let last_place = u8::try_from(info.num_vehicles).ok();
+    let gaps = [
+        (
+            ch::GAP_CAR_AHEAD,
+            t.time_gap_car_ahead,
+            GapSide::Ahead,
+            true,
+        ),
+        (
+            ch::GAP_CAR_BEHIND,
+            t.time_gap_car_behind,
+            GapSide::Behind,
+            true,
+        ),
+        (
+            ch::GAP_PLACE_AHEAD,
+            t.time_gap_place_ahead,
+            GapSide::Ahead,
+            place.is_some_and(|p| p > 1),
+        ),
+        (
+            ch::GAP_PLACE_BEHIND,
+            t.time_gap_place_behind,
+            GapSide::Behind,
+            place.zip(last_place).is_some_and(|(p, last)| p < last),
+        ),
+    ];
+    for (id, raw, side, other_car_exists) in gaps {
+        if solo || !other_car_exists {
+            w.none(id);
+        } else {
+            w.float(id, lmu_gap_s(f64::from(raw), side));
+        }
+    }
+}
+
+/// Which neighbour an LMU `mTimeGap*` field measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GapSide {
+    /// `mTimeGapCarAhead` / `mTimeGapPlaceAhead`.
+    Ahead,
+    /// `mTimeGapCarBehind` / `mTimeGapPlaceBehind`.
+    Behind,
+}
+
+/// A gap of the wrong sign up to this size (s) means the two cars are alongside: LMU's own resolution
+/// (Gate 1 race: +0.006..+0.010 s "ahead" and −0.001 s "behind" with the cars 0.4 m apart).
+pub const GAP_ALONGSIDE_TOLERANCE_S: f64 = 0.05;
+
+/// Converts an LMU `mTimeGap*` value (s) to the published non-negative gap (A-LMU-034).
+///
+/// LMU 1.4.2.0 signs the gap as the other car's time relative to the player: the car (or place) **ahead is
+/// negative**, the one behind positive (Gate 1 race, 20 cars at Sebring: `mTimeGapPlaceAhead` = −`mTimeBehindNext`
+/// within 0.02 s, and the car-ahead gap matches the lap-distance difference ÷ speed). The published channels
+/// are magnitudes: ahead = −raw, behind = raw. A wrong sign within [`GAP_ALONGSIDE_TOLERANCE_S`] is "alongside"
+/// (0 s); a larger wrong sign (seen during overtakes and before the green flag, A-LMU-034) is passed through
+/// negative, so the registry range publishes it `INVALID` instead of a fabricated gap. A raw 0 is published
+/// as +0.0, never −0.0.
+pub fn lmu_gap_s(raw_s: f64, side: GapSide) -> f64 {
+    let gap = match side {
+        GapSide::Ahead => -raw_s,
+        GapSide::Behind => raw_s,
+    };
+    // `..0.0` excludes −0.0 (it equals 0.0), so a negated raw 0 is normalised here as well.
+    if gap == 0.0 || (-GAP_ALONGSIDE_TOLERANCE_S..0.0).contains(&gap) {
+        0.0
+    } else {
+        gap
+    }
 }
 
 /// Decodes telemetry `mCurrentSector`: (zero-based sector index if valid, in pit lane) (A-LMU-026).
@@ -918,7 +1165,7 @@ fn map_session(info: &RawScoringInfo, st: &mut MapState<'_>, w: &mut FrameWriter
     w.text(ch::TRACK_NAME, info.track_name.as_str());
     w.int(ch::SESSION_TYPE, i64::from(info.session));
     w.float(ch::SESSION_TIME, info.current_et);
-    w.float(ch::SESSION_END_TIME, info.end_et);
+    w.opt_float(ch::SESSION_END_TIME, session_end_et(info.end_et));
     w.opt_float(
         ch::SESSION_TIME_REMAINING,
         non_negative(f64::from(info.session_time_remaining)),
@@ -985,6 +1232,19 @@ fn map_session(info: &RawScoringInfo, st: &mut MapState<'_>, w: &mut FrameWriter
     let fcy =
         info.game_phase == GAME_PHASE_FCY || (fcy_lo..=fcy_hi).contains(&info.yellow_flag_state);
     w.boolean(ch::FULL_COURSE_YELLOW, fcy);
+}
+
+/// Slack (m) on the "at most one lap behind the line" bound of a negative lap distance (scoring jitter).
+pub const LAP_DIST_TOLERANCE_M: f64 = 50.0;
+
+/// `mEndET` while the end time is not set: `INT32_MIN` (Gate 1 race: during the formation lap of a timed race,
+/// before the green flag fixed the end time; A-LMU-043).
+pub const LMU_END_ET_UNSET: f64 = i32::MIN as f64;
+
+/// The session end time (s), or `None` for LMU's "not set" sentinel ([`LMU_END_ET_UNSET`]). Other values are
+/// passed through for validation.
+pub fn session_end_et(end_et: f64) -> Option<f64> {
+    (end_et != LMU_END_ET_UNSET).then_some(end_et)
 }
 
 /// `mEndET − mCurrentET`, clamped at 0 once the session has run out. `None` when `mEndET` is not a real
@@ -1069,7 +1329,17 @@ pub fn lap_progress(
     if !(dt.is_finite() && dt.abs() <= MAX_PROGRESS_EXTRAPOLATION_S) {
         return None;
     }
-    let anchor = (lap_dist_m / track_length_m).clamp(0.0, PROGRESS_MAX);
+    // A negative distance before the first line crossing is the same point of the lap measured backwards
+    // from the line (LMU itself re-bases −1,023 m to +4,797 m on a 5,820 m track at the formation start).
+    // Only negative distances wrap: a distance just past the track length (scoring a moment before the lap
+    // counter increments) stays at the end of the lap instead of jumping back to its start.
+    let frac = lap_dist_m / track_length_m;
+    let anchor = if frac < 0.0 {
+        frac.rem_euclid(1.0)
+    } else {
+        frac
+    }
+    .clamp(0.0, PROGRESS_MAX);
     let advance = if forward_speed_mps.is_finite() {
         forward_speed_mps * dt / track_length_m
     } else {
@@ -1134,9 +1404,18 @@ fn map_player_scoring(input: &MapInput<'_>, w: &mut FrameWriter<'_>) {
     w.int(ch::PENALTIES, i64::from(row.num_penalties));
 
     let track_length = input.info.lap_dist;
-    w.float(ch::LAP_DISTANCE, row.lap_dist);
-    let distance = (track_length.is_finite() && track_length > 0.0 && row.total_laps >= 0)
-        .then(|| f64::from(row.total_laps) * track_length + row.lap_dist);
+    // Before the first line crossing the distance is negative (behind the line, A-LMU-070), but never more
+    // than one lap: a value below −track length is not a position on this track.
+    let within_one_lap = !(track_length.is_finite() && track_length > 0.0)
+        || row.lap_dist >= -track_length - LAP_DIST_TOLERANCE_M;
+    if within_one_lap {
+        w.float(ch::LAP_DISTANCE, row.lap_dist);
+    } else {
+        w.quality(ch::LAP_DISTANCE, Quality::Invalid);
+    }
+    let distance =
+        (track_length.is_finite() && track_length > 0.0 && row.total_laps >= 0 && within_one_lap)
+            .then(|| f64::from(row.total_laps) * track_length + row.lap_dist);
     w.opt_float(ch::DISTANCE, distance);
     let forward = convention::forward_speed_mps(input.telemetry.local_vel);
     w.opt_float(
@@ -1213,7 +1492,45 @@ mod tests {
             None,
             "stale anchor"
         );
+        // Behind the line before the first crossing (A-LMU-070): 20 m before the line, never negative.
         let neg = lap_progress(-20.0, 10_000.0, 100.0, 100.0, 0.0);
-        assert_eq!(neg, Some(0.0), "clamped, never negative");
+        assert!(neg.is_some_and(|p| (p - 0.998).abs() < 1e-12), "{neg:?}");
+        let grid = lap_progress(-1_023.4, 5_820.0, 100.0, 100.0, 0.0);
+        let rebased = lap_progress(4_796.6, 5_820.0, 100.0, 100.0, 0.0);
+        assert!(grid.zip(rebased).is_some_and(|(a, b)| (a - b).abs() < 1e-9));
+        // Just past the line before the lap counter increments: stays at the end of the lap (gate1c review).
+        let past = lap_progress(10_010.0, 10_000.0, 100.0, 100.0, 0.0);
+        assert!(past.is_some_and(|p| p > 0.999), "{past:?}");
+    }
+
+    /// Gate 1 race (A-LMU-034): LMU signs the ahead gaps negative; published gaps are magnitudes.
+    #[test]
+    fn lmu_gaps_are_published_as_magnitudes() {
+        assert!((lmu_gap_s(-1.288, GapSide::Ahead) - 1.288).abs() < 1e-12);
+        assert!((lmu_gap_s(0.282, GapSide::Behind) - 0.282).abs() < 1e-12);
+        // Alongside: LMU's wrong-sign jitter within the tolerance is 0 s.
+        assert_eq!(lmu_gap_s(0.010, GapSide::Ahead), 0.0);
+        assert_eq!(lmu_gap_s(-0.001, GapSide::Behind), 0.0);
+        // A clearly wrong sign stays negative so the registry range rejects it (never a fabricated gap).
+        assert!(lmu_gap_s(-2.174, GapSide::Behind) < 0.0);
+        assert!(lmu_gap_s(1.0, GapSide::Ahead) < 0.0);
+        // A raw 0 is +0.0, never −0.0 (gate1c review).
+        for side in [GapSide::Ahead, GapSide::Behind] {
+            for raw in [0.0, -0.0] {
+                let gap = lmu_gap_s(raw, side);
+                assert!(gap == 0.0 && gap.is_sign_positive(), "{side:?} {raw}");
+            }
+        }
+    }
+
+    #[test]
+    fn end_time_sentinel_is_no_data() {
+        assert_eq!(session_end_et(-2_147_483_648.0), None);
+        assert_eq!(session_end_et(1_327.0), Some(1_327.0));
+        assert_eq!(
+            session_end_et(-5.0),
+            Some(-5.0),
+            "other values are validated, not hidden"
+        );
     }
 }

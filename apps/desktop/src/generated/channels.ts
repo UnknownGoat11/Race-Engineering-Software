@@ -1029,7 +1029,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mClutchRPM',
-    validRange: [-1000, 30000], maxRatePerS: null,
+    validRange: [-30000, 30000], maxRatePerS: null,
     group: 'Powertrain', wheel: null, wheelGroup: null,
   },
   {
@@ -1239,7 +1239,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[0].mTemperature[0]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'FrontLeft', wheelGroup: [0x0304, 0x0305, 0x0306, 0x0307],
   },
   {
@@ -1249,7 +1249,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[1].mTemperature[0]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'FrontRight', wheelGroup: [0x0304, 0x0305, 0x0306, 0x0307],
   },
   {
@@ -1259,7 +1259,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[2].mTemperature[0]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'RearLeft', wheelGroup: [0x0304, 0x0305, 0x0306, 0x0307],
   },
   {
@@ -1269,7 +1269,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[3].mTemperature[0]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'RearRight', wheelGroup: [0x0304, 0x0305, 0x0306, 0x0307],
   },
   {
@@ -1279,7 +1279,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[0].mTemperature[1]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'FrontLeft', wheelGroup: [0x0308, 0x0309, 0x030A, 0x030B],
   },
   {
@@ -1289,7 +1289,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[1].mTemperature[1]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'FrontRight', wheelGroup: [0x0308, 0x0309, 0x030A, 0x030B],
   },
   {
@@ -1299,7 +1299,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[2].mTemperature[1]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'RearLeft', wheelGroup: [0x0308, 0x0309, 0x030A, 0x030B],
   },
   {
@@ -1309,7 +1309,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[3].mTemperature[1]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'RearRight', wheelGroup: [0x0308, 0x0309, 0x030A, 0x030B],
   },
   {
@@ -1319,7 +1319,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[0].mTemperature[2]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'FrontLeft', wheelGroup: [0x030C, 0x030D, 0x030E, 0x030F],
   },
   {
@@ -1329,7 +1329,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[1].mTemperature[2]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'FrontRight', wheelGroup: [0x030C, 0x030D, 0x030E, 0x030F],
   },
   {
@@ -1339,7 +1339,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[2].mTemperature[2]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'RearLeft', wheelGroup: [0x030C, 0x030D, 0x030E, 0x030F],
   },
   {
@@ -1349,7 +1349,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[3].mTemperature[2]',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'RearRight', wheelGroup: [0x030C, 0x030D, 0x030E, 0x030F],
   },
   {
@@ -2199,7 +2199,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_surface_inner_edge',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'FrontLeft', wheelGroup: [0x0364, 0x0365, 0x0366, 0x0367],
   },
   {
@@ -2209,7 +2209,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_surface_inner_edge',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'FrontRight', wheelGroup: [0x0364, 0x0365, 0x0366, 0x0367],
   },
   {
@@ -2219,7 +2219,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_surface_inner_edge',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'RearLeft', wheelGroup: [0x0364, 0x0365, 0x0366, 0x0367],
   },
   {
@@ -2229,7 +2229,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_surface_inner_edge',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'RearRight', wheelGroup: [0x0364, 0x0365, 0x0366, 0x0367],
   },
   {
@@ -2239,7 +2239,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_surface_outer_edge',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'FrontLeft', wheelGroup: [0x0368, 0x0369, 0x036A, 0x036B],
   },
   {
@@ -2249,7 +2249,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_surface_outer_edge',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'FrontRight', wheelGroup: [0x0368, 0x0369, 0x036A, 0x036B],
   },
   {
@@ -2259,7 +2259,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_surface_outer_edge',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'RearLeft', wheelGroup: [0x0368, 0x0369, 0x036A, 0x036B],
   },
   {
@@ -2269,7 +2269,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_surface_outer_edge',
-    validRange: [-73.14999999999998, 426.85], maxRatePerS: 3000,
+    validRange: [-73.14999999999998, 426.85], maxRatePerS: 15000,
     group: 'Tyres', wheel: 'RearRight', wheelGroup: [0x0368, 0x0369, 0x036A, 0x036B],
   },
   {
@@ -2319,7 +2319,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_inner_minus_outer',
-    validRange: [-100, 100], maxRatePerS: null,
+    validRange: [-500, 500], maxRatePerS: null,
     group: 'Tyres', wheel: 'FrontLeft', wheelGroup: [0x0370, 0x0371, 0x0372, 0x0373],
   },
   {
@@ -2329,7 +2329,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_inner_minus_outer',
-    validRange: [-100, 100], maxRatePerS: null,
+    validRange: [-500, 500], maxRatePerS: null,
     group: 'Tyres', wheel: 'FrontRight', wheelGroup: [0x0370, 0x0371, 0x0372, 0x0373],
   },
   {
@@ -2339,7 +2339,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_inner_minus_outer',
-    validRange: [-100, 100], maxRatePerS: null,
+    validRange: [-500, 500], maxRatePerS: null,
     group: 'Tyres', wheel: 'RearLeft', wheelGroup: [0x0370, 0x0371, 0x0372, 0x0373],
   },
   {
@@ -2349,7 +2349,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:tyre_inner_minus_outer',
-    validRange: [-100, 100], maxRatePerS: null,
+    validRange: [-500, 500], maxRatePerS: null,
     group: 'Tyres', wheel: 'RearRight', wheelGroup: [0x0370, 0x0371, 0x0372, 0x0373],
   },
   {
@@ -3209,7 +3209,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[0].mRideHeight',
-    validRange: [-0.05, 0.3], maxRatePerS: null,
+    validRange: [-0.05, 2], maxRatePerS: null,
     group: 'Dynamics', wheel: 'FrontLeft', wheelGroup: [0x0544, 0x0545, 0x0546, 0x0547],
   },
   {
@@ -3219,7 +3219,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[1].mRideHeight',
-    validRange: [-0.05, 0.3], maxRatePerS: null,
+    validRange: [-0.05, 2], maxRatePerS: null,
     group: 'Dynamics', wheel: 'FrontRight', wheelGroup: [0x0544, 0x0545, 0x0546, 0x0547],
   },
   {
@@ -3229,7 +3229,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[2].mRideHeight',
-    validRange: [-0.05, 0.3], maxRatePerS: null,
+    validRange: [-0.05, 2], maxRatePerS: null,
     group: 'Dynamics', wheel: 'RearLeft', wheelGroup: [0x0544, 0x0545, 0x0546, 0x0547],
   },
   {
@@ -3239,7 +3239,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[3].mRideHeight',
-    validRange: [-0.05, 0.3], maxRatePerS: null,
+    validRange: [-0.05, 2], maxRatePerS: null,
     group: 'Dynamics', wheel: 'RearRight', wheelGroup: [0x0544, 0x0545, 0x0546, 0x0547],
   },
   {
@@ -3289,7 +3289,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[0].mCamber',
-    validRange: [-0.35, 0.35], maxRatePerS: null,
+    validRange: [-0.6, 0.6], maxRatePerS: null,
     group: 'Dynamics', wheel: 'FrontLeft', wheelGroup: [0x054C, 0x054D, 0x054E, 0x054F],
   },
   {
@@ -3299,7 +3299,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[1].mCamber',
-    validRange: [-0.35, 0.35], maxRatePerS: null,
+    validRange: [-0.6, 0.6], maxRatePerS: null,
     group: 'Dynamics', wheel: 'FrontRight', wheelGroup: [0x054C, 0x054D, 0x054E, 0x054F],
   },
   {
@@ -3309,7 +3309,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[2].mCamber',
-    validRange: [-0.35, 0.35], maxRatePerS: null,
+    validRange: [-0.6, 0.6], maxRatePerS: null,
     group: 'Dynamics', wheel: 'RearLeft', wheelGroup: [0x054C, 0x054D, 0x054E, 0x054F],
   },
   {
@@ -3319,7 +3319,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[3].mCamber',
-    validRange: [-0.35, 0.35], maxRatePerS: null,
+    validRange: [-0.6, 0.6], maxRatePerS: null,
     group: 'Dynamics', wheel: 'RearRight', wheelGroup: [0x054C, 0x054D, 0x054E, 0x054F],
   },
   {
@@ -3329,7 +3329,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[0].mToe',
-    validRange: [-0.2, 0.2], maxRatePerS: null,
+    validRange: [-0.6981317007977318, 0.6981317007977318], maxRatePerS: null,
     group: 'Dynamics', wheel: 'FrontLeft', wheelGroup: [0x0550, 0x0551, 0x0552, 0x0553],
   },
   {
@@ -3339,7 +3339,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[1].mToe',
-    validRange: [-0.2, 0.2], maxRatePerS: null,
+    validRange: [-0.6981317007977318, 0.6981317007977318], maxRatePerS: null,
     group: 'Dynamics', wheel: 'FrontRight', wheelGroup: [0x0550, 0x0551, 0x0552, 0x0553],
   },
   {
@@ -3349,7 +3349,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[2].mToe',
-    validRange: [-0.2, 0.2], maxRatePerS: null,
+    validRange: [-0.6981317007977318, 0.6981317007977318], maxRatePerS: null,
     group: 'Dynamics', wheel: 'RearLeft', wheelGroup: [0x0550, 0x0551, 0x0552, 0x0553],
   },
   {
@@ -3359,7 +3359,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'telemetry.telemInfo[player].mWheel[3].mToe',
-    validRange: [-0.2, 0.2], maxRatePerS: null,
+    validRange: [-0.6981317007977318, 0.6981317007977318], maxRatePerS: null,
     group: 'Dynamics', wheel: 'RearRight', wheelGroup: [0x0550, 0x0551, 0x0552, 0x0553],
   },
   {
@@ -3649,7 +3649,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P2', frequency: 'Physics',
     interpolation: 'Continuous', availability: 'VehicleDependent',
     origin: 'telemetry.telemInfo[player].mElectricBoostMotorTorque',
-    validRange: [-2000, 2000], maxRatePerS: null,
+    validRange: [-10000, 10000], maxRatePerS: null,
     group: 'HybridEnergy', wheel: null, wheelGroup: null,
   },
   {
@@ -3689,7 +3689,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryTelemetry', provenance: 'Measured', priority: 'P1', frequency: 'Physics',
     interpolation: 'Discrete', availability: 'VehicleDependent',
     origin: 'telemetry.telemInfo[player].mElectricBoostMotorState',
-    validRange: [0, 3], maxRatePerS: null,
+    validRange: [0, 4], maxRatePerS: null,
     group: 'HybridEnergy', wheel: null, wheelGroup: null,
   },
   {
@@ -4349,7 +4349,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'Calculated', provenance: 'Derived', priority: 'P1', frequency: 'Scoring',
     interpolation: 'Continuous', availability: 'Always',
     origin: 'formula:laps_times_length_plus_lap_dist',
-    validRange: [0, 100000000], maxRatePerS: null,
+    validRange: [-30000, 100000000], maxRatePerS: null,
     group: 'RaceScoring', wheel: null, wheelGroup: null,
   },
   {
@@ -4529,7 +4529,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryScoring', provenance: 'Measured', priority: 'P0', frequency: 'Scoring',
     interpolation: 'Discrete', availability: 'Always',
     origin: 'scoring.vehScoringInfo[player].mLapDist',
-    validRange: [-50, 30050], maxRatePerS: null,
+    validRange: [-30000, 30050], maxRatePerS: null,
     group: 'TrackPosition', wheel: null, wheelGroup: null,
   },
   {
@@ -4839,7 +4839,7 @@ export const CHANNELS: readonly ChannelDef[] = [
     source: 'LmuSharedMemoryScoring', provenance: 'Measured', priority: 'P0', frequency: 'Scoring',
     interpolation: 'Discrete', availability: 'Always',
     origin: 'scoring.vehScoringInfo[player].mPitState',
-    validRange: [0, 4], maxRatePerS: null,
+    validRange: [0, 5], maxRatePerS: null,
     group: 'FlagsPit', wheel: null, wheelGroup: null,
   },
   {

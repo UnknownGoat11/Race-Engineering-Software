@@ -131,13 +131,24 @@ lmu_enum! {
 }
 
 lmu_enum! {
-    /// Pit state (`vehScoringInfo[i].mPitState`).
+    /// Pit state (`vehScoringInfo[i].mPitState`) as **observed** on LMU 1.4.2.0 (A-LMU-029, A-LMU-063).
+    ///
+    /// The header documents 0 none, 1 request, 2 entering, 3 stopped, 4 exiting. Two real pit-box stops
+    /// (Gate 1, practice at Laguna Seca: refuel +90.6 L and a tyre change) showed 0 → 1 (request, on track)
+    /// → 2 (entering, pit lane) → **4 while stopped in the box during service** → **5 while leaving the box**
+    /// down the pit lane → 0 at the pit exit; 3 never appeared. 5 is also reported in the garage stall and on
+    /// the way out of it. The variants carry the observed meaning; 3 keeps the header's meaning, unverified.
     PitState: u8 {
         Idle = 0 => "None",
         Requested = 1 => "Requested",
         Entering = 2 => "Entering",
-        Stopped = 3 => "Stopped",
-        Exiting = 4 => "Exiting",
+        /// Documented by the header as "stopped"; never observed on LMU 1.4.2.0.
+        HeaderStopped = 3 => "Stopped (header value, not observed)",
+        /// OBSERVED: stopped in the pit box, during service (the header says "exiting").
+        Stopped = 4 => "Stopped in pit box",
+        /// OBSERVED, NOT DOCUMENTED: leaving the pit box down the pit lane, or sitting in / leaving the garage
+        /// stall (`mInGarageStall` tells which).
+        Exiting = 5 => "Leaving pit box / garage",
     }
 }
 
@@ -246,6 +257,10 @@ lmu_enum! {
         Inactive = 1 => "Inactive",
         Propulsion = 2 => "Propulsion",
         Regeneration = 3 => "Regeneration",
+        /// OBSERVED, NOT DOCUMENTED (A-LMU-064): LMU 1.4.2.0 (Hypercar) reports 4 for 1.64 s right after the car
+        /// is released from the garage stall (stationary, battery full, no torque), then 1. Meaning unknown
+        /// beyond that; the car is hybrid while it is reported.
+        GarageRelease = 4 => "After garage release (undocumented)",
     }
 }
 
@@ -455,7 +470,26 @@ mod tests {
         for raw in 0..=u8::MAX {
             assert_eq!(PitState::from_raw(raw).raw(), raw);
             assert_eq!(SurfaceType::from_raw(raw).raw(), raw);
+            assert_eq!(HybridMotorState::from_raw(raw).raw(), raw);
         }
+    }
+
+    /// Gate 1 (LMU 1.4.2.0): values outside the header's documented sets that real data showed are named
+    /// variants now, and the next unknown value still stays verbatim.
+    #[test]
+    fn values_observed_at_gate1_are_known() {
+        // Observed pit-box sequence 0 → 1 → 2 → 4 (stopped, service) → 5 (leaving) → 0 (A-LMU-029).
+        assert_eq!(PitState::from_raw(4), PitState::Stopped);
+        assert_eq!(PitState::from_raw(5), PitState::Exiting);
+        assert_eq!(PitState::Exiting.raw(), 5);
+        assert_eq!(PitState::from_raw(3), PitState::HeaderStopped);
+        assert_eq!(PitState::from_raw(6), PitState::Unknown(6));
+        assert_eq!(
+            HybridMotorState::from_raw(4),
+            HybridMotorState::GarageRelease
+        );
+        assert_eq!(HybridMotorState::GarageRelease.raw(), 4);
+        assert_eq!(HybridMotorState::from_raw(5), HybridMotorState::Unknown(5));
     }
 
     /// Serialised as the raw LMU value, not the declaration index: adding a known variant can never shift the

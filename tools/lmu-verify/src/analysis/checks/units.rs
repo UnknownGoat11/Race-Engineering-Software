@@ -769,8 +769,16 @@ struct VeLaps {
 }
 
 impl VeLaps {
-    /// Continuity broke: the lap in progress can no longer be completed.
-    fn discontinuity(&mut self) {
+    /// Continuity broke: the lap in progress can no longer be completed, and a lap that ended within
+    /// [`TELEPORT_LAP_GUARD_S`] before it ended at the reset, not at the line (Gate 1 practice: the session
+    /// ran out with the car in the pit box; LMU counted a lap, moved the car to the garage, reset its
+    /// energy and stepped its ET back by 10 ms).
+    fn discontinuity(&mut self, capture_s: f64) {
+        if let Some(p) = self.pending.as_mut()
+            && capture_s - p.ended_s <= TELEPORT_LAP_GUARD_S
+        {
+            p.lap.complete = false;
+        }
         self.current = None;
         self.last_ve = None;
         self.prev_pos = None;
@@ -888,7 +896,7 @@ pub struct VirtualEnergyCheck {
 impl VirtualEnergyCheck {
     pub(super) fn observe(&mut self, step: &Step<'_>) {
         if step.discontinuity {
-            self.laps.discontinuity();
+            self.laps.discontinuity(step.capture_s);
         }
         let Some(t) = step.raw else {
             return;
@@ -1239,12 +1247,30 @@ mod tests {
         let mut laps = VeLaps::default();
         laps.observe(s(0.0, 1, 0.90, 0.0, false));
         laps.observe(s(1.0, 2, 0.89, 10.0, false));
-        laps.discontinuity();
+        laps.discontinuity(25.0);
         laps.observe(s(50.0, 2, 0.88, 20.0, false));
         laps.observe(s(51.0, 3, 0.879, 30.0, false));
         laps.finish();
         assert_eq!(complete_flags(&laps), [(1, false), (2, false)]);
         assert_eq!(laps.complete, 0);
+    }
+
+    #[test]
+    fn lap_counted_at_a_session_end_reset_is_partial() {
+        // Gate 1 practice: the session ran out with the car in the pit box; LMU counted a lap, moved the car
+        // and reset its energy (1.00 → 0.21), then the ET stepped back (a discontinuity) before the teleport
+        // could be seen between two samples.
+        let mut laps = VeLaps::default();
+        laps.observe(s(0.0, 0, 1.00, 0.0, false));
+        laps.observe(s(10.0, 1, 1.00, 10.0, false));
+        laps.observe(s(100.0, 1, 0.96, 20.0, false));
+        laps.observe(s(105.0, 2, 0.21, 21.0, false));
+        laps.discontinuity(105.01);
+        laps.observe(s(105.02, 2, 0.21, 900.0, true));
+        laps.observe(s(200.0, 2, 0.21, 900.0, true));
+        laps.finish();
+        assert_eq!(complete_flags(&laps), [(0, false), (1, false)]);
+        assert_eq!(laps.implausible, 0);
     }
 
     #[test]

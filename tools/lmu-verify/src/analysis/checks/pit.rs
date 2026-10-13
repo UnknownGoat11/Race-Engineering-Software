@@ -1,6 +1,9 @@
 //! Fuel and pit checks: fuel decreases while driving and rises only in the pit area (A-LMU-018); the
 //! pit-lane bit (`mCurrentSector` bit 31, A-LMU-026), `mInPits` and `mPitState` agree around pit-lane
-//! passages and stops (A-LMU-029); `mPitState` stays within the header's documented values.
+//! passages and stops (A-LMU-029); `mPitState` uses only the values LMU 1.4.2.0 was seen to use, each in its
+//! place. Observed at real pit-box stops (Gate 1): 0 → 1 request (on track) → 2 entering (pit lane) → 4
+//! stopped in the box (service) → 5 leaving the box → 0 at the pit exit; 5 also in and out of the garage
+//! stall; the header's 3 ("stopped") never appeared and its 4 means "stopped", not "exiting".
 //!
 //! Stationary episodes are classified as a garage stop (`mInGarageStall` seen), a pit-box stop (pit-lane
 //! bit set) or a stop on track; a position jump while stationary marks a teleport (e.g. "return to
@@ -50,12 +53,20 @@ const FLAG_PASS_SHARE: f64 = 0.99;
 const FLAG_FAIL_SHARE: f64 = 0.9;
 /// In-pit scoring updates needed for a flag verdict.
 const MIN_PIT_UPDATES: u64 = 10;
-/// Highest `mPitState` the header documents (0 none, 1 request, 2 entering, 3 stopped, 4 exiting).
-const PIT_STATE_DOCUMENTED_MAX: u8 = 4;
-/// `mPitState` "entering" (header).
+/// Highest `mPitState` LMU 1.4.2.0 uses (A-LMU-029, A-LMU-063); the header documents only 0..4.
+const PIT_STATE_OBSERVED_MAX: u8 = 5;
+/// `mPitState` "entering" (header and observed).
 const PIT_STATE_ENTERING: u8 = 2;
-/// `mPitState` "exiting" (header).
-const PIT_STATE_EXITING: u8 = 4;
+/// `mPitState` "stopped in the box" as observed (the header's "exiting").
+const PIT_STATE_STOPPED: u8 = 4;
+/// Highest pit-lane state (5: leaving the box or the garage, observed).
+const PIT_STATE_LANE_MAX: u8 = 5;
+/// Pit-lane states (2..=5) seen outside the pit area, beyond the flag guard, above this share fail.
+const MISPLACED_FAIL_SHARE: f64 = 0.05;
+/// ... and at most this share passes.
+const MISPLACED_PASS_SHARE: f64 = 0.01;
+/// Misplaced updates needed before a share can fail.
+const MIN_MISPLACED_FOR_FAIL: u64 = 3;
 /// Stops listed.
 const MAX_STOPS: usize = 20;
 /// Pit-state transitions and teleports listed.
@@ -168,6 +179,10 @@ pub struct FuelPitCheck {
     lane_vs_in_pits: Agreement,
     in_pits_state_non_zero: Agreement,
     pit_state_counts: BTreeMap<(u8, &'static str), u64>,
+    /// Pit-lane states (2..=5) outside the pit area, beyond the flag guard.
+    lane_states_on_track: u64,
+    /// Pit-lane states (2..=5) in total.
+    lane_states_total: u64,
     current: Option<Stop>,
     stops: Vec<Stop>,
     stops_not_listed: u64,
@@ -235,8 +250,16 @@ impl FuelPitCheck {
         {
             self.lane_vs_in_pits.push(lane == row.in_pits);
         }
-        if row.in_pits && !guarded {
+        // In the garage stall LMU reports 0 at a session start and 5 on a return (Gate 1 race): only the pit
+        // lane and the box are judged against the pit-lane states.
+        if row.in_pits && !guarded && !row.in_garage_stall {
             self.in_pits_state_non_zero.push(row.pit_state != 0);
+        }
+        if (PIT_STATE_ENTERING..=PIT_STATE_LANE_MAX).contains(&row.pit_state) {
+            self.lane_states_total += 1;
+            if context == "track" && !guarded {
+                self.lane_states_on_track += 1;
+            }
         }
         if let Some(stop) = &mut self.current {
             stop.scoring_updates += 1;
@@ -457,6 +480,17 @@ impl FuelPitCheck {
             .iter()
             .filter(|s| s.kind() == StopKind::PitBox)
             .collect();
+        let box_with_stopped_state = pit_box
+            .iter()
+            .filter(|s| s.pit_states.contains(&PIT_STATE_STOPPED))
+            .count();
+        let serviced_box_without_stopped_state = pit_box
+            .iter()
+            .filter(|s| {
+                (s.added_l() > REFUEL_MIN_L || s.tyre_change())
+                    && !s.pit_states.contains(&PIT_STATE_STOPPED)
+            })
+            .count();
         o.metric("pit_lane_entries", self.pit_lane_entries as f64)
             .metric("pit_lane_exits", self.pit_lane_exits as f64)
             .metric_opt("lane_bit_vs_in_pits_agreement", lane)
@@ -466,6 +500,7 @@ impl FuelPitCheck {
             )
             .metric_opt("in_pits_pit_state_non_zero", state)
             .metric("pit_box_stops", pit_box.len() as f64)
+            .metric("pit_box_stops_with_state_4", box_with_stopped_state as f64)
             .metric("teleports", self.teleport_count as f64);
         o.line(format!(
             "pit-lane bit (mCurrentSector bit 31) entries {}, exits {}; at scoring updates with either flag set (skipping {FLAG_GUARD_S} s after a change), bit = mInPits in {} of {}",
@@ -475,7 +510,7 @@ impl FuelPitCheck {
             self.lane_vs_in_pits.total
         ));
         o.line(format!(
-            "mPitState ≠ 0 while mInPits in {} of {} scoring updates",
+            "mPitState ≠ 0 while mInPits outside the garage stall in {} of {} scoring updates",
             pct(state),
             self.in_pits_state_non_zero.total
         ));
@@ -513,13 +548,14 @@ impl FuelPitCheck {
             .pit_state_counts
             .keys()
             .filter(|&&(v, context)| {
-                context == "pit lane" && (PIT_STATE_ENTERING..=PIT_STATE_EXITING).contains(&v)
+                context == "pit lane" && (PIT_STATE_ENTERING..=PIT_STATE_LANE_MAX).contains(&v)
             })
             .map(|&(v, _)| v)
             .collect();
         o.metric("pit_lane_service_states_seen", lane_states.len() as f64);
         o.line(format!(
-            "documented pit-lane states (2 entering, 3 stopped, 4 exiting) seen in the pit lane: {lane_states:?}"
+            "pit-lane states seen in the pit lane (observed: 2 entering, 4 stopped in the box, 5 leaving; header 3 stopped): {lane_states:?}; pit-box stops showing 4 (stopped): {box_with_stopped_state} of {}",
+            pit_box.len()
         ));
         let summary = format!(
             "bit = mInPits in {}, pit state ≠ 0 while in the pits in {}, {passages} pit-lane transitions; {service}; pit-lane states {lane_states:?}",
@@ -528,17 +564,24 @@ impl FuelPitCheck {
         );
         // Each comparison is judged on its own evidence: mInPits never set in the pit lane leaves no
         // in-pit updates for the pit-state comparison but is itself a clear disagreement.
+        // The pit-state rule (A-LMU-029) is only exercised by a pit-box service stop: without one the
+        // states are not judged (a garage start or return is not a pit stop).
         let lane_enough = passages > 0 && self.lane_vs_in_pits.total >= MIN_PIT_UPDATES;
-        let state_enough = passages > 0 && self.in_pits_state_non_zero.total >= MIN_PIT_UPDATES;
+        let state_enough = !pit_box.is_empty()
+            && passages > 0
+            && self.in_pits_state_non_zero.total >= MIN_PIT_UPDATES;
         let lane_fail = lane_enough && lane.is_some_and(|l| l < FLAG_FAIL_SHARE);
-        let state_fail = state_enough && state.is_some_and(|s| s < FLAG_FAIL_SHARE);
+        let state_fail = state_enough
+            && (state.is_some_and(|s| s < FLAG_FAIL_SHARE)
+                || serviced_box_without_stopped_state > 0);
         if lane_fail || state_fail {
             o.verdict(Verdict::Fail, summary)
         } else if lane_enough
             && state_enough
             && lane.is_some_and(|l| l >= FLAG_PASS_SHARE)
             && state.is_some_and(|s| s >= FLAG_PASS_SHARE)
-            && !lane_states.is_empty()
+            && box_with_stopped_state == pit_box.len()
+            && lane_states.contains(&PIT_STATE_ENTERING)
         {
             o.verdict(Verdict::Pass, summary)
         } else {
@@ -549,18 +592,22 @@ impl FuelPitCheck {
     fn pit_state_result(&self) -> CheckResult {
         let mut o = Outcome::new(
             "pit_state_values",
-            "mPitState uses only the documented values 0..4",
-            &[],
+            "mPitState uses only the observed values 0..5, the pit-lane states only in the pit area",
+            &["A-LMU-029", "A-LMU-063"],
             &["pit.state"],
         );
-        let mut undocumented = 0u64;
+        let mut unknown = 0u64;
         let mut non_zero = 0u64;
+        let mut header_stopped = 0u64;
         let lines: Vec<String> = self
             .pit_state_counts
             .iter()
             .map(|(&(value, context), &n)| {
-                if value > PIT_STATE_DOCUMENTED_MAX {
-                    undocumented += n;
+                if value > PIT_STATE_OBSERVED_MAX {
+                    unknown += n;
+                }
+                if value == PIT_STATE_ENTERING + 1 {
+                    header_stopped += n;
                 }
                 if value != 0 {
                     non_zero += n;
@@ -568,8 +615,13 @@ impl FuelPitCheck {
                 format!("{value} in {context}: {n}")
             })
             .collect();
-        o.metric("undocumented_updates", undocumented as f64)
-            .metric("non_zero_updates", non_zero as f64);
+        let misplaced_share = (self.lane_states_total > 0)
+            .then(|| self.lane_states_on_track as f64 / self.lane_states_total as f64);
+        o.metric("unknown_updates", unknown as f64)
+            .metric("non_zero_updates", non_zero as f64)
+            .metric("header_stopped_updates", header_stopped as f64)
+            .metric("lane_states_on_track", self.lane_states_on_track as f64)
+            .metric("lane_states_total", self.lane_states_total as f64);
         o.line(format!(
             "scoring updates per mPitState value and place: {}",
             if lines.is_empty() {
@@ -579,25 +631,32 @@ impl FuelPitCheck {
             }
         ));
         o.line(
-            "header: 0 none, 1 request, 2 entering, 3 stopped, 4 exiting; the registry range of pit.state is 0..4",
+            "observed on LMU 1.4.2.0: 0 none, 1 request, 2 entering, 4 stopped in the box, 5 leaving the box / garage (header: 3 stopped, 4 exiting); the registry range of pit.state is 0..5",
         );
-        if undocumented > 0 {
-            let values: BTreeSet<u8> = self
-                .pit_state_counts
+        o.line(format!(
+            "pit-lane states (2..5) on track (outside the pit lane, mInPits and the garage, {FLAG_GUARD_S} s after a flag change skipped): {} of {} ({})",
+            self.lane_states_on_track,
+            self.lane_states_total,
+            pct(misplaced_share)
+        ));
+        let summary = format!(
+            "values {:?}; {} unknown; pit-lane states on track {} of {}",
+            self.pit_state_counts
                 .keys()
                 .map(|&(v, _)| v)
-                .filter(|&v| v > PIT_STATE_DOCUMENTED_MAX)
-                .collect();
-            o.verdict(
-                Verdict::Fail,
-                format!(
-                    "undocumented value(s) {values:?} in {undocumented} scoring updates (published as INVALID by the 0..4 range)"
-                ),
-            )
-        } else if non_zero > 0 {
-            o.verdict(Verdict::Pass, "only documented values seen")
+                .collect::<BTreeSet<u8>>(),
+            unknown,
+            self.lane_states_on_track,
+            self.lane_states_total
+        );
+        let misplaced_fail = self.lane_states_on_track >= MIN_MISPLACED_FOR_FAIL
+            && misplaced_share.is_some_and(|s| s > MISPLACED_FAIL_SHARE);
+        if unknown > 0 || misplaced_fail {
+            o.verdict(Verdict::Fail, summary)
+        } else if non_zero > 0 && misplaced_share.is_none_or(|s| s <= MISPLACED_PASS_SHARE) {
+            o.verdict(Verdict::Pass, summary)
         } else {
-            o.verdict(Verdict::Inconclusive, "mPitState was never non-zero")
+            o.verdict(Verdict::Inconclusive, summary)
         }
     }
 }

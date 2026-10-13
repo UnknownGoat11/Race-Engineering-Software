@@ -130,7 +130,7 @@ fn track_and_pit_faults_fail_their_checks() {
         sector_direct: true,
         fuel_rises_on_track: true,
         in_pits_wrong: true,
-        pit_state_undocumented: true,
+        pit_state_unknown: true,
         ..Faults::default()
     }));
     for id in [

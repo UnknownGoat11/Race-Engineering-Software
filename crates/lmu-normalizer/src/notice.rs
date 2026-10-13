@@ -32,6 +32,12 @@ pub enum NoticeCode {
     /// A fraction channel's values fit both 0..1 and percent: withheld until evidence decides
     /// (A-LMU-013/014).
     FractionScaleUndecided,
+    /// A fraction channel read a value that contradicts the scale verified for the running LMU version: it
+    /// is withheld (`Unavailable`) for the session (A-LMU-013/014).
+    FractionScaleConflict,
+    /// A continuous channel kept its exact first value while the car drove: LMU does not fill it for this
+    /// car/version, so it is withheld (`Unavailable`) until it changes (A-LMU-065).
+    ChannelNotFilled,
     /// A channel was rejected by registry validation for many consecutive frames (sustained out-of-range
     /// or implausible value, e.g. a unit mix-up; A-LMU-049).
     ValueRejectedSustained,

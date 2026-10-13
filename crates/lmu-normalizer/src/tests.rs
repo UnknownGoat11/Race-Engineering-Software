@@ -147,6 +147,8 @@ fn hybrid_everything_fixture() -> Fixture {
     let mut fx = Fixture::driving(100.0);
     fx.info.max_laps = 50;
     fx.info.time_of_day = 52_200.0;
+    // A third classified car, so the player has a place behind (place gaps are no data for the last car).
+    fx.info.num_vehicles = 3;
     fx.generic.app_info.options_page = text("Telemetry");
     let row = &mut fx.rows[1];
     row.best_lap_time = 210.0;
@@ -177,9 +179,12 @@ fn hybrid_everything_fixture() -> Fixture {
     t.regen = 120.0;
     t.soc = 55.0; // percent
     t.battery_charge_fraction = 0.55;
-    t.virtual_energy = 87.0; // percent
+    t.virtual_energy = 0.87; // 0..1, verified for LMU 1.4.2.0 (A-LMU-013)
     t.rear_flap_activated = 1;
     t.turbo_boost_pressure = 180.0;
+    // Chassis and aero values a car that fills them reports (0 m would be impossible at rest, A-LMU-065).
+    (t.front_ride_height, t.rear_ride_height, t.front_wing_height) = (0.045, 0.06, 0.09);
+    (t.drag, t.front_downforce, t.rear_downforce) = (4_000.0, 6_000.0, 7_000.0);
     (t.tc_slip_max, t.tc_slip, t.tc_cut_max, t.tc_cut) = (5, 2, 5, 1);
     (t.migration_max, t.migration, t.motor_map_max, t.motor_map) = (3, 1, 4, 2);
     (t.front_anti_sway_max, t.front_anti_sway) = (5, 3);
@@ -189,6 +194,8 @@ fn hybrid_everything_fixture() -> Fixture {
     for w in &mut t.wheels {
         w.brake_temp = 24.0; // impossible as Kelvin: the unit is decided (Celsius) within the run
         w.terrain_name = text("ROAD");
+        // Tyre forces and sliding a car that fills them reports (a bit-exact 0 while moving is withheld).
+        (w.lateral_force, w.longitudinal_force, w.grip_fract) = (-850.0, 1_200.0, 0.12);
     }
     fx
 }
@@ -496,6 +503,8 @@ fn non_hybrid_car_reports_hybrid_channels_not_supported() {
 #[test]
 fn hybrid_car_publishes_hybrid_and_energy_channels() {
     let mut fx = Fixture::driving(100.0);
+    // Percent detection from evidence: a version without a verified VE scale.
+    fx.generic.game_version = UNVERIFIED_FUTURE_VERSION;
     {
         let t = fx.t();
         t.vehicle_class = 0;
@@ -1076,6 +1085,8 @@ fn kelvin_brakes_are_published_only_once_decided_after_a_realtime_entry() {
 #[test]
 fn ambiguous_energy_scale_is_withheld_not_published_as_a_fraction() {
     let mut fx = Fixture::driving(100.0);
+    // Evidence-only path: a version without a verified VE scale.
+    fx.generic.game_version = UNVERIFIED_FUTURE_VERSION;
     fx.t().virtual_energy = 0.9; // 0.9 % or 90 %?
     let mut n = Normalizer::new();
     let out = fx.step(&mut n);
@@ -1098,6 +1109,582 @@ fn ambiguous_energy_scale_is_withheld_not_published_as_a_fraction() {
     fx.advance(0.01);
     let confirmed = fx.step(&mut n);
     assert!(close(f(&confirmed, ch::VIRTUAL_ENERGY), 0.8));
+}
+
+/// `mCurrentSector` bit 31: the car is in the pit lane (A-LMU-026).
+const PIT_LANE_BIT: i32 = i32::MIN;
+
+/// A hybrid Hypercar-like driving fixture (LMU 1.4.2.0) with virtual energy in use.
+fn hypercar(et: f64) -> Fixture {
+    let mut fx = Fixture::driving(et);
+    let t = fx.t();
+    t.vehicle_class = 0;
+    t.electric_boost_motor_state = 2;
+    t.electric_boost_motor_torque = 150.0;
+    t.electric_boost_motor_rpm = 12_000.0;
+    t.electric_boost_motor_temperature = 70.0;
+    t.soc = 60.0;
+    t.battery_charge_fraction = 0.6;
+    t.virtual_energy = 0.95;
+    fx
+}
+
+/// Channels rejected by validation in `out`, by name.
+fn rejected(out: &NormalizedOutput) -> Vec<&'static str> {
+    out.rejections
+        .iter()
+        .filter_map(|(id, _)| registry::by_id(*id).map(|d| d.name))
+        .collect()
+}
+
+#[test]
+fn verified_version_publishes_virtual_energy_from_the_first_frame() {
+    // Gate 1 (lmu-verify, 2026-10-12): LMU 1.4.2.0 reports mVirtualEnergy as a 0..1 fraction (A-LMU-013).
+    let fx = hypercar(100.0);
+    let mut n = Normalizer::new();
+    let out = fx.step(&mut n);
+    assert!(close(f(&out, ch::VIRTUAL_ENERGY), 0.95), "no two-lap wait");
+    assert_eq!(n.virtual_energy_scale(), FractionScale::Fraction);
+    assert!(
+        !out.notices
+            .iter()
+            .any(|x| x.code == NoticeCode::FractionScaleUndecided)
+    );
+    let note = n
+        .capability_map()
+        .get(ch::VIRTUAL_ENERGY)
+        .and_then(|c| c.note.clone());
+    assert!(note.is_some_and(|s| s.contains("verified with real data")));
+}
+
+#[test]
+fn percent_virtual_energy_on_a_verified_version_is_withheld() {
+    let mut fx = hypercar(100.0);
+    let mut n = Normalizer::new();
+    fx.step(&mut n);
+    // A reading above 1.5 contradicts the verified 0..1 scale: LMU changed it, nothing is guessed.
+    fx.advance(0.01);
+    fx.t().virtual_energy = 87.0;
+    let out = fx.step(&mut n);
+    assert_eq!(q(&out, ch::VIRTUAL_ENERGY), Some(Quality::Unavailable));
+    assert_eq!(n.virtual_energy_scale(), FractionScale::Conflicting);
+    assert!(
+        out.notices
+            .iter()
+            .any(|x| x.code == NoticeCode::FractionScaleConflict
+                && x.channel == Some(ch::VIRTUAL_ENERGY))
+    );
+    fx.advance(0.01);
+    fx.t().virtual_energy = 0.9;
+    let later = fx.step(&mut n);
+    assert_eq!(
+        q(&later, ch::VIRTUAL_ENERGY),
+        Some(Quality::Unavailable),
+        "withheld for the session"
+    );
+}
+
+#[test]
+fn real_extremes_seen_at_gate1_are_valid() {
+    // Values the Gate-1 capture (LMU 1.4.2.0, Hypercar) showed in real driving; all were INVALID before.
+    let mut fx = hypercar(100.0);
+    fx.rows[1].pit_state = 5; // garage / leaving the garage (A-LMU-063)
+    {
+        let t = fx.t();
+        t.electric_boost_motor_state = 4; // after a garage release (A-LMU-064)
+        t.electric_boost_motor_torque = -3_675.7; // regeneration
+        t.clutch_rpm = -4_259.4; // sliding backwards in a spin
+        t.wheels[0].toe = -0.3439; // front toe includes the steering angle (A-LMU-068)
+        t.wheels[1].toe = 0.3464;
+        t.wheels[2].ride_height = 0.9; // a wheel off the ground in a crash
+        t.wheels[3].temperature = [461.55, 353.15, 273.15]; // locked rear tyre: +188.4 °C spread
+    }
+    let out = fx.step(&mut Normalizer::new());
+    assert!(
+        out.rejections.is_empty(),
+        "rejections: {:?}",
+        rejected(&out)
+    );
+    let frame = out.frame.as_ref().expect("frame");
+    assert_eq!(frame.get(ch::PIT_STATE).value, Value::U8(5));
+    assert_eq!(frame.get(ch::HYBRID_MOTOR_STATE).value, Value::U8(4));
+    assert!(close(f(&out, ch::CLUTCH_RPM), -4_259.4));
+    assert!(close(f(&out, ch::HYBRID_MOTOR_TORQUE), -3_675.7));
+    assert!(close(f(&out, ch::TOE_FR), 0.3464));
+    assert!(close(f(&out, ch::RIDE_HEIGHT_RL), 0.9));
+    assert!(close(f(&out, ch::TYRE_TEMP_SPREAD_RR), 188.4));
+}
+
+#[test]
+fn garage_teleport_resets_rate_guards_instead_of_rejecting() {
+    let mut fx = hypercar(397.0);
+    let mut n = Normalizer::new();
+    assert!(fx.step(&mut n).rejections.is_empty());
+    // Return to the garage (Gate 1: 652 m in 7.5 ms, at rest, pit-lane bit set): position, speed, fuel,
+    // brakes, tyres and energy all step in one frame.
+    fx.advance(0.0075);
+    {
+        let t = fx.t();
+        t.pos = crate::testutil::v3(307.2, 3.6, 575.1);
+        t.local_vel = crate::testutil::v3(0.0, 0.0, -0.11);
+        t.current_sector = PIT_LANE_BIT | 1;
+        t.fuel = 81.0;
+        t.virtual_energy = 1.0;
+        t.electric_boost_motor_temperature = 23.5;
+        for w in &mut t.wheels {
+            w.brake_temp = 295.0;
+            w.wear = 1.0;
+            w.tire_inner_layer_temperature = [300.0; 3];
+        }
+    }
+    let out = fx.step(&mut n);
+    assert!(
+        out.rejections.is_empty(),
+        "rejections: {:?}",
+        rejected(&out)
+    );
+    assert_eq!(n.stats().teleports, 1);
+    assert!(close(f(&out, ch::POS_Z), 575.1));
+    assert!(close(f(&out, ch::FUEL), 81.0));
+    assert!(close(f(&out, ch::BRAKE_TEMP_FL), 295.0 - 273.15));
+    // After the teleport the guards judge the new values again: driving off, a fuel spike is rejected.
+    fx.advance(0.01);
+    fx.t().current_sector = 1;
+    fx.t().local_vel = crate::testutil::v3(0.0, 0.0, -0.5);
+    fx.t().fuel = 10.0;
+    let spike = fx.step(&mut n);
+    assert_eq!(rejected(&spike), vec!["fuel.level_l"]);
+}
+
+#[test]
+fn uncorroborated_jumps_are_still_rejected() {
+    // The same 652 m jump out on track (no pit-lane bit, no pit flags): a garbage position.
+    let mut fx = hypercar(100.0);
+    let mut n = Normalizer::new();
+    fx.step(&mut n);
+    fx.advance(0.01);
+    fx.t().pos = crate::testutil::v3(307.2, 3.6, 575.1);
+    fx.t().local_vel = crate::testutil::v3(0.0, 0.0, -0.11);
+    let out = fx.step(&mut n);
+    let names = rejected(&out);
+    assert!(names.contains(&"vehicle.pos_x_m"), "{names:?}");
+    assert_eq!(n.stats().teleports, 0);
+
+    // In the pit lane but still moving at 50 m/s after the jump: not a teleport either.
+    let mut moving = hypercar(100.0);
+    let mut m = Normalizer::new();
+    moving.step(&mut m);
+    moving.advance(0.01);
+    moving.t().pos = crate::testutil::v3(307.2, 3.6, 575.1);
+    moving.t().current_sector = PIT_LANE_BIT | 1;
+    let out = moving.step(&mut m);
+    assert!(rejected(&out).contains(&"vehicle.pos_z_m"));
+
+    // A fuel or tyre step while driving on track is still implausible.
+    let mut track = hypercar(100.0);
+    let mut k = Normalizer::new();
+    track.step(&mut k);
+    track.advance(0.01);
+    track.t().fuel = 90.0;
+    track.t().wheels[0].wear = 1.0;
+    let names = rejected(&track.step(&mut k));
+    assert!(names.contains(&"fuel.level_l") && names.contains(&"tyres.fl.wear_frac"));
+}
+
+#[test]
+fn pit_service_steps_are_accepted_while_stationary_in_the_pits() {
+    let mut fx = hypercar(200.0);
+    fx.t().local_vel = crate::testutil::v3(0.0, 0.0, 0.0);
+    fx.rows[1].in_pits = true;
+    fx.rows[1].pit_state = 3;
+    let mut n = Normalizer::new();
+    assert!(fx.step(&mut n).rejections.is_empty());
+    // Refuel and new tyres in one frame (as LMU applies them in the garage), car on its jacks.
+    fx.advance(0.01);
+    {
+        let t = fx.t();
+        t.fuel = 90.0;
+        t.virtual_energy = 1.0;
+        for w in &mut t.wheels {
+            w.wear = 1.0;
+            w.tire_inner_layer_temperature = [300.0; 3];
+            w.tire_carcass_temperature = 300.0;
+            w.pressure = 140.0;
+        }
+        // Brakes are not serviced: a 373 °C drop in 10 ms is still implausible.
+        t.wheels[0].brake_temp = 300.0;
+    }
+    let out = fx.step(&mut n);
+    assert_eq!(rejected(&out), vec!["brakes.fl.temp_c"]);
+    assert!(close(f(&out, ch::FUEL), 90.0));
+    assert!(close(f(&out, ch::TYRE_WEAR_RR), 1.0));
+    assert!(n.stats().pit_service_samples >= 2);
+
+    // The same steps stationary on track (no pit flag, no pit-lane bit) are rejected.
+    let mut track = hypercar(200.0);
+    track.t().local_vel = crate::testutil::v3(0.0, 0.0, 0.0);
+    let mut k = Normalizer::new();
+    track.step(&mut k);
+    track.advance(0.01);
+    track.t().fuel = 90.0;
+    assert_eq!(rejected(&track.step(&mut k)), vec!["fuel.level_l"]);
+}
+
+#[test]
+fn realtime_entry_resets_rate_guards() {
+    let mut fx = hypercar(100.0);
+    let mut n = Normalizer::new();
+    fx.step(&mut n);
+    // Back to the monitor, then put on track again: the car state is re-initialised.
+    fx.advance(0.01);
+    fx.info.in_realtime = false;
+    let player = fx.telemetry.take();
+    n.process_input(&fx.input(true));
+    fx.telemetry = player;
+    fx.info.in_realtime = true;
+    fx.advance(0.01);
+    fx.t().fuel = 95.0;
+    let out = fx.step(&mut n);
+    assert!(
+        out.rejections.is_empty(),
+        "rejections: {:?}",
+        rejected(&out)
+    );
+    assert_eq!(n.stats().realtime_entries, 1);
+}
+
+#[test]
+fn channels_lmu_does_not_fill_are_withheld() {
+    // Gate 1 (LMU 1.4.2.0, Hypercar): ride heights, wing height, drag and downforce exactly 0 and the turbo
+    // boost exactly 101,325 Pa for the whole session while the car lapped (A-LMU-065).
+    let mut fx = hypercar(100.0);
+    fx.t().turbo_boost_pressure = 101_325.0;
+    fx.t().local_vel = crate::testutil::v3(0.0, 0.0, 0.0);
+    let mut n = Normalizer::new();
+    let rest = fx.step(&mut n);
+    // At rest: 0 N of drag and ambient boost are physically possible, a 0 m ride height and a front wing on
+    // the ground are not.
+    assert!(close(f(&rest, ch::DRAG), 0.0));
+    assert!(close(f(&rest, ch::TURBO_BOOST), 101_325.0));
+    assert_eq!(q(&rest, ch::RIDE_HEIGHT_FRONT), Some(Quality::Unavailable));
+    assert_eq!(q(&rest, ch::FRONT_WING_HEIGHT), Some(Quality::Unavailable));
+    // Moving off with the values unchanged: exactly 0 N of drag or ISA boost under way is not a measurement.
+    fx.advance(0.01);
+    fx.t().local_vel = crate::testutil::v3(0.0, 0.0, -16.0);
+    let moving = fx.step(&mut n);
+    let ids = [
+        ch::DRAG,
+        ch::DOWNFORCE_FRONT,
+        ch::DOWNFORCE_REAR,
+        ch::TURBO_BOOST,
+        ch::RIDE_HEIGHT_FRONT,
+        ch::RIDE_HEIGHT_REAR,
+        ch::FRONT_WING_HEIGHT,
+    ];
+    for id in ids {
+        assert_eq!(q(&moving, id), Some(Quality::Unavailable), "{id:?}");
+    }
+    let raised: Vec<ChannelId> = rest
+        .notices
+        .iter()
+        .chain(moving.notices.iter())
+        .filter(|x| x.code == NoticeCode::ChannelNotFilled)
+        .filter_map(|x| x.channel)
+        .collect();
+    assert!(ids.iter().all(|id| raised.contains(id)), "{raised:?}");
+    // After 200 m of driving (60 × 0.25 s at 16 m/s = 240 m) the capability map says why.
+    for _ in 0..60 {
+        fx.advance(0.25);
+        fx.step(&mut n);
+    }
+    for id in ids {
+        let note = n.capability_map().get(id).and_then(|c| c.note.clone());
+        assert!(note.is_some_and(|s| s.contains("not filled")), "{id:?}");
+    }
+    // The moment LMU writes a new value the channel is live again (and stays live).
+    fx.advance(0.01);
+    fx.t().drag = 812.5;
+    let live = fx.step(&mut n);
+    assert!(close(f(&live, ch::DRAG), 812.5));
+    assert_eq!(q(&live, ch::DOWNFORCE_FRONT), Some(Quality::Unavailable));
+    fx.advance(0.01);
+    fx.t().drag = 0.0;
+    assert!(close(f(&fx.step(&mut n), ch::DRAG), 0.0), "latched live");
+}
+
+#[test]
+fn negative_lap_distance_before_the_first_crossing_is_valid() {
+    // Gate 1 race (Sebring): −1,586.8 m in the garage stall, −1,023.4 m on the grid (A-LMU-070).
+    let mut fx = Fixture::driving(100.0);
+    fx.rows[1].lap_dist = -1_586.8;
+    fx.rows[1].total_laps = 0;
+    let out = fx.step(&mut Normalizer::new());
+    assert!(close(f(&out, ch::LAP_DISTANCE), -1_586.8));
+    assert!(close(f(&out, ch::DISTANCE), -1_586.8));
+    let progress = f(&out, ch::LAP_PROGRESS);
+    assert!(
+        progress.is_some_and(|p| (0.8..1.0).contains(&p)),
+        "{progress:?}"
+    );
+    // More than one lap behind the line is not a position on this track.
+    let mut bad = Fixture::driving(100.0);
+    bad.rows[1].lap_dist = -bad.info.lap_dist - 500.0;
+    let out = bad.step(&mut Normalizer::new());
+    assert_eq!(q(&out, ch::LAP_DISTANCE), Some(Quality::Invalid));
+    assert_eq!(q(&out, ch::DISTANCE), Some(Quality::Unavailable));
+}
+
+#[test]
+fn race_end_time_sentinel_is_unavailable() {
+    // Gate 1 race: mEndET = INT32_MIN during the formation lap of a timed race.
+    let mut fx = Fixture::driving(100.0);
+    fx.info.end_et = f64::from(i32::MIN);
+    let out = fx.step(&mut Normalizer::new());
+    assert_eq!(q(&out, ch::SESSION_END_TIME), Some(Quality::Unavailable));
+    assert!(
+        out.rejections
+            .iter()
+            .all(|(id, _)| *id != ch::SESSION_END_TIME)
+    );
+}
+
+#[test]
+fn lmgt3_zero_tyre_forces_and_torque_are_withheld_until_filled() {
+    // Gate 1 (LMU 1.4.2.0, LMGT3, race at Sebring and practice at Laguna Seca): tyre load, lateral and
+    // longitudinal force, sliding fraction and engine torque read exactly 0 all session (A-LMU-069).
+    let mut fx = hypercar(100.0);
+    {
+        let t = fx.t();
+        t.engine_torque = 0.0;
+        for w in &mut t.wheels {
+            (
+                w.tire_load,
+                w.lateral_force,
+                w.longitudinal_force,
+                w.grip_fract,
+            ) = (0.0, 0.0, 0.0, 0.0);
+        }
+        t.local_vel = crate::testutil::v3(0.0, 0.0, -16.0);
+    }
+    let mut n = Normalizer::new();
+    let first = fx.step(&mut n);
+    // A bit-exact, unchanged 0 on a moving car is impossible at once: never a VALID 0 (gate1c review).
+    for id in [
+        ch::TYRE_LOAD_RR,
+        ch::TYRE_LAT_FORCE_FL,
+        ch::TYRE_LONG_FORCE_FR,
+        ch::TYRE_SLIDING_RL,
+        ch::ENGINE_TORQUE,
+        ch::ENGINE_POWER,
+    ] {
+        assert_eq!(q(&first, id), Some(Quality::Unavailable), "{id:?}");
+    }
+    for _ in 0..60 {
+        fx.advance(0.25);
+        fx.step(&mut n);
+    }
+    fx.advance(0.01);
+    let stuck = fx.step(&mut n);
+    for id in [
+        ch::TYRE_LOAD_FL,
+        ch::TYRE_LAT_FORCE_FR,
+        ch::TYRE_LONG_FORCE_RL,
+        ch::TYRE_SLIDING_RR,
+        ch::ENGINE_TORQUE,
+        ch::ENGINE_POWER,
+    ] {
+        assert_eq!(q(&stuck, id), Some(Quality::Unavailable), "{id:?}");
+    }
+    // The first non-zero value makes the channel VALID again.
+    fx.advance(0.01);
+    fx.t().wheels[0].tire_load = 4_200.0;
+    fx.t().engine_torque = 310.0;
+    let live = fx.step(&mut n);
+    assert!(close(f(&live, ch::TYRE_LOAD_FL), 4_200.0));
+    assert!(close(f(&live, ch::ENGINE_TORQUE), 310.0));
+    assert_eq!(q(&live, ch::ENGINE_POWER), Some(Quality::Valid));
+    assert_eq!(q(&live, ch::TYRE_LOAD_FR), Some(Quality::Unavailable));
+}
+
+#[test]
+fn session_reset_does_not_republish_lmgt3_zeros_as_valid() {
+    // The session detectors restart on an ET regression; LMGT3's unfilled zeros must stay withheld.
+    let mut fx = hypercar(500.0);
+    {
+        let t = fx.t();
+        t.engine_torque = 0.0;
+        for w in &mut t.wheels {
+            (w.lateral_force, w.longitudinal_force, w.grip_fract) = (0.0, 0.0, 0.0);
+        }
+        t.local_vel = crate::testutil::v3(0.0, 0.0, -16.0);
+    }
+    let mut n = Normalizer::new();
+    fx.step(&mut n);
+    fx.advance(-400.0);
+    let out = fx.step(&mut n);
+    assert_eq!(
+        out.disposition,
+        TelemetryDisposition::NewSampleAfterRegression
+    );
+    for id in [
+        ch::TYRE_LAT_FORCE_RR,
+        ch::TYRE_LONG_FORCE_FL,
+        ch::TYRE_SLIDING_FR,
+        ch::ENGINE_TORQUE,
+        ch::ENGINE_POWER,
+    ] {
+        assert_eq!(q(&out, id), Some(Quality::Unavailable), "{id:?}");
+    }
+}
+
+#[test]
+fn a_stuck_plausible_value_is_withheld_after_the_travel_evidence() {
+    // A constant that would be plausible on its own (1,234.5 N of drag) but never changes while the car
+    // drives is still not a measurement once 200 m are behind it.
+    let mut fx = hypercar(100.0);
+    fx.t().drag = 1_234.5;
+    let mut n = Normalizer::new();
+    let first = fx.step(&mut n);
+    assert!(close(f(&first, ch::DRAG), 1_234.5), "no evidence yet");
+    let mut last = first;
+    // 50 m/s × 0.25 s = 12.5 m per step: 16 steps reach exactly 200 m.
+    for _ in 0..16 {
+        fx.advance(0.25);
+        last = fx.step(&mut n);
+    }
+    assert_eq!(q(&last, ch::DRAG), Some(Quality::Unavailable));
+    assert!(
+        last.notices
+            .iter()
+            .any(|x| x.code == NoticeCode::ChannelNotFilled && x.channel == Some(ch::DRAG))
+    );
+}
+
+#[test]
+fn channels_lmu_fills_are_never_withheld() {
+    let mut fx = hypercar(100.0);
+    let mut n = Normalizer::new();
+    let mut last = None;
+    for i in 0..40 {
+        let t = fx.t();
+        t.drag = 4_000.0 + f64::from(i);
+        t.front_ride_height = 0.045 - f64::from(i) * 1e-4;
+        t.turbo_boost_pressure = 180_000.0 + f64::from(i);
+        last = Some(fx.step(&mut n));
+        fx.advance(0.25);
+    }
+    let last = last.expect("steps");
+    for id in [ch::DRAG, ch::RIDE_HEIGHT_FRONT, ch::TURBO_BOOST] {
+        assert_eq!(q(&last, id), Some(Quality::Valid), "{id:?}");
+    }
+}
+
+#[test]
+fn solo_session_gaps_are_no_data_not_zero() {
+    // Gate 1 (solo practice, one car): the four gaps read exactly 0 all session; there is no car to measure
+    // a gap to (A-LMU-066).
+    let mut fx = hypercar(100.0);
+    fx.info.num_vehicles = 1;
+    fx.rows = vec![row(PLAYER_ID, 1, "Hyper", true)];
+    let out = fx.step(&mut Normalizer::new());
+    for id in [
+        ch::GAP_CAR_AHEAD,
+        ch::GAP_CAR_BEHIND,
+        ch::GAP_PLACE_AHEAD,
+        ch::GAP_PLACE_BEHIND,
+    ] {
+        let s = out
+            .frame
+            .as_ref()
+            .map(|fr| fr.get(id).clone())
+            .expect("frame");
+        assert_eq!(
+            (s.quality, s.value),
+            (Quality::Unavailable, Value::None),
+            "{id:?}"
+        );
+    }
+    // With other cars the gap is published as a magnitude: LMU signs "ahead" negative (Gate 1 race, A-LMU-034).
+    let mut field = hypercar(100.0);
+    field.t().time_gap_car_ahead = -1.25;
+    field.t().time_gap_car_behind = 0.5;
+    let out = field.step(&mut Normalizer::new());
+    assert!(close(f(&out, ch::GAP_CAR_AHEAD), 1.25));
+    assert!(close(f(&out, ch::GAP_CAR_BEHIND), 0.5));
+}
+
+/// A three-car field with the player at `place` (1-based) and every raw gap set to a plausible value.
+fn three_car_field(place: u8) -> Fixture {
+    let mut fx = hypercar(100.0);
+    fx.info.num_vehicles = 3;
+    let others = [3, 9];
+    let mut other = others.iter();
+    fx.rows = (1..=3u8)
+        .map(|p| {
+            if p == place {
+                row(PLAYER_ID, p, "Hyper", true)
+            } else {
+                let id = other.next().copied().unwrap_or(11);
+                row(id, p, "Hyper", false)
+            }
+        })
+        .collect();
+    let t = fx.t();
+    (t.time_gap_car_ahead, t.time_gap_car_behind) = (-1.0, 2.0);
+    (t.time_gap_place_ahead, t.time_gap_place_behind) = (-1.0, 2.0);
+    fx
+}
+
+fn is_no_data(out: &NormalizedOutput, id: ChannelId) -> bool {
+    out.frame.as_ref().is_some_and(|fr| {
+        fr.get(id).quality == Quality::Unavailable && fr.get(id).value == Value::None
+    })
+}
+
+#[test]
+fn leader_and_last_car_place_gaps_are_no_data() {
+    // gate1c review: P1 has no place ahead, the last car no place behind; the other side is published.
+    let leader = three_car_field(1).step(&mut Normalizer::new());
+    assert!(is_no_data(&leader, ch::GAP_PLACE_AHEAD));
+    assert!(close(f(&leader, ch::GAP_PLACE_BEHIND), 2.0));
+    let last = three_car_field(3).step(&mut Normalizer::new());
+    assert!(is_no_data(&last, ch::GAP_PLACE_BEHIND));
+    assert!(close(f(&last, ch::GAP_PLACE_AHEAD), 1.0));
+    let middle = three_car_field(2).step(&mut Normalizer::new());
+    assert!(close(f(&middle, ch::GAP_PLACE_AHEAD), 1.0));
+    assert!(close(f(&middle, ch::GAP_PLACE_BEHIND), 2.0));
+}
+
+#[test]
+fn wrong_sign_gaps_are_invalid_and_alongside_or_zero_gaps_are_plus_zero() {
+    let mut fx = three_car_field(2);
+    {
+        let t = fx.t();
+        t.time_gap_place_behind = -2.0; // clearly wrong sign: rejected, never a fabricated gap
+        t.time_gap_car_ahead = 0.01; // alongside: LMU's wrong-sign jitter
+        t.time_gap_car_behind = 0.0; // raw 0
+    }
+    let out = fx.step(&mut Normalizer::new());
+    assert_eq!(q(&out, ch::GAP_PLACE_BEHIND), Some(Quality::Invalid));
+    assert!(
+        out.rejections
+            .iter()
+            .any(|(id, _)| *id == ch::GAP_PLACE_BEHIND),
+        "{:?}",
+        out.rejections
+    );
+    for id in [ch::GAP_CAR_AHEAD, ch::GAP_CAR_BEHIND] {
+        assert_eq!(q(&out, id), Some(Quality::Valid), "{id:?}");
+        let gap = f(&out, id);
+        assert!(
+            gap.is_some_and(|g| g == 0.0 && g.is_sign_positive()),
+            "{id:?} {gap:?}"
+        );
+    }
+    // A raw 0 ahead (negated) is +0.0 as well, never −0.0.
+    fx.t().time_gap_car_ahead = 0.0;
+    let out = fx.step(&mut Normalizer::new());
+    assert!(f(&out, ch::GAP_CAR_AHEAD).is_some_and(|g| g == 0.0 && g.is_sign_positive()));
 }
 
 #[test]

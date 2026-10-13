@@ -17,12 +17,16 @@
 //! - **Units in one place.** All conversions use `telemetry_model::units::convert`; sign conventions are
 //!   named constants in [`convention`]; the tyre side mapping is one function in [`tyre`]; unit hazards
 //!   (brake temperature K/°C, brake pressure fraction, VE/SoC scale…) are explicit detectors in [`detect`].
+//! - **Known discontinuities are not rejections.** A garage teleport, a realtime entry or a pit service
+//!   resets the rate history of the affected channels ([`discontinuity`]); uncorroborated jumps are still
+//!   rejected.
 //! - **Deterministic, no global state.** [`Normalizer`] holds all state; the same inputs give the same
 //!   outputs.
 
 pub mod capability;
 pub mod convention;
 pub mod detect;
+pub mod discontinuity;
 pub mod identity;
 pub mod mapping;
 pub mod normalizer;
@@ -38,9 +42,11 @@ mod testutil;
 
 pub use capability::{CAPABILITY_DECISION_SAMPLES, VehicleCapabilityTracker};
 pub use detect::{
-    BrakeTempUnit, BrakeTempUnitDecision, BrakeTempUnitDetector, FractionScale,
-    FractionScaleDetector, UnitDecisionState, VERIFIED_BRAKE_TEMP_UNITS, verified_brake_temp_unit,
+    BrakeTempUnit, BrakeTempUnitDecision, BrakeTempUnitDetector, FillState, FractionScale,
+    FractionScaleDetector, StuckValueDetector, UnitDecisionState, VERIFIED_BRAKE_TEMP_UNITS,
+    VERIFIED_VIRTUAL_ENERGY_SCALES, verified_brake_temp_unit, verified_virtual_energy_scale,
 };
+pub use discontinuity::{CarSample, Discontinuity, DiscontinuityDetector};
 pub use identity::{IdentityChange, IdentityTracker};
 pub use normalizer::{
     NormalizedOutput, Normalizer, NormalizerInput, NormalizerStats, SUSTAINED_REJECTION_FRAMES,

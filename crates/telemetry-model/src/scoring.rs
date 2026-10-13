@@ -207,11 +207,18 @@ impl CompetitorEntry {
         positive_difference(self.best_sector12_s?, self.best_sector1_s?)
     }
 
-    /// Whether this car is in the pit lane or stall according to the pit state machine.
+    /// Whether this car is in the pit lane or stall according to the pit state machine (observed states
+    /// 2, 4, 5 and the header's 3, A-LMU-029). [`PitState::Exiting`] (5) also covers the garage stall and the
+    /// way out of it (A-LMU-063).
     pub fn in_pit_lane(&self) -> bool {
         matches!(
             self.pit_state,
-            Some(PitState::Entering | PitState::Stopped | PitState::Exiting)
+            Some(
+                PitState::Entering
+                    | PitState::HeaderStopped
+                    | PitState::Stopped
+                    | PitState::Exiting
+            )
         ) || self.in_garage_stall == Some(true)
     }
 }
@@ -527,6 +534,11 @@ mod tests {
         assert_eq!(r.best_sector2_s(), None);
         r.pit_state = Some(PitState::Stopped);
         assert!(r.in_pit_lane());
+        // Observed raw 5 (A-LMU-063): leaving the box, or in the garage stall or driving out of it.
+        r.pit_state = Some(PitState::from_raw(5));
+        assert!(r.in_pit_lane());
+        r.pit_state = Some(PitState::Requested);
+        assert!(!r.in_pit_lane(), "a request is made on track");
     }
 
     #[test]

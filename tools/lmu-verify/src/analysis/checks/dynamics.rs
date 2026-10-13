@@ -197,6 +197,8 @@ impl GLongCheck {
 pub struct GLatCheck {
     yaw_agree: Agreement,
     load_agree: Agreement,
+    /// Cornering samples whose four tyre loads were all exactly 0 N (not evidence).
+    zero_load_samples: u64,
     centripetal: Correlation,
     centripetal_ratio: Summary,
 }
@@ -224,6 +226,15 @@ impl GLatCheck {
         // Steady cornering: lateral acceleration = speed × yaw rate (sideslip rate neglected).
         self.centripetal_ratio.push(g / expected_g);
         let loads: Option<Vec<f64>> = TYRE_LOAD.iter().map(|&id| frame.f64(id)).collect();
+        // Four loads of exactly 0 N on a cornering car are not a measurement (LMU does not fill them on
+        // LMGT3, A-LMU-069): no load-transfer evidence either way.
+        let loads = match loads {
+            Some(l) if l.iter().all(|&x| x == 0.0) => {
+                self.zero_load_samples += 1;
+                None
+            }
+            other => other,
+        };
         if let Some(l) = loads {
             let side = |idx: [usize; 2]| idx.iter().filter_map(|&i| l.get(i)).sum::<f64>();
             let right_minus_left = side(RIGHT_WHEELS) - side(LEFT_WHEELS);
@@ -274,10 +285,21 @@ impl GLatCheck {
         ));
         let yaw_v = sign_verdict(yaw, self.yaw_agree.total);
         let load_v = sign_verdict(load, self.load_agree.total);
-        let summary = format!(
-            "agrees with yaw rate in {}, with load transfer in {}",
-            pct(yaw),
+        o.metric("zero_load_samples", self.zero_load_samples as f64);
+        if self.load_agree.total == 0 {
+            o.line(format!(
+                "load transfer: n/a (tyre loads unavailable, or exactly 0 N on all four wheels in {} cornering samples); the verdict rests on the yaw evidence",
+                self.zero_load_samples
+            ));
+        }
+        let load_text = if self.load_agree.total == 0 {
+            "n/a (no tyre loads)".to_owned()
+        } else {
             pct(load)
+        };
+        let summary = format!(
+            "agrees with yaw rate in {}, with load transfer in {load_text}",
+            pct(yaw)
         );
         let verdict = match (yaw_v, load_v) {
             (Verdict::Fail, _) | (_, Verdict::Fail) => Verdict::Fail,
