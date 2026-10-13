@@ -78,7 +78,7 @@ Keep the captures themselves private, as with lmu-diag.
 | Check | Settles | Needs |
 |---|---|---|
 | `update_rates` | A-LMU-001, 002 | ≥ 10 s of telemetry and ≥ 50 scoring updates |
-| `elapsed_time` | A-LMU-031, 059 | as above; any unexplained ET regression fails. Explained: a restart below 10 s (new session), an identity change within 2 s, or a step back of ≤ 1 s within 0.5 s of a teleport (> 5 m faster than 200 m/s, then at rest: LMU moving the car into its garage, A-LMU-067) |
+| `elapsed_time` | A-LMU-031, 059 | as above; any unexplained ET regression fails. Explained: a restart below 10 s (new session), an identity change within 2 s, or a step back of ≤ 1 s within 0.5 s of a teleport (> 5 m faster than 200 m/s, then at rest: LMU moving the car into its garage, A-LMU-067), or a session-end rewind (session over, out of realtime, new ET ≥ `mEndET`: LMU closing a finished session, A-LMU-031; the normalizer's rule, applied to player and scoring ET) |
 | `brake_temp_unit` | A-LMU-015 | ≥ 10 cold samples in the garage before driving (coldest − ambient ≈ 273 K ⇒ Kelvin) |
 | `tyre_temperature_unit` | A-LMU-049, 062 | ≥ 200 samples per wheel above 10 m/s |
 | `tyre_pressure_unit` | A-LMU-049 | ≥ 200 samples per wheel above 10 m/s |
@@ -110,7 +110,7 @@ Keep the captures themselves private, as with lmu-diag.
 ## REST probe (opt-in)
 
 ```powershell
-.\target\release\lmu-verify.exe rest-probe --out gate1-rest [--include-pit-menu] [--spacing-ms 500] [--keep-raw-bodies]
+.\target\release\lmu-verify.exe rest-probe --out gate1-rest [--skip <endpoint>]... [--include-pit-menu] [--include-crash-suspects] [--spacing-ms 500] [--keep-raw-bodies]
 ```
 
 Only when you run it, and only while LMU is running, it requests each GET endpoint of
@@ -122,14 +122,23 @@ docs/LMU_TELEMETRY_RESEARCH.md §9 **once** on `http://127.0.0.1:6397`:
 - 1 s timeout per request; at least `--spacing-ms` (default 500, minimum 200) between requests.
 - `/rest/garage/UIScreen/RepairAndRefuel` is **skipped** unless `--include-pit-menu` (polling it can make
   the in-game pit menu flicker).
+- The **crash suspects** `/rest/garage/getVehicleCondition`, `/rest/garage/UIScreen/TireManagement`,
+  `/rest/garage/getPlayerGarageData` and `/rest/garage/PitMenu/receivePitMenu` are **skipped** unless
+  `--include-crash-suspects`: on 2026-10-13 they timed out (1 s) or reset the connection right before LMU
+  crashed (research §9.1). Not recommended.
+- `--skip <endpoint>` (exact path, repeatable) leaves any other endpoint out.
 - Each response is saved to `--out` (bodies capped at 2 MiB, also when sent in many small chunks) with
   `index.json` holding status, latency, a header subset and a shape summary (key paths, JSON types, array
   lengths, example values, with name-like values redacted). A table is printed.
 - **Privacy.** Standings and session bodies hold driver, player and server names. By default a JSON body
   is saved pretty-printed with every string under a name-like key (`driver`, `player`, `name`, `user`,
   `steam`, `server`, `nick`, `email`, and everything below such a key) replaced by `<name>`; a non-JSON
-  body cannot be redacted and is not saved (`index.json` says so). `--keep-raw-bodies` saves every body
-  verbatim for local inspection: do not share that folder.
+  body cannot be redacted and is not saved (`index.json` says so). **Object keys** are redacted too (also in
+  the `index.json` shape paths): a key that is not schema-like (anything but ASCII letters, digits, `_`, `-`,
+  `.`, or digits only) or that equals / contains a name seen as a value anywhere in the probe becomes
+  `<name>`, `<name>#2`, ... `/rest/strategy/usage` is keyed by the player name, so every top-level key of
+  its body is replaced unconditionally, even when no standings were fetched. `--keep-raw-bodies` saves
+  every body verbatim for local inspection: do not share that folder.
 
 ## Tests
 

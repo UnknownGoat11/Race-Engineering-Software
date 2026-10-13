@@ -135,6 +135,25 @@ pub fn competitor(row: &RawVehicleScoring) -> CompetitorEntry {
     }
 }
 
+/// LMU's classification gaps (`mTimeBehindNext` / `mTimeBehindLeader` / `mLapsBehind*` and telemetry
+/// `mTimeGapPlaceAhead` / `mTimeGapPlaceBehind`) mean "gap in the classification" only in race sessions
+/// (A-LMU-034). In practice, qualifying and warm-up the classification is by best lap, but LMU still fills
+/// these fields with the signed ROAD time gap to the car classified next to it (wherever it is on track,
+/// positive when that car is behind on the road, up to 124 s), or 0 (Gate 1 stint1 practice, 25 cars: the
+/// best-lap difference in 16 of ~50,000 rows, 0 in ~37 %, negative in ~10 %). They are no data there.
+pub fn classification_gaps_apply(info: &RawScoringInfo) -> bool {
+    SessionType::from_lmu(info.session).is_race()
+}
+
+/// Clears the classification gaps of a competitor (outside race sessions, see
+/// [`classification_gaps_apply`]): never publish a road gap as a classification gap.
+pub fn withhold_classification_gaps(entry: &mut CompetitorEntry) {
+    entry.time_behind_next_s = None;
+    entry.laps_behind_next = None;
+    entry.time_behind_leader_s = None;
+    entry.laps_behind_leader = None;
+}
+
 /// Full scoring state with class places derived (CALCULATED: rank by `mPlace` within the same class
 /// string). Rows beyond [`MAX_SCORING_ROWS`] are ignored (the reader already clamps).
 pub fn scoring_state(
@@ -142,9 +161,20 @@ pub fn scoring_state(
     rows: &[RawVehicleScoring],
     time_of_day: &mut TimeOfDayDetector,
 ) -> ScoringState {
+    let race = classification_gaps_apply(info);
     let mut state = ScoringState {
         session: session_scoring(info, time_of_day),
-        vehicles: rows.iter().take(MAX_SCORING_ROWS).map(competitor).collect(),
+        vehicles: rows
+            .iter()
+            .take(MAX_SCORING_ROWS)
+            .map(|row| {
+                let mut entry = competitor(row);
+                if !race {
+                    withhold_classification_gaps(&mut entry);
+                }
+                entry
+            })
+            .collect(),
     };
     state.assign_class_places();
     state

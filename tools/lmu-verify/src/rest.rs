@@ -8,7 +8,13 @@
 //! * **One-shot and spaced.** Each endpoint is requested once, with at least [`ProbeOptions::spacing`]
 //!   between requests and a [`REQUEST_TIMEOUT`] deadline per request (connect + send + receive).
 //! * **Pit menu excluded by default.** [`PIT_MENU_ENDPOINT`] can make the in-game pit menu flicker; it is
-//!   only requested with `include_pit_menu`.
+//!   only requested with `include_pit_menu`. The [`CRASH_SUSPECT_ENDPOINTS`] (garage routes that timed out
+//!   or reset the connection right before an LMU crash on 2026-10-13) only with `include_crash_suspects`;
+//!   any endpoint can be left out with `skip` (`--skip`, repeatable).
+//! * **No personal names saved.** JSON bodies and shape summaries have name-like values redacted, and
+//!   object keys that are not schema-like or contain a name seen elsewhere replaced. Every top-level key of
+//!   a [`NAME_KEYED_ENDPOINTS`] body (`/rest/strategy/usage` is keyed by the player name) is replaced
+//!   unconditionally, independent of the other responses.
 //! * **Bounded.** Headers are capped at [`MAX_HEADER_BYTES`], bodies at [`MAX_BODY_BYTES`].
 //!
 //! The HTTP/1.1 client is a minimal `std::net::TcpStream` implementation (Content-Length, chunked and
@@ -42,6 +48,15 @@ const MAX_CHUNK_LINE_BYTES: usize = 1024;
 const METHOD: &str = "GET";
 /// Endpoint that can make the in-game MFD pit menu flicker when polled (research §9).
 pub const PIT_MENU_ENDPOINT: &str = "/rest/garage/UIScreen/RepairAndRefuel";
+
+/// Garage routes that timed out or reset the connection right before an LMU crash on 2026-10-13 (owner
+/// probe in a session, research §9): crash suspects, excluded by default (`include_crash_suspects`).
+pub const CRASH_SUSPECT_ENDPOINTS: &[&str] = &[
+    "/rest/garage/getVehicleCondition",
+    "/rest/garage/UIScreen/TireManagement",
+    "/rest/garage/getPlayerGarageData",
+    "/rest/garage/PitMenu/receivePitMenu",
+];
 
 /// The GET endpoints of research §9, in probe order.
 pub const ENDPOINTS: &[&str] = &[
@@ -161,10 +176,14 @@ impl LoopbackEndpoint {
 }
 
 /// Probe settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeOptions {
     /// Also request [`PIT_MENU_ENDPOINT`].
     pub include_pit_menu: bool,
+    /// Also request the [`CRASH_SUSPECT_ENDPOINTS`].
+    pub include_crash_suspects: bool,
+    /// Endpoints never requested (exact paths, `--skip`).
+    pub skip: Vec<String>,
     /// Minimum pause between the end of one request and the start of the next.
     pub spacing: Duration,
     /// Deadline per request.
@@ -584,9 +603,8 @@ pub fn probe_endpoints(
     let mut requested_before = false;
     for &path in endpoints {
         let mut r = ProbeResult::empty(path);
-        if path == PIT_MENU_ENDPOINT && !options.include_pit_menu {
-            r.skipped =
-                Some("excluded by default (can make the in-game pit menu flicker); use --include-pit-menu".to_owned());
+        if let Some(why) = skip_reason(path, options) {
+            r.skipped = Some(why.to_owned());
             results.push(r);
             continue;
         }
@@ -606,10 +624,7 @@ pub fn probe_endpoints(
                     .collect();
                 r.body_bytes = resp.body.len();
                 r.truncated = resp.truncated;
-                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&resp.body) {
-                    r.json = true;
-                    r.shape = Some(shape_of(&value));
-                }
+                r.json = serde_json::from_slice::<serde_json::Value>(&resp.body).is_ok();
                 r.body = resp.body;
             }
             Err(e) => {
@@ -619,7 +634,31 @@ pub fn probe_endpoints(
         }
         results.push(r);
     }
+    // Shapes are built after every body is in: names seen as values in one response (standings) redact
+    // the same names used as object keys in another (strategy/usage is keyed by the player name).
+    let names = names_in(&results);
+    for r in &mut results {
+        if let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&r.body) {
+            redact_value_for(r.endpoint, &mut value, &names);
+            r.shape = Some(shape_of(&value));
+        }
+    }
     results
+}
+
+/// Why `path` is not requested with `options`, if it is not.
+fn skip_reason(path: &str, options: &ProbeOptions) -> Option<&'static str> {
+    if options.skip.iter().any(|s| s == path) {
+        Some("skipped on request (--skip)")
+    } else if path == PIT_MENU_ENDPOINT && !options.include_pit_menu {
+        Some("excluded by default (can make the in-game pit menu flicker); use --include-pit-menu")
+    } else if CRASH_SUSPECT_ENDPOINTS.contains(&path) && !options.include_crash_suspects {
+        Some(
+            "excluded by default (timed out or reset the connection right before an LMU crash on 2026-10-13); use --include-crash-suspects",
+        )
+    } else {
+        None
+    }
 }
 
 /// Probes every endpoint of [`ENDPOINTS`].
@@ -656,21 +695,130 @@ pub enum BodyPolicy {
     Raw,
 }
 
-/// Replaces non-empty strings under name-like keys with `<name>` (`redact`: already below such a key).
-/// Depth is bounded by serde_json's parser recursion limit.
-fn redact_names(v: &mut serde_json::Value, redact: bool) {
+/// Shortest collected name: shorter strings would redact ordinary keys by accident.
+const MIN_COLLECTED_NAME_CHARS: usize = 2;
+/// Shortest collected name matched inside a longer key (shorter ones only redact an equal key). Errs on
+/// the side of redaction: a compound or class name used as a value can hide an ordinary key too.
+const MIN_CONTAINED_NAME_CHARS: usize = 4;
+
+/// Collects the non-empty strings found under name-like keys of `v` (and below them) into `out`.
+fn collect_names(v: &serde_json::Value, under_name: bool, out: &mut BTreeSet<String>) {
+    match v {
+        serde_json::Value::String(s) if under_name => {
+            let t = s.trim();
+            if t.chars().count() >= MIN_COLLECTED_NAME_CHARS {
+                out.insert(t.to_lowercase());
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_names(item, under_name, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (k, item) in map {
+                collect_names(item, under_name || name_like(k), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The names (lower case) seen as values under name-like keys in every JSON body of `results`.
+pub fn names_in(results: &[ProbeResult]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for r in results {
+        if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&r.body) {
+            collect_names(&value, false, &mut names);
+        }
+    }
+    names
+}
+
+/// A key that looks like a schema field: ASCII letters, digits, `_`, `-` and `.` only, starting with a
+/// letter or `_` (`driverName`, `pit_state`), or digits only (an index or slot id). Anything else (a space,
+/// non-ASCII, punctuation) is "unknown": a personal name used as a key (LMU's `/rest/strategy/usage` is
+/// keyed by the player name) must never reach a saved file or the shape summary.
+fn schema_like_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if key.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// The key must be replaced: unknown (not schema-like) or equal to / containing a collected name.
+fn key_needs_redaction(key: &str, names: &BTreeSet<String>) -> bool {
+    if !schema_like_key(key) {
+        return true;
+    }
+    let k = key.to_lowercase();
+    names.iter().any(|n| {
+        k == *n || (n.chars().count() >= MIN_CONTAINED_NAME_CHARS && k.contains(n.as_str()))
+    })
+}
+
+/// Endpoints whose top-level object keys are personal names (LMU keys `/rest/strategy/usage` by the
+/// player name, probe 2026-10-13). Their top-level keys are always replaced, whatever else the probe saw:
+/// a one-token ASCII name (`DriverOne`) is schema-like and would otherwise survive whenever the standings
+/// were skipped, failed or empty.
+pub const NAME_KEYED_ENDPOINTS: &[&str] = &["/rest/strategy/usage"];
+
+/// `<name>` for the first replaced key of an object, `<name>#2`, `<name>#3`, ... for the next ones.
+fn redacted_key(n: usize) -> String {
+    if n <= 1 {
+        crate::redact::REDACTED.to_owned()
+    } else {
+        format!("{}#{n}", crate::redact::REDACTED)
+    }
+}
+
+/// [`redact_value`] for the body of `endpoint`. For a [`NAME_KEYED_ENDPOINTS`] endpoint every top-level
+/// object key is replaced unconditionally (and everything below it is treated as name-like); the
+/// collected-names rule of [`redact_value`] still applies everywhere as a second layer.
+pub fn redact_value_for(endpoint: &str, v: &mut serde_json::Value, names: &BTreeSet<String>) {
+    match v {
+        serde_json::Value::Object(map) if NAME_KEYED_ENDPOINTS.contains(&endpoint) => {
+            let old = std::mem::take(map);
+            for (i, (_, mut item)) in old.into_iter().enumerate() {
+                redact_value(&mut item, names, true);
+                map.insert(redacted_key(i + 1), item);
+            }
+        }
+        _ => redact_value(v, names, false),
+    }
+}
+
+/// Replaces non-empty strings under name-like keys with `<name>` (`redact`: already below such a key) and
+/// renames every key that [`key_needs_redaction`] to `<name>`, `<name>#2`, ... (everything below a
+/// redacted key is treated as name-like too). Depth is bounded by serde_json's parser recursion limit.
+pub fn redact_value(v: &mut serde_json::Value, names: &BTreeSet<String>, redact: bool) {
     match v {
         serde_json::Value::String(s) if redact && !s.is_empty() => {
             crate::redact::REDACTED.clone_into(s);
         }
         serde_json::Value::Array(items) => {
             for item in items {
-                redact_names(item, redact);
+                redact_value(item, names, redact);
             }
         }
         serde_json::Value::Object(map) => {
-            for (k, item) in map.iter_mut() {
-                redact_names(item, redact || name_like(k));
+            let old = std::mem::take(map);
+            let mut redacted_keys = 0_usize;
+            for (k, mut item) in old {
+                let hide = key_needs_redaction(&k, names);
+                redact_value(&mut item, names, redact || hide || name_like(&k));
+                let key = if hide {
+                    redacted_keys += 1;
+                    redacted_key(redacted_keys)
+                } else {
+                    k
+                };
+                map.insert(key, item);
             }
         }
         _ => {}
@@ -692,6 +840,7 @@ pub fn save(results: &[ProbeResult], dir: &Path, policy: BodyPolicy) -> Result<(
         path: dir.to_path_buf(),
         source,
     })?;
+    let names = names_in(results);
     let mut index: Vec<ProbeResult> = Vec::with_capacity(results.len());
     for r in results {
         let mut entry = r.clone();
@@ -702,7 +851,7 @@ pub fn save(results: &[ProbeResult], dir: &Path, policy: BodyPolicy) -> Result<(
                 (true, _) => {
                     let mut value: serde_json::Value = serde_json::from_slice(&r.body)?;
                     if policy == BodyPolicy::Redacted {
-                        redact_names(&mut value, false);
+                        redact_value_for(r.endpoint, &mut value, &names);
                     }
                     let mut pretty = serde_json::to_vec_pretty(&value)?;
                     pretty.push(b'\n');
@@ -844,7 +993,7 @@ mod tests {
             r#"{"server":{"title":"Club Night","slots":[{"id":1,"label":"Jane"}]},"drivers":[{"driverName":"X Y","lap":3}],"track":"Le Mans","empty":{"userName":""}}"#,
         )
         .expect("json");
-        redact_names(&mut v, false);
+        redact_value(&mut v, &BTreeSet::new(), false);
         assert_eq!(
             v.to_string(),
             r#"{"drivers":[{"driverName":"<name>","lap":3}],"empty":{"userName":""},"server":{"slots":[{"id":1,"label":"<name>"}],"title":"<name>"},"track":"Le Mans"}"#
@@ -909,5 +1058,112 @@ mod tests {
             file_name("/swagger-schema.json", false),
             "swagger-schema_json.txt"
         );
+    }
+
+    #[test]
+    fn name_like_or_unknown_object_keys_are_redacted() {
+        // LMU /rest/strategy/usage is keyed by the player name (probe 2026-10-13); the name is also a value in
+        // the standings. Both responses go through one name set.
+        let standings = br#"[{"driverName":"Jane","slotID":3,"vehicleName":"Car #7"}]"#;
+        let usage = r#"{"Jane":{"fuel":0.5,"tires":[1,2]},"Max Power":{"fuel":0.4},"Über":{"ve":1},"12":{"ok":true},"pit_state":"EXITING","JaneTeam":{"x":1}}"#.as_bytes();
+        let results: Vec<ProbeResult> = [standings.to_vec(), usage.to_vec()]
+            .into_iter()
+            .map(|body| ProbeResult {
+                status: Some(200),
+                json: true,
+                body,
+                ..ProbeResult::empty("/rest/test")
+            })
+            .collect();
+        let names = names_in(&results);
+        assert!(names.contains("jane") && names.contains("car #7"));
+        let mut v: serde_json::Value = serde_json::from_slice(usage).expect("json");
+        redact_value(&mut v, &names, false);
+        let text = v.to_string();
+        for leaked in ["Jane", "Max Power", "Über", "JaneTeam"] {
+            assert!(!text.contains(leaked), "{leaked} leaked: {text}");
+        }
+        let map = v.as_object().expect("object");
+        // Schema-like keys and numeric ids stay; the values below a redacted key keep their numbers.
+        assert_eq!(map.get("pit_state"), Some(&serde_json::json!("EXITING")));
+        assert_eq!(map.get("12"), Some(&serde_json::json!({"ok": true})));
+        assert_eq!(map.keys().filter(|k| k.starts_with("<name>")).count(), 4);
+        // The shape summary (index.json) is built from the redacted value, so its paths hold no name.
+        let shape = shape_of(&v);
+        assert!(shape.entries.iter().all(|e| !e.path.contains("Jane")));
+        assert!(shape.entries.iter().any(|e| e.path.starts_with("$.<name>")));
+    }
+
+    #[test]
+    fn name_keyed_endpoint_keys_are_redacted_without_any_collected_names() {
+        // Review fix-gate1d: standings skipped/failed/empty means no collected names; a one-token ASCII
+        // player name is schema-like, so only the endpoint rule can hide it.
+        let usage = br#"{"DriverOne":{"fuel":0.5,"note":"x"},"Driver_Two":{"fuel":0.4}}"#;
+        let results = vec![ProbeResult {
+            status: Some(200),
+            json: true,
+            body: usage.to_vec(),
+            shape: None,
+            ..ProbeResult::empty(NAME_KEYED_ENDPOINTS[0])
+        }];
+        assert!(names_in(&results).is_empty());
+        let dir =
+            std::env::temp_dir().join(format!("lmu-verify-rest-namekeyed-{}", std::process::id()));
+        save(&results, &dir, BodyPolicy::Redacted).expect("save");
+        let body = fs::read_to_string(dir.join(file_name(NAME_KEYED_ENDPOINTS[0], true)))
+            .expect("saved body");
+        let index = fs::read_to_string(dir.join("index.json")).expect("index");
+        let _ = fs::remove_dir_all(&dir);
+        for text in [&body, &index] {
+            assert!(
+                !text.contains("DriverOne") && !text.contains("Driver_Two"),
+                "player name leaked: {text}"
+            );
+        }
+        let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+        let map = v.as_object().expect("object");
+        assert_eq!(map.len(), 2, "{body}");
+        assert!(map.contains_key("<name>") && map.contains_key("<name>#2"));
+        // Numbers below the replaced key survive; strings below it are treated as name-like.
+        assert!(body.contains("0.5") && !body.contains("\"x\""), "{body}");
+
+        // The shape summary goes through the same rule.
+        let mut shaped = serde_json::from_slice::<serde_json::Value>(usage).expect("json");
+        redact_value_for(NAME_KEYED_ENDPOINTS[0], &mut shaped, &BTreeSet::new());
+        assert!(
+            shape_of(&shaped)
+                .entries
+                .iter()
+                .all(|e| !e.path.contains("DriverOne") && !e.path.contains("Driver_Two"))
+        );
+        // Other endpoints keep schema-like keys.
+        let mut other = serde_json::json!({"pit_state": "EXITING"});
+        redact_value_for("/rest/watch/standings", &mut other, &BTreeSet::new());
+        assert_eq!(other, serde_json::json!({"pit_state": "EXITING"}));
+    }
+
+    #[test]
+    fn skip_list_crash_suspects_and_pit_menu_are_not_requested_by_default() {
+        let options = ProbeOptions {
+            include_pit_menu: false,
+            include_crash_suspects: false,
+            skip: vec!["/rest/watch/trackmap".to_owned()],
+            spacing: Duration::ZERO,
+            timeout: REQUEST_TIMEOUT,
+        };
+        assert!(skip_reason("/rest/watch/trackmap", &options).is_some());
+        assert!(skip_reason(PIT_MENU_ENDPOINT, &options).is_some());
+        for path in CRASH_SUSPECT_ENDPOINTS {
+            assert!(ENDPOINTS.contains(path), "{path}");
+            assert!(skip_reason(path, &options).is_some(), "{path}");
+        }
+        assert!(skip_reason("/rest/watch/standings", &options).is_none());
+        let all = ProbeOptions {
+            include_pit_menu: true,
+            include_crash_suspects: true,
+            skip: Vec::new(),
+            ..options
+        };
+        assert!(ENDPOINTS.iter().all(|p| skip_reason(p, &all).is_none()));
     }
 }

@@ -9,8 +9,10 @@
 //! 3. classifies the player telemetry ET: a frame whose `mElapsedTime` equals the previous one (same
 //!    player `mID`) is a **duplicate and produces no physics sample**; a regression within the same
 //!    identity is a session restart (reset + `SessionChanged{from: T, to: T}`, emitted once the scoring
-//!    block has refreshed and only if that refresh did not itself report a session/track change); a
-//!    non-finite ET drops the sample;
+//!    block has refreshed and only if that refresh did not itself report a session/track change), except a
+//!    **session-end rewind** (session over, out of realtime, ET rewound to at or after `mEndET`,
+//!    `discontinuity::is_session_end_rewind`): the same reset, but no restart event; a non-finite ET drops
+//!    the sample;
 //! 4. maps a new sample into a [`TelemetryFrame`], validates every value against the registry
 //!    (`telemetry_model::validate`: finiteness, range, rate) and updates the capability map.
 
@@ -39,7 +41,9 @@ use crate::capability::{self, VehicleCapabilityTracker};
 use crate::detect::{
     BrakeTempUnit, BrakeTempUnitDecision, FillState, FractionScale, UnitDecisionState,
 };
-use crate::discontinuity::{CarSample, Discontinuity, DiscontinuityDetector, pit_service_channels};
+use crate::discontinuity::{
+    CarSample, Discontinuity, DiscontinuityDetector, is_session_end_rewind, pit_service_channels,
+};
 use crate::identity::IdentityTracker;
 use crate::mapping::{
     self, FILL_CHECKED_CHANNELS, MapInput, MapState, SessionDetectors, decode_current_sector,
@@ -135,6 +139,10 @@ pub struct NormalizerStats {
     /// Published samples taken while the car stood in the pit area (service channels' rate history reset).
     #[serde(default)]
     pub pit_service_samples: u64,
+    /// ET regressions recognised as a session-end rewind (session over, out of realtime, ET rewound to the
+    /// session end: time base reset, no restart event; A-LMU-031). Included in `et_regressions`.
+    #[serde(default)]
+    pub session_end_rewinds: u64,
 }
 
 /// The raw inputs of one step, independent of how they were obtained (live reader, capture replay, test).
@@ -414,6 +422,37 @@ impl Normalizer {
             }
             EtStep::Regressed { by_s } => {
                 self.stats.et_regressions = self.stats.et_regressions.saturating_add(1);
+                let info = input.scoring_info;
+                if is_session_end_rewind(
+                    info.game_phase,
+                    info.in_realtime,
+                    mapping::session_end_et(info.end_et),
+                    et + by_s,
+                    et,
+                ) {
+                    // The finished session is being closed, not restarted: the time base is void (reset),
+                    // but no SessionChanged restart event is emitted.
+                    self.stats.session_end_rewinds =
+                        self.stats.session_end_rewinds.saturating_add(1);
+                    push_logged(
+                        DiagnosticNotice::new(
+                            NoticeCode::EtRegression,
+                            Severity::Notice,
+                            Some(ch::ELAPSED_TIME),
+                            format!(
+                                "player ET went back by {by_s:.3} s to the session end after the session was over (session-end rewind): time base reset, not a restart"
+                            ),
+                        )
+                        .with_raw(et)
+                        .at(Some(et)),
+                        &mut out.notices,
+                    );
+                    self.pending_restart = None;
+                    self.reset_session_context();
+                    out.disposition = TelemetryDisposition::NewSampleAfterRegression;
+                    self.publish_sample(input, telemetry, &mut out);
+                    return out;
+                }
                 push_logged(
                     DiagnosticNotice::new(
                         NoticeCode::EtRegression,

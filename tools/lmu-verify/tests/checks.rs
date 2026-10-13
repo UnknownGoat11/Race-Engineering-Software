@@ -280,3 +280,32 @@ fn decisions_name_only_the_game_versions_of_the_deciding_captures() {
         ve.action
     );
 }
+
+#[test]
+fn session_end_rewind_is_explained_not_a_fault() {
+    // stint1 (A-LMU-031): after the session is over and the player is back in the garage, LMU rewinds ET to
+    // just after the session end. Explained, so the elapsed-time check does not fail on it.
+    let report = run(&Scenario {
+        laps: 1,
+        pit_lap: None,
+        faults: Faults {
+            session_end_rewind: true,
+            ..Faults::default()
+        },
+        ..Scenario::default()
+    });
+    let timing = report.timing.as_ref().expect("timing");
+    assert_eq!(timing.et_regressions, 1);
+    assert_eq!(timing.unexplained_et_regressions, 0);
+    assert!(timing.regressions[0].session_end_rewind);
+    assert!(
+        timing.regressions[0]
+            .explanation
+            .as_deref()
+            .is_some_and(|e| e.contains("session-end rewind"))
+    );
+    assert_eq!(timing.scoring_et_regressions_not_restart, 0);
+    assert_eq!(timing.scoring_et_session_end_rewinds, 1);
+    assert_eq!(report.normalizer.session_end_rewinds, 1);
+    assert_ne!(check(&report, "elapsed_time").verdict, Verdict::Fail);
+}

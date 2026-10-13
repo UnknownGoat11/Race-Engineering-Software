@@ -106,11 +106,12 @@ pub(super) fn elapsed_time(timing: Option<&TimingReport>) -> CheckResult {
         .metric_opt("abs_tel_minus_scoring_et_p99_s", p99)
         .metric_opt("drift_ppm", t.drift.weighted_drift_ppm);
     o.line(format!(
-        "player ET regressions {} ({} unexplained); scoring ET regressions {} ({} not to a restart near 0)",
+        "player ET regressions {} ({} unexplained); scoring ET regressions {} ({} not to a restart near 0, {} session-end rewinds)",
         t.et_regressions,
         t.unexplained_et_regressions,
         t.scoring_et_regressions,
-        t.scoring_et_regressions_not_restart
+        t.scoring_et_regressions_not_restart,
+        t.scoring_et_session_end_rewinds
     ));
     for r in t.regressions.iter().take(5) {
         o.line(format!(

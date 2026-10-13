@@ -1047,14 +1047,17 @@ fn map_timing(
     w.int(ch::LAP_NUMBER, i64::from(t.lap_number));
     let lap_start = lap_start_et(t.lap_start_et);
     w.opt_float(ch::LAP_START_TIME, lap_start);
-    w.opt_float(ch::LAP_TIME, lap_start.map(|s| t.elapsed_time - s));
+    w.opt_float(ch::LAP_TIME, current_lap_time_s(t.elapsed_time, lap_start));
     w.boolean(ch::LAP_INVALID, t.lap_invalidated);
     w.float(ch::DELTA_BEST, t.delta_best);
     // Alone in the session there is no car to measure a gap to: LMU's 0 is its "no car" value (Gate 1, solo
     // practice: exactly 0 all session, A-LMU-066), not a 0 s gap. Left at "no data" (the map's "or NONE").
     // The classification leader has no place ahead and the last car no place behind.
     let solo = info.num_vehicles == SOLO_SESSION_VEHICLES;
-    let place = player_row.map(|r| r.place).filter(|&p| p >= 1);
+    // The place gaps are classification gaps only in a race; in practice / qualifying / warm-up LMU fills
+    // them with the road gap to the car classified next to the player (A-LMU-034): no data there.
+    let race = crate::standings::classification_gaps_apply(info);
+    let place = player_row.map(|r| r.place).filter(|&p| p >= 1 && race);
     let last_place = u8::try_from(info.num_vehicles).ok();
     let gaps = [
         (
@@ -1091,6 +1094,18 @@ fn map_timing(
     }
 }
 
+/// The current lap time (s): ET − `mLapStartET`, or `None` while the lap start lies after the ET.
+///
+/// LMU leaves the lap start ahead of the ET in two observed cases (Gate 1, LMU 1.4.2.0): by ~0.01 s on the
+/// frame of a return to the garage (the new lap starts on the next update), and by 42.85 s after the
+/// session-end ET rewind (stint1 practice: ET rewound to 606.02 s with the lap started at 648.87 s,
+/// A-LMU-031). Neither is a lap time; a negative value is never published.
+pub fn current_lap_time_s(et_s: f64, lap_start_et_s: Option<f64>) -> Option<f64> {
+    lap_start_et_s
+        .map(|start| et_s - start)
+        .filter(|lap| lap.is_finite() && *lap >= 0.0)
+}
+
 /// Which neighbour an LMU `mTimeGap*` field measures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GapSide {
@@ -1105,6 +1120,9 @@ pub enum GapSide {
 pub const GAP_ALONGSIDE_TOLERANCE_S: f64 = 0.05;
 
 /// Converts an LMU `mTimeGap*` value (s) to the published non-negative gap (A-LMU-034).
+///
+/// The place gaps reach this function only in race sessions: outside a race LMU's `mTimeGapPlace*` is the
+/// road gap to the car classified next to the player by best lap, published as no data (`map_timing`).
 ///
 /// LMU 1.4.2.0 signs the gap as the other car's time relative to the player: the car (or place) **ahead is
 /// negative**, the one behind positive (Gate 1 race, 20 cars at Sebring: `mTimeGapPlaceAhead` = −`mTimeBehindNext`
@@ -1358,7 +1376,13 @@ fn map_player_scoring(input: &MapInput<'_>, w: &mut FrameWriter<'_>) {
         PLAYER_SCORING_CHANNELS.iter().for_each(|&id| w.none(id));
         return;
     };
-    let entry: CompetitorEntry = crate::standings::competitor(row);
+    let mut entry: CompetitorEntry = crate::standings::competitor(row);
+    // Outside race sessions LMU's classification gaps are road gaps or 0, not classification gaps
+    // (A-LMU-034): no data.
+    let race = crate::standings::classification_gaps_apply(input.info);
+    if !race {
+        crate::standings::withhold_classification_gaps(&mut entry);
+    }
     w.opt_float(ch::BEST_LAP_TIME, entry.best_lap_s);
     w.opt_float(ch::LAST_LAP_TIME, entry.last_lap_s);
     w.opt_float(ch::BEST_SECTOR1, entry.best_sector1_s);
@@ -1391,9 +1415,15 @@ fn map_player_scoring(input: &MapInput<'_>, w: &mut FrameWriter<'_>) {
     w.int(ch::LAPS_COMPLETED, i64::from(row.total_laps));
     w.int(ch::FINISH_STATUS, i64::from(row.finish_status));
     w.opt_float(ch::TIME_BEHIND_NEXT, entry.time_behind_next_s);
-    w.int(ch::LAPS_BEHIND_NEXT, i64::from(row.laps_behind_next));
+    w.opt_int(
+        ch::LAPS_BEHIND_NEXT,
+        race.then_some(i64::from(row.laps_behind_next)),
+    );
     w.opt_float(ch::TIME_BEHIND_LEADER, entry.time_behind_leader_s);
-    w.int(ch::LAPS_BEHIND_LEADER, i64::from(row.laps_behind_leader));
+    w.opt_int(
+        ch::LAPS_BEHIND_LEADER,
+        race.then_some(i64::from(row.laps_behind_leader)),
+    );
     w.opt_int(
         ch::QUALIFYING_POSITION,
         qualification(row.qualification).map(i64::from),

@@ -99,6 +99,8 @@ fn endpoint(addr: SocketAddr) -> LoopbackEndpoint {
 fn options(include_pit_menu: bool, spacing_ms: u64) -> ProbeOptions {
     ProbeOptions {
         include_pit_menu,
+        include_crash_suspects: false,
+        skip: Vec::new(),
         spacing: Duration::from_millis(spacing_ms),
         timeout: rest::REQUEST_TIMEOUT,
     }
@@ -110,7 +112,9 @@ fn probe_sends_one_get_per_endpoint_and_skips_the_pit_menu_by_default() {
     let results = rest::probe(&endpoint(addr), &options(false, 0));
     assert_eq!(results.len(), ENDPOINTS.len());
     let requests = requests.lock().expect("lock").clone();
-    assert_eq!(requests.len(), ENDPOINTS.len() - 1, "{requests:#?}");
+    // The pit menu and the four crash-suspect garage routes are skipped by default.
+    let skipped = 1 + rest::CRASH_SUSPECT_ENDPOINTS.len();
+    assert_eq!(requests.len(), ENDPOINTS.len() - skipped, "{requests:#?}");
     for head in &requests {
         assert!(head.starts_with("GET /"), "{head}");
         assert!(head.contains(&format!("\r\nHost: {addr}\r\n")), "{head}");
@@ -119,6 +123,9 @@ fn probe_sends_one_get_per_endpoint_and_skips_the_pit_menu_by_default() {
             "a GET carries no body: {head}"
         );
         assert!(!head.contains(PIT_MENU_ENDPOINT), "{head}");
+        for suspect in rest::CRASH_SUSPECT_ENDPOINTS {
+            assert!(!head.contains(&format!(" {suspect} ")), "{head}");
+        }
     }
     // Each endpoint once.
     let mut paths: Vec<&str> = requests
@@ -127,7 +134,7 @@ fn probe_sends_one_get_per_endpoint_and_skips_the_pit_menu_by_default() {
         .collect();
     paths.sort_unstable();
     paths.dedup();
-    assert_eq!(paths.len(), ENDPOINTS.len() - 1);
+    assert_eq!(paths.len(), ENDPOINTS.len() - skipped);
 
     let pit = results
         .iter()
@@ -232,7 +239,9 @@ fn the_timeout_is_honoured() {
         matches!(result, Err(RestError::Timeout(t)) if t == timeout),
         "{result:?}"
     );
-    assert!(elapsed >= timeout, "{elapsed:?}");
+    // Windows socket receive timeouts can fire up to one scheduler tick (~15.6 ms) early under load.
+    const TIMER_SLACK: Duration = Duration::from_millis(20);
+    assert!(elapsed + TIMER_SLACK >= timeout, "{elapsed:?}");
     assert!(
         elapsed < Duration::from_secs(HANG_S),
         "returned after {elapsed:?}"

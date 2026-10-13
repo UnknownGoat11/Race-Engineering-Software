@@ -47,6 +47,8 @@ const WHEEL_RADIUS_CM: u8 = 34;
 const REAR_BIAS: f64 = 0.45;
 const START_ET_S: f64 = 10.0;
 const PLAYER_ID: i32 = 7;
+/// Raw `mGamePhase` of a finished session.
+const SESSION_OVER_PHASE: u8 = 8;
 
 /// One broken convention per flag.
 #[derive(Debug, Clone, Copy, Default)]
@@ -89,6 +91,10 @@ pub struct Faults {
     pub frozen_rpm: bool,
     /// ET jumps back 3 s in the middle of the run (no session restart).
     pub et_regression: bool,
+    /// The session ends (`mGamePhase` 8, `mEndET` 1.02 s before the rewound ET), the player leaves realtime, and
+    /// ET then jumps back 3 s to just after the session end: LMU's session-end rewind (stint1, A-LMU-031).
+    /// Not a fault: the elapsed-time check must explain it.
+    pub session_end_rewind: bool,
     /// Capture clock advances 30 ms per frame (telemetry looks like 33 Hz, scoring 1.7 Hz).
     pub slow_capture_clock: bool,
     /// Telemetry `mLapNumber` is garbage (`i32::MAX`) in every frame.
@@ -629,6 +635,17 @@ pub fn capture(scenario: &Scenario) -> Vec<u8> {
     for frame in 0..scenario.max_frames {
         if frame > 0 {
             car.step(scenario.pit_lap);
+        }
+        if scenario.faults.session_end_rewind && frame == regression_frame - 2 * SCORING_EVERY {
+            let s = LayoutBuilder::scoring_base();
+            b.set(s, scoring_info::GAME_PHASE, SESSION_OVER_PHASE);
+            b.set(s, scoring_info::IN_REALTIME, false);
+            // The rewind (below) lands 1.02 s after the session end, as in stint1.
+            let end_et = car.et + 2.0 * SCORING_EVERY as f64 * DT_S - 3.0 - 1.02;
+            b.set(s, scoring_info::END_ET, end_et);
+        }
+        if scenario.faults.session_end_rewind && frame == regression_frame {
+            car.et -= 3.0;
         }
         if scenario.faults.et_regression && frame == regression_frame {
             car.et -= 3.0;

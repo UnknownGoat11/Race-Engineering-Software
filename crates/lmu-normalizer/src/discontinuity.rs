@@ -143,6 +143,30 @@ pub fn is_teleport(prev: &CarSample, next: &CarSample, max_motion_mps: f64) -> b
         && next.in_pit_area
 }
 
+/// Raw `mGamePhase` of a finished session (`GamePhase::SessionOver`).
+pub const LMU_GAME_PHASE_SESSION_OVER: u8 = 8;
+
+/// A **session-end ET rewind** (A-LMU-031): an ET regression with the session over (`mGamePhase` 8), the
+/// player out of realtime (in the garage / monitor) and the new ET at or after the session end time.
+///
+/// Gate 1 stint1 practice (LMU 1.4.2.0): the session ended at `mEndET` 605 s, the driver kept lapping to
+/// ET 652 s and returned to the garage; after a 19.5 s stall LMU rewound ET to 606.02 s (end + 1.02 s) and
+/// sent `EndSession` + `Unload` 0.6 s later. It is the same session being closed, not a restart: the time
+/// base is void (reset) but no new session begins. A regression before the session end, in realtime or
+/// while the session runs is never this (it stays a restart, or an unexplained fault).
+pub fn is_session_end_rewind(
+    game_phase: u8,
+    in_realtime: bool,
+    end_et_s: Option<f64>,
+    prev_et_s: f64,
+    new_et_s: f64,
+) -> bool {
+    game_phase == LMU_GAME_PHASE_SESSION_OVER
+        && !in_realtime
+        && new_et_s < prev_et_s
+        && end_et_s.is_some_and(|end| end.is_finite() && end > 0.0 && new_et_s >= end)
+}
+
 /// A pit service window: stationary in the pit area.
 pub fn is_pit_service(sample: &CarSample) -> bool {
     sample.in_pit_area && (0.0..=PIT_SERVICE_MAX_SPEED_MPS).contains(&sample.speed_mps)
@@ -286,5 +310,51 @@ mod tests {
             !ids.contains(&ch::BRAKE_TEMP_FL),
             "a pit stop does not reset brakes"
         );
+    }
+
+    /// Gate 1 stint1 practice: ET 653.025 → 606.020 s with the session over at 605 s, out of realtime.
+    #[test]
+    fn session_end_rewind_needs_session_over_out_of_realtime_and_an_et_past_the_end() {
+        let over = LMU_GAME_PHASE_SESSION_OVER;
+        assert!(is_session_end_rewind(
+            over,
+            false,
+            Some(605.0),
+            653.025,
+            606.02
+        ));
+        // Exactly at the end time still counts.
+        assert!(is_session_end_rewind(
+            over,
+            false,
+            Some(605.0),
+            653.0,
+            605.0
+        ));
+        // Running session (green flag = 5), in realtime, before the end, unset end or no regression: not it.
+        assert!(!is_session_end_rewind(5, false, Some(605.0), 653.0, 606.0));
+        assert!(!is_session_end_rewind(
+            over,
+            true,
+            Some(605.0),
+            653.0,
+            606.0
+        ));
+        assert!(!is_session_end_rewind(over, false, Some(605.0), 653.0, 4.5));
+        assert!(!is_session_end_rewind(over, false, None, 653.0, 606.0));
+        assert!(!is_session_end_rewind(
+            over,
+            false,
+            Some(f64::NAN),
+            653.0,
+            606.0
+        ));
+        assert!(!is_session_end_rewind(
+            over,
+            false,
+            Some(605.0),
+            606.0,
+            653.0
+        ));
     }
 }

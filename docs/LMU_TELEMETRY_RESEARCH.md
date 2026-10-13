@@ -286,8 +286,8 @@ The full mapping, with type, raw unit, conversion and validation per field, is i
 
 - **Server:** `http://127.0.0.1:6397`. VERIFIED: `Settings.JSON` has `"WebUI bind": "127.0.0.1"` and `"WebUI port": 6397`, and trace logs say `Bind rest server to 127.0.0.1:6397`.
 - **WebSocket:** `ws://…:6398` (port + 1) with `/websocket/ui` topics `SessionInfo`, `LiveStandings`, `InputData`, and `/websocket/events`. VERIFIED in the UI JavaScript; not tested live.
-- **Swagger:** `/swagger-schema.json` (OpenAPI 2.0) is the authoritative description of the running build. VERIFIED that the string is in the exe; its 179 paths / 79 GET are CLAIMED.
-- **Response schemas are UNVERIFIED**, because the game was not running.
+- **Swagger:** `/swagger-schema.json` (OpenAPI 2.0) is the authoritative description of the running build. VERIFIED 2026-10-13 (LMU 1.4.2.0): **183 paths / 82 GET** (the earlier 179 / 79 were CLAIMED).
+- **Response schemas:** VERIFIED / OBSERVED for the routes in §9.1 (owner-approved GET-only probes, 2026-10-13); the rest stay UNVERIFIED.
 
 **Policy** (D-002, D-018):
 - **GET only**, local `127.0.0.1` only (not `localhost`: resolution broke after 1.3.3, CLAIMED);
@@ -297,24 +297,46 @@ The full mapping, with type, raw unit, conversion and validation per field, is i
 
 | Endpoint (GET) | Why we want it | Hazards / notes |
 |---|---|---|
-| `/rest/watch/standings` | Per-car standings incl. `veFraction`, `fuelFraction`, `pitState` strings (CLAIMED) | Cross-check against shared-memory scoring |
-| `/rest/watch/sessionInfo` | Session and time info (CLAIMED fields) | — |
-| `/rest/watch/standings/history`, `/rest/watch/trackmap` | Standings history; track-map geometry | Shapes unknown |
-| `/rest/sessions/GetGameState` | Game / pit / multi-stint state strings | Logged 4xx when called in menus |
+| `/rest/watch/standings` | Per-car standings incl. `veFraction`, `fuelFraction`, `pitState` strings (VERIFIED 2026-10-13, §9.1) | Cross-check against shared-memory scoring |
+| `/rest/watch/sessionInfo` | Session and time info (VERIFIED fields, §9.1) | Holds player, server and track names |
+| `/rest/watch/standings/history`, `/rest/watch/trackmap` | Standings history; track-map geometry (VERIFIED shapes, §9.1) | History holds driver names |
+| `/rest/sessions/GetGameState` | Game / pit / multi-stint state strings (VERIFIED, §9.1) | **503** "not in an active session" in menus (VERIFIED) |
 | `/rest/sessions/weather` | **Forecast** (`WNV_*` nodes) | One-shot per session plus a slow refresh |
 | `/rest/garage/UIScreen/RepairAndRefuel` | Wear / damage (`wearables`), `fuelInfo` (max/current VE), pit menu, `pitStopLength` | **Polling it often makes the in-game MFD pit menu flicker** (CLAIMED, acknowledged by the dev in 2025). Keep ≤ 0.2 Hz with back-off |
-| `/rest/strategy/usage` | Per-lap fuel / VE / tyre usage history | — |
-| `/rest/strategy/pitstop-estimate` | Pit-stop time breakdown | Found in the exe, not in the UI bundle |
-| `/rest/strategy/overall` | Strategy summary | Empty in single-car tests (CLAIMED) |
-| `/rest/garage/getVehicleCondition`, `/rest/garage/tireinfo`, `/rest/garage/brakeinfo`, `/rest/garage/PitMenu/receivePitMenu` | Condition, tyre, brake and pit-menu data | Shapes unknown |
-| `/rest/sessions/TireInventory`, `/rest/garage/UIScreen/TireManagement` | Tyre-set inventory | Shapes unknown |
-| `/rest/garage/getPlayerGarageData` | Setup `VM_*` values | **Frozen snapshot while driving** (CLAIMED) |
+| `/rest/strategy/usage` | Per-lap fuel / VE / tyre usage history (VERIFIED shape, §9.1) | **Keyed by the player name** (an object key, not a value): never log or save raw |
+| `/rest/strategy/pitstop-estimate` | Pit-stop time breakdown (VERIFIED shape, §9.1) | Found in the exe, not in the UI bundle |
+| `/rest/strategy/overall` | Strategy summary | **400** in practice, single car and 25 cars (VERIFIED 2026-10-13) |
+| `/rest/garage/getVehicleCondition`, `/rest/garage/PitMenu/receivePitMenu` | Condition and pit-menu data | **Crash suspects**: timed out (1 s) / connection reset right before an LMU crash on 2026-10-13. `lmu-verify rest-probe` skips them by default |
+| `/rest/garage/tireinfo`, `/rest/garage/brakeinfo` | Tyre, brake data | **404** on 1.4.2.0 (VERIFIED 2026-10-13) |
+| `/rest/sessions/TireInventory` | Tyre-set inventory | **404 and not in the swagger** (VERIFIED 2026-10-13) |
+| `/rest/garage/UIScreen/TireManagement` | Tyre-set inventory | **Crash suspect** (timed out 2026-10-13, skipped by default) |
+| `/rest/garage/getPlayerGarageData` | Setup `VM_*` values | **Frozen snapshot while driving** (CLAIMED). **Crash suspect** (timed out 2026-10-13, skipped by default) |
 
 Known REST hazards (CLAIMED):
 - some URIs crash the game (e.g. `garage/Pitstop/getPitstopTimes`);
 - paths changed with game updates (June 2025, and again later);
 - responses are `text/plain` with no charset but contain UTF-8;
-- remaining VE from REST updates only at lap end, which is why TinyPedal and CrewChief switched to shared memory `mVirtualEnergy`.
+- remaining VE from REST updates only at lap end, which is why TinyPedal and CrewChief switched to shared memory `mVirtualEnergy`. **CONTRADICTED for `/rest/watch/standings` `veFraction` on 1.4.2.0** (§9.1: it changed between 205 of 226 consecutive 3.5 s samples while driving).
+
+### 9.1 Owner-approved probes, 2026-10-13 (LMU 1.4.2.0, gameVersion 14200)
+
+`lmu-verify rest-probe` (GET only, 127.0.0.1, ≥ 200 ms spacing, 1 s timeout) in the main menu and in a practice session, plus a standings + `GetGameState` series every ~3.5 s (`times.txt` = unix time per sample) during two drives: a stationary pit-lane wait after a garage exit (90 samples) and the stint1 capture (Road Atlanta practice, LMGT3, 25 cars, 241 samples). Raw files (contain names, read only, never in the repo): `D:\RaceEngineeringData\build\session-62bdcac0\{rest-probe, rest-probe-session, rest-ontrack, rest-stint1}`. Personal names are omitted here.
+
+VERIFIED (status codes and shapes, 2026-10-13):
+- Status: `swagger-schema.json`, `watch/sessionInfo`, `watch/standings`, `watch/standings/history`, `watch/trackmap`, `sessions/weather`, `strategy/usage`, `strategy/pitstop-estimate` → 200 (`null` / `{}` / `[]` bodies in the menu); `sessions/GetGameState` → 503 in menus; `sessions/TireInventory`, `garage/tireinfo`, `garage/brakeinfo` → 404; `strategy/overall` → 400; `garage/getVehicleCondition`, `garage/UIScreen/TireManagement`, `garage/getPlayerGarageData` → no response within 1 s; `garage/PitMenu/receivePitMenu` → connection reset (os error 10054). LMU crashed shortly after this probe: those four garage routes are treated as **crash suspects** (skipped by default, `--include-crash-suspects`; any route can be left out with `--skip`).
+- `GetGameState`, menu: `{gameState: "Setup", status: "unavailable", reason: "Game is not in an active session"}` (503); after the session ended: `gameState: "Post"`, then `"Setup"`. In session: `{MultiStintState ("DRIVING", "MONITOR_MENU"), PitEntryDist (m), PitState ("NONE", "REQUEST", "ENTERING", "STOPPED", "EXITING"), closeestWeatherNode {Duration, Humidity, RainChance, Sky, StartTime, Temperature, WindDirection, WindSpeed} (sic), exitGarageState ("None"), gamePhase ("GPHASE_GREEN"), haveILoadedAllMyTiresYet, inControlOfVehicle, inMonitor, isReplayActive, playerVehicleLoaded, raceFinished, teamVehicleState ("IN CONTROL"), timeOfDay (s)}`.
+- `watch/standings`: array, one object per car: `attackMode {remainingCount, timeRemaining, totalCount}`, `bestLapSectorTime1/2`, `bestLapTime`, `bestSectorTime1/2`, `carAcceleration {x,y,z,velocity}`, `carClass`, `carId`, `carNumber`, `carPosition {x,y,z,type}`, `carVelocity {x,y,z,velocity}`, `countLapFlag`, `currentSectorTime1/2`, `driverName`, `drsActive`, `estimatedLapTime`, `finishStatus`, `flag`, `focus`, `fuelFraction`, `fullTeamName`, `gamePhase` (string), `hasFocus`, `headlights`, `inControl`, `inGarageStall`, `lapDistance`, `lapStartET`, `lapsBehindClassLeader`, `lapsBehindLeader`, `lapsBehindNext`, `lapsCompleted`, `lastLapTime`, `lastSectorTime1/2`, `pathLateral`, `penalties`, `pitGroup`, `pitLapDistance`, `pitState` (string), `pitstops`, `pitting`, `player`, `position`, `qualification`, `sector` ("SECTOR1"…), `serverScored`, `slotID`, `steamID`, `timeBehindClassLeader`, `timeBehindLeader`, `timeBehindNext`, `timeIntoLap`, `trackEdge`, `underYellow`, `upgradePack`, `veFraction`, `vehicleFilename`, `vehicleName`. Times ≤ 0 mean "none" as in shared memory.
+- `watch/sessionInfo`: `ambientTemp`, `averagePathWetness`, `currentEventTime`, `darkCloud`, `endEventTime`, `gameMode`, `gamePhase` (int), `inRealtime`, `lapDistance` (track length), `max/minPathWetness`, `maxPlayers`, `maxTime`, `maximumLaps` (4294967295 = unlimited), `numRedLights`, `numberOfPlayers`, `numberOfVehicles`, `passwordProtected`, `playerFileName`, `playerName`, `raceCompletion {timeCompletion}`, `raining`, `sectorFlag[3]`, `serverName`, `serverPort`, `session` ("PRACTICE1"), `startEventTime`, `startLightFrame`, `timeRemainingInGamePhase`, `trackName`, `trackTemp`, `windSpeed {x,y,z,velocity}`, `yellowFlagState`.
+- `watch/trackmap`: array of `{x, y, z}` points (track outline). `watch/standings/history`: object keyed by slot id → array of `{carClass, driverName, finishStatus, lapTime, pitting, position, sectorTime1, sectorTime2, slotID, totalLaps, vehicleName}`.
+- `strategy/usage`: object **keyed by the player name** → array (one entry per lap/stint) of `{fuel, lap, pit, stint, tyres[4], ve}` (`tyres` in %). `lmu-verify` redacts name-like or unknown object keys as well as values (test `name_like_or_unknown_object_keys_are_redacted`).
+- `strategy/pitstop-estimate`: `{brakeDucts, brakes, damage, driverSwap, fuel, penalties, tires, total, ve}` (s; all 0 with nothing requested).
+
+OBSERVED (one session each, 2026-10-13):
+- Standings `pitState` "EXITING" with `inGarageStall` true (garage) and with `pitting` true in the pit lane after the garage exit: the string form of `mPitState` 5 (A-LMU-029). `GetGameState.PitState` follows the player's `pitState` (REQUEST → ENTERING → STOPPED → EXITING → NONE through the stint1 stop).
+- No REST freeze or lag while driving (stint1): the player's REST `lapDistance` equals the shared-memory scoring `mLapDist` at the same time (median |Δ| 0.03 m over 227 samples with a −0.05 s clock offset), and every consecutive pair moved except at the stationary pit stop.
+- `veFraction` is continuous, not lap-end only (205 of 226 consecutive pairs changed; during the refuel it climbed 0.034 → 1.0 over ~35 s like the fuel). The CLAIMED lap-end-only behaviour above is CONTRADICTED for this route on 1.4.2.0.
+- `timeIntoLap` negative: −5.91 s, unchanged for 90 samples, while the car stood in the pit lane after leaving the garage (`lapDistance` −272.1 m, "EXITING", `pitting` true). The normaliser never publishes a negative time into lap or lap time (A-LMU-031).
+- After the session ended and the player returned to the monitor, standings became an empty body and `GetGameState` returned the 503 "Setup" object.
 
 ## 10. Native DuckDB recording (offline import only)
 

@@ -2,8 +2,9 @@
 
 **Status: PASSED for the data path and the channels listed in §3 (live log), §6 (capture-based
 `tools/lmu-verify` report on the 15-minute Hypercar recording) and §7 (LMGT3 race and LMGT3 pit-stop
-practice, and all three captures combined).** In the combined run every check passes except the tyre
-side mapping (A-LMU-016), which stays INCONCLUSIVE (§7.4). Nothing here relies on synthetic data.
+practice, and all three captures combined) and §8 (LMGT3 practice stint with 25 cars, and all four captures combined).**
+In the combined run of all four captures every check passes, the tyre side mapping (A-LMU-016) included (§8).
+Nothing here relies on synthetic data.
 
 ## 1. Session
 
@@ -250,3 +251,63 @@ tool or model fault explained above, not an LMU contradiction. No check that pas
   tyres the outer edge only 3/4 (FL Δ 0.70; 2/4 at Laguna Seca), so the rule (4/4) is not met; `mDeltaBest`
   sign (A-LMU-033); LMU exit and frozen data (A-LMU-056); LMP2 / LMP3 (A-LMU-012); whether the LMGT3 zero
   channels are filled on other GT3 cars (A-LMU-069); state of charge on a non-hybrid is n/a.
+
+## 8. Fourth capture: LMGT3 practice stint with 25 cars (2026-10-13)
+
+`stint1.lmuraw`: Practice 1, Michelin Raceway Road Atlanta, LMGT3 (#32 WEC), 25 cars (AI GT3 field), 610 s;
+owner settings: no tyre warmers, 3× fuel multiplier, 3× tyre wear; one lap, a pit-box stop with refuel, then
+laps; the session ran out (ET 605 s) while driving, the driver returned to the garage and the recorder was
+stopped abruptly. Before the changes below the report (lmu-verify v4) passed every check except
+`elapsed_time` (FAIL) and listed three registry range findings.
+
+### 8.1 Findings and what changed
+
+| Finding (evidence) | Cause | Change |
+|---|---|---|
+| `timing.gap_place_ahead_s` 40.4 % rejected (raw +11.9..+123.8 s, published negative); `gap_place_behind_s` 0.13 % | In practice the classification is by best lap but LMU's place gap is the signed **road** gap to the car classified next to the player, wherever it is (raw −18.66 → +11.89 s when the classified-ahead car changed to one 729 m behind on the road), 0 while that car is in its garage; never the best-lap difference (0 of 898 timed samples). `mTimeBehindNext` / `mTimeBehindLeader` of the whole field behave the same (best-lap difference in 16 of ~50,000 row samples, 0 in ~37 %, negative in ~10 %). Race1 (session 10) re-checked: place ahead = −`mTimeBehindNext` in 92 % (rest: overtakes) | lmu-normalizer: place gaps, time/laps behind next/leader (player channels and standings) are NONE outside race sessions (`standings::classification_gaps_apply`); race mapping unchanged; car gaps unchanged. A-LMU-034 |
+| `lap.current_time_s` 26 samples at −42.85..−42.35 s (also 1 in the Hypercar and 2 in pitstop1 at −0.01 s) | After the session-end ET rewind (below) `mLapStartET` (648.87 s) lies after the ET (606.02 s); on the frame of a return to the garage the new lap start is 0.01 s ahead | `mapping::current_lap_time_s`: NONE while the lap start is after the ET, never negative. A-LMU-031 |
+| `elapsed_time` FAIL: ET 653.025 → 606.020 s at capture 609.4 s, telemetry and scoring | Session over at `mEndET` 605 s (`mGamePhase` 8 from ET 605.003); the driver kept lapping to ET 652 s and returned to the garage (`ExitRealtime`, pit state 5); after a 19.5 s stall with no updates LMU rewound ET to 606.02 s = end + 1.02 s, then sent `EndSession` and `Unload` 0.6 s later. LMU closing the finished session, not a restart and not a data fault | lmu-normalizer: a regression with the session over, out of realtime and the new ET ≥ `mEndET` is a **session-end rewind** (`discontinuity::is_session_end_rewind`): time base reset, notice, counter `session_end_rewinds`, but no `SessionChanged` restart event. lmu-verify applies the same rule to player and scoring ET and explains it; any other regression stays a restart or UNEXPLAINED (FAIL). A-LMU-031 |
+| REST `/rest/strategy/usage` uses the player name as an object key | — | lmu-verify `rest-probe` redacts name-like or non-schema object keys (and keys containing a name seen as a value anywhere in the probe), in saved bodies and in the shape summary; `--skip <endpoint>` (repeatable); the four garage routes that timed out or reset the connection right before an LMU crash are skipped by default (`--include-crash-suspects`). Research §9.1 |
+
+### 8.2 Verdicts (lmu-verify v5, all four captures re-run)
+
+| Check | Hypercar | race1 | pitstop1 | stint1 | Combined (all four) |
+|---|---|---|---|---|---|
+| Native rates | PASS | PASS | PASS | PASS (100.1 / 5.00 Hz) | PASS |
+| ET monotonic, one clock | PASS | PASS | PASS | **PASS** (1 session-end rewind explained; was FAIL) | PASS |
+| Brake temperature unit | PASS | PASS | PASS | PASS | PASS |
+| Tyre temperature unit | PASS | PASS | PASS | PASS | PASS |
+| Tyre pressure unit | PASS | PASS | PASS | PASS | PASS |
+| Brake pressure fraction | INCONCLUSIVE | PASS | PASS | PASS | PASS |
+| Virtual energy 0..1 | PASS | PASS | INCONCLUSIVE | PASS (7.45 %/lap, 4 laps) | PASS |
+| State of charge | PASS | INCONCLUSIVE | INCONCLUSIVE | INCONCLUSIVE (no hybrid) | PASS |
+| Longitudinal G sign | PASS | PASS | PASS | PASS | PASS |
+| Lateral G sign | PASS | PASS | PASS | PASS | PASS |
+| Steering sign | PASS | PASS | PASS | PASS | PASS |
+| Wheel speed / rotation sign | PASS | PASS | PASS | PASS | PASS |
+| Lap distance | PASS | PASS | PASS | PASS (6/6 paired) | PASS |
+| Sectors and laps | PASS | PASS | INCONCLUSIVE | PASS | PASS |
+| Fuel | PASS | INCONCLUSIVE | PASS | PASS (1 box refill) | PASS |
+| Pit flags | INCONCLUSIVE | INCONCLUSIVE | PASS | PASS | PASS |
+| `mPitState` values | PASS | PASS | PASS | PASS | PASS |
+| Tyre side mapping | INCONCLUSIVE | INCONCLUSIVE | INCONCLUSIVE | **PASS** (4/4 inside, 4/4 outside) | **PASS** |
+| Tyre wear direction | PASS | PASS | PASS | PASS | PASS |
+
+No FAIL anywhere; no verdict regressed against v4 (the combined tyre side mapping moved INCONCLUSIVE → PASS
+with stint1). Registry range findings: stint1 none (the gap and lap-time rejections are gone), Hypercar and
+pitstop1 lost their `lap.current_time_s` findings; race1 unchanged (place gaps 79 + 1,439 samples with the
+wrong sign during the formation lap and overtakes, published INVALID by design, A-LMU-034). Reports:
+`D:\RaceEngineeringData\build\session-62bdcac0\gate1d\verify-v5\{hypercar,race1,pitstop1,stint1,combined}`
+(private, names redacted). They were regenerated on 2026-10-13 by a release build of the final gate1d code
+(`gate1d\lmu-verify-v5.exe`, rebuilt after the last `report.rs` change, log in `verify-v5-run.log`). The
+verdicts are identical to the table above, and the stint1 `report.md` counter line now shows
+"1 ET regressions (1 session-end rewinds)".
+
+### 8.3 Settled and still open
+
+- **Settled:** tyre side mapping (A-LMU-016) on LMGT3 (stint1 4/4 + 4/4; the combined rule passes); place /
+  classification gap semantics per session type (A-LMU-034, qualifying assumed like practice); the session-end ET
+  rewind (A-LMU-031); REST shapes and status codes (research §9.1).
+- **Still open:** a qualifying capture (A-LMU-034); best-lap gaps for timed sessions must be derived from
+  the standings (race-engines); `mDeltaBest` sign (A-LMU-033); LMU exit and frozen data (A-LMU-056); LMP2 /
+  LMP3 (A-LMU-012).

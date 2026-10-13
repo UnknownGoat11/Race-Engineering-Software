@@ -49,6 +49,14 @@ enum Command {
         /// Also GET /rest/garage/UIScreen/RepairAndRefuel (can make the in-game pit menu flicker).
         #[arg(long)]
         include_pit_menu: bool,
+        /// Also GET the garage routes that timed out or reset the connection right before an LMU crash on
+        /// 2026-10-13 (/rest/garage/getVehicleCondition, /rest/garage/UIScreen/TireManagement,
+        /// /rest/garage/getPlayerGarageData, /rest/garage/PitMenu/receivePitMenu). Not recommended.
+        #[arg(long)]
+        include_crash_suspects: bool,
+        /// Never request this endpoint (exact path, e.g. /rest/watch/trackmap); repeatable.
+        #[arg(long = "skip", value_name = "ENDPOINT")]
+        skip: Vec<String>,
         /// Minimum spacing between requests in milliseconds (at least 200).
         #[arg(long, default_value_t = DEFAULT_SPACING_MS, value_parser = clap::value_parser!(u64).range(MIN_SPACING_MS..))]
         spacing_ms: u64,
@@ -94,11 +102,21 @@ fn run(cli: Cli) -> Result<(), VerifyError> {
         Command::RestProbe {
             out,
             include_pit_menu,
+            include_crash_suspects,
+            skip,
             spacing_ms,
             keep_raw_bodies,
         } => {
+            for path in skip
+                .iter()
+                .filter(|p| !rest::ENDPOINTS.contains(&p.as_str()))
+            {
+                tracing::warn!(component = COMPONENT, endpoint = %path, "--skip names an endpoint the probe does not request");
+            }
             let options = ProbeOptions {
                 include_pit_menu,
+                include_crash_suspects,
+                skip,
                 spacing: Duration::from_millis(spacing_ms),
                 timeout: rest::REQUEST_TIMEOUT,
             };
@@ -115,7 +133,7 @@ fn run(cli: Cli) -> Result<(), VerifyError> {
             if policy == BodyPolicy::Redacted {
                 writeln!(
                     lock,
-                    "(name-like values redacted in JSON bodies; non-JSON bodies not saved, see --keep-raw-bodies)"
+                    "(name-like values and name-like or unknown keys redacted in JSON bodies; non-JSON bodies not saved, see --keep-raw-bodies)"
                 )
                 .map_err(write_err)?;
             }

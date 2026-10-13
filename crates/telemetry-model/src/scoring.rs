@@ -152,6 +152,9 @@ pub struct CompetitorEntry {
     pub last_sector12_s: Option<f64>,
     pub cur_sector1_s: Option<f64>,
     pub cur_sector12_s: Option<f64>,
+    /// Classification gap to the next place (s). `None` outside race sessions: there LMU fills
+    /// `mTimeBehindNext` with a road gap or 0, not a classification gap (A-LMU-034). The same holds for
+    /// the three fields below.
     pub time_behind_next_s: Option<f64>,
     pub laps_behind_next: Option<i32>,
     pub time_behind_leader_s: Option<f64>,

@@ -1804,3 +1804,153 @@ fn uninitialised_tyre_and_engine_readings_are_unavailable_not_invalid() {
     assert_eq!(q(&out, ch::TYRE_PRESSURE_FL), Some(Quality::Valid));
     assert!(close(f(&out, ch::TYRE_PRESSURE_FL), 0.0));
 }
+
+// ---------------------------------------------------------------------------------------------------------
+// gate1d: stint1 practice findings (synthetic fixtures, never the capture)
+// ---------------------------------------------------------------------------------------------------------
+
+/// LMU `mSession` of "Practice 1".
+const LMU_SESSION_PRACTICE_1: i32 = 1;
+
+#[test]
+fn place_gaps_and_classification_gaps_are_no_data_outside_a_race() {
+    // stint1 practice: the place gap is the ROAD gap to the car classified (by best lap) next to the player,
+    // positive when that car is behind on the road (+11.9..+123.8 s), never a classification gap.
+    let mut fx = three_car_field(2);
+    fx.info.session = LMU_SESSION_PRACTICE_1;
+    {
+        let t = fx.t();
+        (t.time_gap_place_ahead, t.time_gap_place_behind) = (54.1, 2.0);
+    }
+    for r in &mut fx.rows {
+        (r.time_behind_next, r.laps_behind_next) = (-11.9, 1);
+        (r.time_behind_leader, r.laps_behind_leader) = (0.0, 1);
+    }
+    let out = fx.step(&mut Normalizer::new());
+    for id in [
+        ch::GAP_PLACE_AHEAD,
+        ch::GAP_PLACE_BEHIND,
+        ch::TIME_BEHIND_NEXT,
+        ch::LAPS_BEHIND_NEXT,
+        ch::TIME_BEHIND_LEADER,
+        ch::LAPS_BEHIND_LEADER,
+    ] {
+        assert!(is_no_data(&out, id), "{id:?}");
+    }
+    // The car gaps are road gaps by definition and stay published in every session type.
+    assert!(close(f(&out, ch::GAP_CAR_AHEAD), 1.0));
+    assert!(close(f(&out, ch::GAP_CAR_BEHIND), 2.0));
+    let standings = out.scoring.expect("standings");
+    assert!(
+        standings
+            .vehicles
+            .iter()
+            .all(|v| v.time_behind_next_s.is_none()
+                && v.laps_behind_next.is_none()
+                && v.time_behind_leader_s.is_none()
+                && v.laps_behind_leader.is_none())
+    );
+}
+
+#[test]
+fn classification_gaps_are_published_in_a_race() {
+    let mut fx = three_car_field(2);
+    for r in &mut fx.rows {
+        (r.time_behind_next, r.laps_behind_next) = (1.0, 0);
+        (r.time_behind_leader, r.laps_behind_leader) = (3.0, 0);
+    }
+    let out = fx.step(&mut Normalizer::new());
+    assert!(close(f(&out, ch::GAP_PLACE_AHEAD), 1.0));
+    assert!(close(f(&out, ch::GAP_PLACE_BEHIND), 2.0));
+    assert!(close(f(&out, ch::TIME_BEHIND_NEXT), 1.0));
+    assert!(close(f(&out, ch::TIME_BEHIND_LEADER), 3.0));
+    let standings = out.scoring.expect("standings");
+    assert!(
+        standings
+            .vehicles
+            .iter()
+            .all(|v| v.time_behind_next_s == Some(1.0) && v.laps_behind_leader == Some(0))
+    );
+}
+
+#[test]
+fn lap_start_after_the_et_is_no_lap_time() {
+    let mut fx = Fixture::driving(606.02);
+    fx.t().lap_start_et = 648.87; // stint1: lap start left over after the session-end rewind
+    let out = fx.step(&mut Normalizer::new());
+    assert!(is_no_data(&out, ch::LAP_TIME));
+    assert!(mapping::current_lap_time_s(397.04, Some(397.054)).is_none());
+    assert!(mapping::current_lap_time_s(397.04, None).is_none());
+    assert_eq!(mapping::current_lap_time_s(400.0, Some(397.0)), Some(3.0));
+    assert_eq!(mapping::current_lap_time_s(397.0, Some(397.0)), Some(0.0));
+}
+
+/// stint1 practice tail: session over at mEndET 605 s, back in the garage (out of realtime) at ET 653 s, then
+/// LMU rewinds ET to 606.02 s before EndSession.
+fn session_over_in_the_garage(et: f64) -> Fixture {
+    let mut fx = Fixture::driving(et);
+    fx.info.session = LMU_SESSION_PRACTICE_1;
+    fx.info.end_et = 605.0;
+    fx.info.game_phase = 8;
+    fx.info.in_realtime = false;
+    let t = fx.t();
+    t.lap_start_et = 648.87;
+    t.local_vel = lmu_reader::Vec3 {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
+    fx
+}
+
+#[test]
+fn session_end_rewind_resets_the_time_base_without_a_restart_event() {
+    let mut n = Normalizer::new();
+    let mut fx = session_over_in_the_garage(653.025);
+    fx.step(&mut n);
+    fx.t().elapsed_time = 606.02;
+    fx.info.current_et = 606.0;
+    let rewound = fx.step(&mut n);
+    assert_eq!(
+        rewound.disposition,
+        TelemetryDisposition::NewSampleAfterRegression
+    );
+    assert!(session_changes(std::slice::from_ref(&rewound)).is_empty());
+    assert!(
+        rewound
+            .notices
+            .iter()
+            .any(|x| x.code == NoticeCode::EtRegression && x.message.contains("session-end rewind")),
+        "{:?}",
+        rewound.notices
+    );
+    assert!(
+        rewound.frame.is_some(),
+        "the garage sample is still published"
+    );
+    assert!(
+        is_no_data(&rewound, ch::LAP_TIME),
+        "never a negative lap time"
+    );
+    let stats = n.stats();
+    assert_eq!((stats.et_regressions, stats.session_end_rewinds), (1, 1));
+    // The next sample continues from the rewound ET: no further regression.
+    fx.advance(0.02);
+    let next = fx.step(&mut n);
+    assert_eq!(next.disposition, TelemetryDisposition::NewSample);
+    assert_eq!(n.stats().et_regressions, 1);
+}
+
+#[test]
+fn regression_while_the_session_runs_is_still_a_restart() {
+    // The same step back with the session running (green flag) is a restart, reported as such.
+    let mut n = Normalizer::new();
+    let mut fx = session_over_in_the_garage(653.025);
+    fx.info.game_phase = 5;
+    fx.step(&mut n);
+    fx.t().elapsed_time = 606.02;
+    fx.info.current_et = 606.0;
+    let out = fx.step(&mut n);
+    assert_eq!(session_changes(std::slice::from_ref(&out)).len(), 1);
+    assert_eq!(n.stats().session_end_rewinds, 0);
+}

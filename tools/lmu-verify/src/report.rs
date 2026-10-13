@@ -681,11 +681,12 @@ fn render_session(s: &mut String, c: &CaptureReport) {
     }
     let _ = writeln!(
         s,
-        "\nNormalizer counters: {} snapshots, {} frames published, {} duplicate ET, {} ET regressions, {} no-player snapshots, {} invalid samples, {} mapping errors, {} scoring updates ({} rejected), {} session resets.",
+        "\nNormalizer counters: {} snapshots, {} frames published, {} duplicate ET, {} ET regressions ({} session-end rewinds), {} no-player snapshots, {} invalid samples, {} mapping errors, {} scoring updates ({} rejected), {} session resets.",
         c.normalizer.snapshots,
         c.normalizer.frames_published,
         c.normalizer.duplicate_frames,
         c.normalizer.et_regressions,
+        c.normalizer.session_end_rewinds,
         c.normalizer.no_player_snapshots,
         c.normalizer.invalid_samples,
         c.normalizer.mapping_errors,
@@ -786,11 +787,12 @@ fn render_timing(s: &mut String, c: &CaptureReport) {
         ),
         format!("mDeltaTime: {}", et(t.delta_time_ms)),
         format!(
-            "ET monotonicity: {} player ET regressions ({} unexplained), {} scoring ET regressions ({} not to a restart), {} non-finite scoring ET",
+            "ET monotonicity: {} player ET regressions ({} unexplained), {} scoring ET regressions ({} not to a restart, {} session-end rewinds), {} non-finite scoring ET",
             t.et_regressions,
             t.unexplained_et_regressions,
             t.scoring_et_regressions,
             t.scoring_et_regressions_not_restart,
+            t.scoring_et_session_end_rewinds,
             t.scoring_et_non_finite
         ),
         format!(

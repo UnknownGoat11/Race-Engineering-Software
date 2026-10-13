@@ -6,8 +6,11 @@
 
 use std::collections::BTreeMap;
 
-use lmu_normalizer::discontinuity::{CarSample, TELEPORT_MIN_STEP_M, is_teleport};
+use lmu_normalizer::discontinuity::{
+    CarSample, LMU_GAME_PHASE_SESSION_OVER, TELEPORT_MIN_STEP_M, is_session_end_rewind, is_teleport,
+};
 use lmu_normalizer::mapping::decode_current_sector;
+use lmu_normalizer::mapping::session_end_et;
 use lmu_normalizer::{NormalizedOutput, TelemetryDisposition};
 use lmu_reader::{RawSnapshot, ReaderStats};
 use serde::Serialize;
@@ -209,6 +212,20 @@ pub struct EtRegression {
     pub to_et_s: f64,
     /// How the regression is explained, if it is.
     pub explanation: Option<String>,
+    /// The session was over, the player out of realtime and the new ET at or after the session end: LMU's
+    /// session-end rewind (`lmu_normalizer::discontinuity::is_session_end_rewind`, A-LMU-031).
+    pub session_end_rewind: bool,
+}
+
+/// The normalizer's session-end rewind rule applied to a step back from `prev_et_s` to `new_et_s`.
+fn session_end_rewind(info: &lmu_reader::RawScoringInfo, prev_et_s: f64, new_et_s: f64) -> bool {
+    is_session_end_rewind(
+        info.game_phase,
+        info.in_realtime,
+        session_end_et(info.end_et),
+        prev_et_s,
+        new_et_s,
+    )
 }
 
 /// Drift of one continuous running segment.
@@ -452,6 +469,10 @@ pub struct TimingReport {
     pub scoring_et_regressions: u64,
     /// Scoring `mCurrentET` regressions to an ET of at least [`RESTART_ET_MAX_S`] (not a session restart).
     pub scoring_et_regressions_not_restart: u64,
+    /// Scoring `mCurrentET` regressions that are a session-end rewind (not counted in
+    /// `scoring_et_regressions_not_restart`).
+    #[serde(default)]
+    pub scoring_et_session_end_rewinds: u64,
     /// Scoring updates whose `mCurrentET` was NaN or infinite.
     pub scoring_et_non_finite: u64,
     /// Normalizer telemetry dispositions per snapshot.
@@ -493,6 +514,7 @@ pub struct TimingAcc {
     scoring_et_last: Option<f64>,
     scoring_regressions: u64,
     scoring_regressions_not_restart: u64,
+    scoring_session_end_rewinds: u64,
     scoring_non_finite: u64,
     drift: DriftTracker,
     offset: Summary,
@@ -564,7 +586,14 @@ impl TimingAcc {
                 let (_, pit_lane_bit) = decode_current_sector(p.telemetry.current_sector);
                 let in_pit_area =
                     pit_lane_bit || row.is_some_and(|r| r.in_pits || r.in_garage_stall);
-                self.observe_player(now, capture_s, p.slot, &p.telemetry, in_pit_area);
+                self.observe_player(
+                    now,
+                    capture_s,
+                    p.slot,
+                    &p.telemetry,
+                    in_pit_area,
+                    &snapshot.scoring.info,
+                );
             }
         }
         if snapshot.scoring_updated {
@@ -574,9 +603,11 @@ impl TimingAcc {
             match s_et {
                 None => self.scoring_non_finite += 1,
                 Some(e) => {
-                    if self.scoring_et_last.is_some_and(|prev| e < prev) {
+                    if let Some(prev) = self.scoring_et_last.filter(|&prev| e < prev) {
                         self.scoring_regressions += 1;
-                        if e >= RESTART_ET_MAX_S {
+                        if session_end_rewind(&snapshot.scoring.info, prev, e) {
+                            self.scoring_session_end_rewinds += 1;
+                        } else if e >= RESTART_ET_MAX_S {
                             self.scoring_regressions_not_restart += 1;
                         }
                     }
@@ -597,6 +628,7 @@ impl TimingAcc {
         slot: u8,
         t: &lmu_reader::RawTelemetry,
         in_pit_area: bool,
+        info: &lmu_reader::RawScoringInfo,
     ) {
         let dt = t.delta_time;
         if dt.is_finite() && dt > 0.0 && dt < MAX_DELTA_TIME_S {
@@ -631,6 +663,7 @@ impl TimingAcc {
                             from_et_s: last.et,
                             to_et_s: et,
                             explanation: None,
+                            session_end_rewind: session_end_rewind(info, last.et, et),
                         });
                     }
                     self.drift.close();
@@ -666,7 +699,11 @@ impl TimingAcc {
     pub fn finish(mut self, reader: &ReaderStats) -> TimingReport {
         let changes = std::mem::take(&mut self.identity_changes_s);
         for r in &mut self.regressions {
-            r.explanation = if r.to_et_s < RESTART_ET_MAX_S {
+            r.explanation = if r.session_end_rewind {
+                Some(format!(
+                    "session-end rewind: the session was over (mGamePhase {LMU_GAME_PHASE_SESSION_OVER}), the player out of realtime, and ET went back to at or after mEndET (LMU closing the session, A-LMU-031)"
+                ))
+            } else if r.to_et_s < RESTART_ET_MAX_S {
                 Some(format!(
                     "ET restarted below {RESTART_ET_MAX_S} s (new session)"
                 ))
@@ -720,6 +757,7 @@ impl TimingAcc {
             regressions: listed_regressions,
             scoring_et_regressions: self.scoring_regressions,
             scoring_et_regressions_not_restart: self.scoring_regressions_not_restart,
+            scoring_et_session_end_rewinds: self.scoring_session_end_rewinds,
             scoring_et_non_finite: self.scoring_non_finite,
             dispositions: self
                 .dispositions
