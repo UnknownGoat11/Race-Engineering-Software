@@ -6,6 +6,7 @@
 //! INT32_MAX lap limit…) leave the channel at its "no data" default; values that cannot be represented become
 //! `Invalid`; capability-gated channels become `NotSupported`. Nothing is ever replaced by 0.
 
+use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 use lmu_reader::{RawGeneric, RawScoringInfo, RawTelemetry, RawVehicleScoring, TelemetryHeader};
@@ -18,9 +19,10 @@ use telemetry_model::{ChannelId, Quality};
 
 use crate::convention;
 use crate::detect::{
-    BrakeObservation, BrakePressureGuard, BrakeTempUnitDetector, BrakeUnitTransition,
-    FractionScale, FractionScaleDetector, KelvinLatch, TimeOfDayDetector, TurboReading,
-    TurboUnitDetector, verified_brake_temp_unit,
+    BrakeObservation, BrakePressureGuard, BrakeTempUnitDetector, BrakeUnitTransition, FillState,
+    FractionScale, FractionScaleDetector, KelvinLatch, Odometer, StuckValueDetector,
+    TimeOfDayDetector, TurboReading, TurboUnitDetector, verified_brake_temp_unit,
+    verified_virtual_energy_scale,
 };
 use crate::notice::{DiagnosticNotice, NoticeCode, NoticeLog};
 use crate::standings::{finite, lap_start_et, non_negative, qualification, text};
@@ -95,6 +97,42 @@ pub const DERIVED_HERE_PER_WHEEL: &[ChannelId] = &[
     ch::WHEEL_SPEED_FL,
 ];
 
+/// When a value that has not changed since the first reading is impossible before the travel evidence
+/// ([`crate::detect::STUCK_MIN_TRAVEL_M`]) is in (A-LMU-065).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FillRule {
+    /// This exact value is impossible even on a stationary car (a 0 m ride height).
+    ImpossibleAtRest(f64),
+    /// This exact value is impossible once the car moves faster than [`FILL_MOVING_SPEED_MPS`] (0 N of drag,
+    /// or exactly the standard atmosphere as boost pressure under way); plausible at rest.
+    ImpossibleWhileMoving(f64),
+}
+
+/// Speed (m/s) above which an aerodynamic force of exactly 0 N, or a boost pressure stuck at exactly the
+/// standard atmosphere, is not a measurement (drag is already tens of newtons at this speed).
+pub const FILL_MOVING_SPEED_MPS: f64 = 2.0;
+/// ISA standard atmosphere (Pa): the value LMU 1.4.2.0 initialises `mTurboBoostPressure` with.
+pub const STANDARD_ATMOSPHERE_PA: f64 = 101_325.0;
+
+/// Continuous channels LMU 1.4.2.0 leaves at their first value on some cars (A-LMU-065; Gate 1, Hypercar:
+/// exactly 0, or exactly 101,325 Pa, for the whole session while the car lapped Monza). Any of them that
+/// keeps its first value over [`crate::detect::STUCK_MIN_TRAVEL_M`] of driving is withheld; the rule says
+/// which first value is impossible even earlier.
+pub const FILL_CHECKED_CHANNELS: &[(ChannelId, FillRule)] = &[
+    // A car resting on its wheels never has a 0 m ride height or a front wing touching the ground.
+    (ch::RIDE_HEIGHT_FRONT, FillRule::ImpossibleAtRest(0.0)),
+    (ch::RIDE_HEIGHT_REAR, FillRule::ImpossibleAtRest(0.0)),
+    (ch::FRONT_WING_HEIGHT, FillRule::ImpossibleAtRest(0.0)),
+    (ch::DRAG, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::DOWNFORCE_FRONT, FillRule::ImpossibleWhileMoving(0.0)),
+    (ch::DOWNFORCE_REAR, FillRule::ImpossibleWhileMoving(0.0)),
+    // Absolute boost equals ambient with the engine off; exactly the ISA value under way is LMU's default.
+    (
+        ch::TURBO_BOOST,
+        FillRule::ImpossibleWhileMoving(STANDARD_ATMOSPHERE_PA),
+    ),
+];
+
 /// Session-scoped detectors (reset on a session, track or vehicle change and on an ET regression).
 #[derive(Debug, Default)]
 pub struct SessionDetectors {
@@ -107,6 +145,19 @@ pub struct SessionDetectors {
     pub motor_water_temp: KelvinLatch,
     pub turbo: TurboUnitDetector,
     pub time_of_day: TimeOfDayDetector,
+    /// Distance driven in the session (evidence for [`FILL_CHECKED_CHANNELS`]).
+    pub odometer: Odometer,
+    /// Fill detectors of [`FILL_CHECKED_CHANNELS`] (bounded by that table).
+    pub fill: BTreeMap<ChannelId, StuckValueDetector>,
+}
+
+impl SessionDetectors {
+    /// The fill state of a [`FILL_CHECKED_CHANNELS`] channel (`Unknown` for any other channel).
+    pub fn fill_state(&self, id: ChannelId) -> FillState {
+        self.fill
+            .get(&id)
+            .map_or(FillState::Unknown, |d| d.state(self.odometer.travelled_m()))
+    }
 }
 
 /// Inputs of one mapping.
@@ -137,21 +188,77 @@ impl MapState<'_> {
 
 /// Maps one player telemetry sample (plus the current scoring/generic blocks) into `w`.
 pub fn map_frame(input: &MapInput<'_>, st: &mut MapState<'_>, w: &mut FrameWriter<'_>) {
+    let t = input.telemetry;
+    st.det
+        .odometer
+        .observe(t.elapsed_time, convention::speed_mps(t.local_vel));
     map_generic(input.generic, w);
     map_header(input.header, w);
-    map_inputs(input.telemetry, w);
-    map_identity(input.telemetry, w);
-    map_aids(input.telemetry, input.caps, w);
-    map_powertrain(input.telemetry, st, w);
-    map_dynamics(input.telemetry, w);
-    map_chassis(input.telemetry, w);
-    map_tyres(input.telemetry, input.caps, st, w);
+    map_inputs(t, w);
+    map_identity(t, w);
+    map_aids(t, input.caps, w);
+    map_powertrain(t, st, w);
+    map_dynamics(t, w);
+    map_chassis(t, st, w);
+    map_tyres(t, input.caps, st, w);
     map_brakes(input, st, w);
-    map_energy(input.telemetry, input.caps, st, w);
-    map_timing(input.telemetry, w);
-    map_track_position(input.telemetry, w);
+    map_energy(input, st, w);
+    map_timing(t, input.info, w);
+    map_track_position(t, w);
     map_session(input.info, st, w);
     map_player_scoring(input, w);
+}
+
+/// Publishes `value` (the converted form of `raw`) unless the fill detector of `id` says it is not a
+/// measurement (A-LMU-065): a value still bit-identical to its first reading after
+/// [`crate::detect::STUCK_MIN_TRAVEL_M`] of driving, or a first value its [`FillRule`] makes impossible now,
+/// is withheld as `UNAVAILABLE`. The first change publishes the channel again for the session.
+fn fill_checked(
+    st: &mut MapState<'_>,
+    w: &mut FrameWriter<'_>,
+    (id, raw, value): (ChannelId, f64, f64),
+    speed_mps: f64,
+) {
+    let rule = FILL_CHECKED_CHANNELS
+        .iter()
+        .find(|(rule_id, _)| *rule_id == id)
+        .map(|&(_, rule)| rule);
+    let travelled = st.det.odometer.travelled_m();
+    let state = st.det.fill.entry(id).or_default().observe(raw, travelled);
+    let same = |v: f64| v.to_bits() == raw.to_bits();
+    let moving = speed_mps > FILL_MOVING_SPEED_MPS;
+    let reason = match (state, rule) {
+        (FillState::NotFilled, _) => Some(
+            "value never changed from its first reading while the car drove: not filled by LMU for this \
+             car/version, withheld (UNAVAILABLE) until it changes (A-LMU-065)",
+        ),
+        (FillState::Initial, Some(FillRule::ImpossibleAtRest(v))) if same(v) => Some(
+            "first value is physically impossible even at rest (not filled by LMU?): withheld \
+             (UNAVAILABLE) until it changes (A-LMU-065)",
+        ),
+        (FillState::Initial, Some(FillRule::ImpossibleWhileMoving(v))) if same(v) && moving => {
+            Some(
+                "unchanged first value is physically impossible with the car moving (not filled by LMU?): \
+             withheld (UNAVAILABLE) until it changes (A-LMU-065)",
+            )
+        }
+        _ => None,
+    };
+    match reason {
+        Some(message) => {
+            st.raise(
+                DiagnosticNotice::new(
+                    NoticeCode::ChannelNotFilled,
+                    Severity::Notice,
+                    Some(id),
+                    message,
+                )
+                .with_raw(raw),
+            );
+            w.quality(id, Quality::Unavailable);
+        }
+        None => w.float(id, value),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -351,7 +458,10 @@ fn map_powertrain(t: &RawTelemetry, st: &mut MapState<'_>, w: &mut FrameWriter<'
     }
     match reading {
         TurboReading::NotReported => w.quality(ch::TURBO_BOOST, Quality::NotSupported),
-        TurboReading::Pascal(pa) => w.float(ch::TURBO_BOOST, pa),
+        TurboReading::Pascal(pa) => {
+            let speed = convention::speed_mps(t.local_vel);
+            fill_checked(st, w, (ch::TURBO_BOOST, t.turbo_boost_pressure, pa), speed);
+        }
         TurboReading::Invalid => w.quality(ch::TURBO_BOOST, Quality::Invalid),
     }
 
@@ -417,15 +527,20 @@ fn map_dynamics(t: &RawTelemetry, w: &mut FrameWriter<'_>) {
 // Chassis, aero, suspension, wheels (§10)
 // ---------------------------------------------------------------------------------------------------------
 
-fn map_chassis(t: &RawTelemetry, w: &mut FrameWriter<'_>) {
-    w.float(ch::RIDE_HEIGHT_FRONT, t.front_ride_height);
-    w.float(ch::RIDE_HEIGHT_REAR, t.rear_ride_height);
+fn map_chassis(t: &RawTelemetry, st: &mut MapState<'_>, w: &mut FrameWriter<'_>) {
+    let speed = convention::speed_mps(t.local_vel);
+    for (id, raw) in [
+        (ch::RIDE_HEIGHT_FRONT, t.front_ride_height),
+        (ch::RIDE_HEIGHT_REAR, t.rear_ride_height),
+        (ch::FRONT_WING_HEIGHT, t.front_wing_height),
+        (ch::DRAG, t.drag),
+        (ch::DOWNFORCE_FRONT, t.front_downforce),
+        (ch::DOWNFORCE_REAR, t.rear_downforce),
+    ] {
+        fill_checked(st, w, (id, raw, raw), speed);
+    }
     w.float(ch::THIRD_SPRING_FRONT, t.front3rd_deflection);
     w.float(ch::THIRD_SPRING_REAR, t.rear3rd_deflection);
-    w.float(ch::FRONT_WING_HEIGHT, t.front_wing_height);
-    w.float(ch::DRAG, t.drag);
-    w.float(ch::DOWNFORCE_FRONT, t.front_downforce);
-    w.float(ch::DOWNFORCE_REAR, t.rear_downforce);
     for wheel in Wheel::ALL {
         let raw = &t.wheels[wheel.index()];
         let id = |base| wheel_id(base, wheel);
@@ -771,6 +886,12 @@ fn scaled_fraction(
                 Severity::Info,
                 "values stayed in 0..1.5 and changed over two laps: scale confirmed as 0..1",
             ),
+            FractionScale::Conflicting => (
+                NoticeCode::FractionScaleConflict,
+                Severity::Warning,
+                "value contradicts the scale verified for this LMU version (LMU changed it?): withheld \
+                 (UNAVAILABLE) for the session (A-LMU-013/014)",
+            ),
             FractionScale::Unrecognized | FractionScale::Undecided => (
                 NoticeCode::FractionScaleUnrecognized,
                 Severity::Warning,
@@ -796,16 +917,15 @@ fn scaled_fraction(
             );
             w.quality(id, Quality::Unavailable);
         }
+        // Withheld, exactly like a brake-unit conflict: the scale is unknown, the value may be fine.
+        (FractionScale::Conflicting, None) => w.quality(id, Quality::Unavailable),
         (_, None) => w.quality(id, Quality::Invalid),
     }
 }
 
-fn map_energy(
-    t: &RawTelemetry,
-    caps: VehicleCapabilities,
-    st: &mut MapState<'_>,
-    w: &mut FrameWriter<'_>,
-) {
+fn map_energy(input: &MapInput<'_>, st: &mut MapState<'_>, w: &mut FrameWriter<'_>) {
+    let t = input.telemetry;
+    let caps = input.caps;
     let state = t.electric_boost_motor_state;
     w.int(ch::HYBRID_MOTOR_STATE, i64::from(state));
     w.int(ch::LIFT_AND_COAST, i64::from(t.lift_and_coast_progress));
@@ -854,8 +974,12 @@ fn map_energy(
         Some(false) => w.quality(ch::VIRTUAL_ENERGY, Quality::NotSupported),
         None if ve == 0.0 => w.quality(ch::VIRTUAL_ENERGY, Quality::Unavailable),
         Some(true) | None => {
-            let input = (ve, t.lap_number);
-            scaled_fraction(st, w, ch::VIRTUAL_ENERGY, input, |d| &mut d.virtual_energy);
+            // 0..1 is verified for some LMU versions (A-LMU-013): applied from the first value there.
+            st.det
+                .virtual_energy
+                .set_verified_scale(verified_virtual_energy_scale(input.generic.game_version));
+            let raw = (ve, t.lap_number);
+            scaled_fraction(st, w, ch::VIRTUAL_ENERGY, raw, |d| &mut d.virtual_energy);
         }
     }
 }
@@ -864,7 +988,10 @@ fn map_energy(
 // Timing (§3) and track position (§14)
 // ---------------------------------------------------------------------------------------------------------
 
-fn map_timing(t: &RawTelemetry, w: &mut FrameWriter<'_>) {
+/// `mNumVehicles` when the player is alone in the session.
+const SOLO_SESSION_VEHICLES: i32 = 1;
+
+fn map_timing(t: &RawTelemetry, info: &RawScoringInfo, w: &mut FrameWriter<'_>) {
     w.float(ch::ELAPSED_TIME, t.elapsed_time);
     w.float(ch::UPDATE_DELTA_TIME, t.delta_time);
     w.int(ch::LAP_NUMBER, i64::from(t.lap_number));
@@ -873,10 +1000,22 @@ fn map_timing(t: &RawTelemetry, w: &mut FrameWriter<'_>) {
     w.opt_float(ch::LAP_TIME, lap_start.map(|s| t.elapsed_time - s));
     w.boolean(ch::LAP_INVALID, t.lap_invalidated);
     w.float(ch::DELTA_BEST, t.delta_best);
-    w.float(ch::GAP_CAR_AHEAD, f64::from(t.time_gap_car_ahead));
-    w.float(ch::GAP_CAR_BEHIND, f64::from(t.time_gap_car_behind));
-    w.float(ch::GAP_PLACE_AHEAD, f64::from(t.time_gap_place_ahead));
-    w.float(ch::GAP_PLACE_BEHIND, f64::from(t.time_gap_place_behind));
+    let gaps = [
+        (ch::GAP_CAR_AHEAD, t.time_gap_car_ahead),
+        (ch::GAP_CAR_BEHIND, t.time_gap_car_behind),
+        (ch::GAP_PLACE_AHEAD, t.time_gap_place_ahead),
+        (ch::GAP_PLACE_BEHIND, t.time_gap_place_behind),
+    ];
+    // Alone in the session there is no car to measure a gap to: LMU's 0 is its "no car" value (Gate 1, solo
+    // practice: exactly 0 all session, A-LMU-066), not a 0 s gap. Left at "no data" (the map's "or NONE").
+    let solo = info.num_vehicles == SOLO_SESSION_VEHICLES;
+    for (id, raw) in gaps {
+        if solo {
+            w.none(id);
+        } else {
+            w.float(id, f64::from(raw));
+        }
+    }
 }
 
 /// Decodes telemetry `mCurrentSector`: (zero-based sector index if valid, in pit lane) (A-LMU-026).

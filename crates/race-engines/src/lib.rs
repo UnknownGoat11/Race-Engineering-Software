@@ -1,1 +1,32 @@
-//! race-engines (scaffold)
+//! Deterministic race-engineering calculation engines (spec §143, D-010).
+//!
+//! Every engine:
+//! - consumes canonical telemetry (`telemetry_model::TelemetryFrame` / `ScoringState`, or small typed
+//!   samples built from them);
+//! - is pure and deterministic: no I/O, no clocks, no randomness — time always comes from the input (LMU
+//!   elapsed time). The only exception is [`track::TrackMapStore`], the explicit, directory-scoped cache of
+//!   track-map files;
+//! - outputs typed metrics that carry their provenance (`Derived` / `Estimated`, or `Measured` for
+//!   pass-through scoring values) and [`CALCULATION_ENGINE_VERSION`] (see [`common::Metric`]);
+//! - never turns a missing input into a zero: an unknown result is `None`.
+//!
+//! Modules: [`timing`] (laps, sectors, references, distance-aligned delta), [`race`] (positions, gaps,
+//! clock, pit state machine, flags), [`track`] (track map generation, projection, cache), [`fuel`]
+//! (rolling consumption, confidence, reserve, fuel to finish), [`stint`] (stint tracking and table) and
+//! [`publish`] (writes engine outputs into the registry's calculated channels). Tyre, brake, energy and
+//! alert engines are added separately.
+
+pub mod common;
+pub mod fuel;
+pub mod publish;
+pub mod race;
+pub mod stint;
+pub mod timing;
+pub mod track;
+
+pub use common::{CompatibilityKey, Metric};
+
+/// Version of the race-engines formulas. Every derived output carries it (D-010) and it is published as
+/// `app.calculation_engine_version`. Bump whenever a formula, threshold or exclusion rule changes the
+/// numbers an engine produces.
+pub const CALCULATION_ENGINE_VERSION: u32 = 1;

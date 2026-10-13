@@ -1,0 +1,68 @@
+/* Benchmark harness layout (bench/ only). Colours from tokens.css. */
+
+.bench {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-height: 100vh;
+  padding: var(--space-3);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+}
+
+.bench__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.bench__title {
+  margin: 0;
+  font-size: var(--font-size-lg);
+}
+
+/* The synthetic-data label must be impossible to miss. */
+.bench__synthetic {
+  padding: var(--space-1) var(--space-2);
+  border: 2px solid var(--color-warn);
+  background: var(--color-warn-bg);
+  color: var(--color-warn);
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.06em;
+}
+
+.bench__config,
+.bench__status {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.bench__status[data-status='error'] {
+  color: var(--color-error);
+}
+
+.bench__table {
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.bench__table th,
+.bench__table td {
+  padding: var(--space-1) var(--space-2);
+  border: var(--border-width) solid var(--color-border);
+  text-align: left;
+}
+
+.bench__graphs {
+  display: grid;
+  grid-template-rows: repeat(4, 240px);
+  gap: var(--space-2);
+}
+
+.bench__graph {
+  min-height: 0;
+}

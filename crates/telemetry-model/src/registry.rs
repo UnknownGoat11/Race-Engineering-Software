@@ -81,6 +81,11 @@ const MAX_GEARS: f64 = 10.0;
 /// Engine speed bounds (rpm): 1.2 × the highest rev limit accepted (25 000), and a small negative margin.
 const MIN_RPM: f64 = -1_000.0;
 const MAX_RPM: f64 = 30_000.0;
+/// Clutch (gearbox input) speed bounds (rpm). The clutch is driven by the wheels through the gearbox, so a car
+/// sliding backwards in a forward gear turns it backwards: Gate 1 (LMU 1.4.2.0, Hypercar spin, forward speed
+/// down to −51.5 m/s) saw −4,259 rpm. Reverse road speed cannot exceed forward road speed, so the physical
+/// bound is symmetric: ±[`MAX_RPM`].
+const MIN_CLUTCH_RPM: f64 = -MAX_RPM;
 /// Water/oil temperature bounds (°C) and rate (°C/s).
 const FLUID_TEMP_MIN_C: f64 = -40.0;
 const FLUID_TEMP_MAX_C: f64 = 200.0;
@@ -91,13 +96,18 @@ const HYBRID_TEMP_RATE_C_PER_S: f64 = 100.0;
 const TYRE_TEMP_MIN_C: f64 = 200.0 - KELVIN_OFFSET;
 const TYRE_TEMP_MAX_C: f64 = 700.0 - KELVIN_OFFSET;
 /// Tyre temperature rates (°C/s): surface spikes on lock-ups, inner layer and carcass react more slowly.
-const TYRE_SURFACE_TEMP_RATE: f64 = 3_000.0;
+/// Surface: Gate 1 (LMU 1.4.2.0, Hypercar lock-ups at 40..60 m/s) saw sustained real rises of up to 49.5 °C
+/// in one 10 ms frame (4,950 °C/s) on all three surface nodes of a wheel at once; 15,000 °C/s keeps a 3×
+/// margin and still rejects a one-frame jump of more than 150 °C at 100 Hz.
+const TYRE_SURFACE_TEMP_RATE: f64 = 15_000.0;
 const TYRE_LAYER_TEMP_RATE: f64 = 1_000.0;
 const TYRE_CARCASS_TEMP_RATE: f64 = 500.0;
 /// Optimal tyre temperature bound (°C).
 const TYRE_OPTIMAL_TEMP_MAX_C: f64 = 200.0;
-/// Inner-minus-outer spread bound (°C).
-const TYRE_SPREAD_MAX_C: f64 = 100.0;
+/// Inner-minus-outer spread bound (°C): the largest difference of two surface temperatures that each pass
+/// their own range. Gate 1 (LMU 1.4.2.0) saw +188 °C on a locked rear tyre, so a tighter bound would reject
+/// real lock-ups; the inputs are validated individually.
+const TYRE_SPREAD_MAX_C: f64 = TYRE_TEMP_MAX_C - TYRE_TEMP_MIN_C;
 /// Tyre pressure bound (Pa, raw 600 kPa) and rate (Pa/s; a puncture is allowed, a teleport is not).
 const MAX_TYRE_PRESSURE_PA: f64 = 600_000.0;
 const TYRE_PRESSURE_RATE_PA_PER_S: f64 = 2.0e6;
@@ -119,6 +129,21 @@ const BRAKE_BIAS_REAR_MAX: f64 = 0.8;
 /// Ride height bounds (m).
 const RIDE_HEIGHT_MIN_M: f64 = -0.05;
 const RIDE_HEIGHT_MAX_M: f64 = 0.3;
+/// Per-wheel ride height upper bound (m). A wheel off the ground is real: Gate 1 (LMU 1.4.2.0, Hypercar crash
+/// at 35 m/s) saw 0.30..0.90 m on three wheels for 0.7 s; 2 m keeps a 2× margin over that.
+const WHEEL_RIDE_HEIGHT_MAX_M: f64 = 2.0;
+/// Toe bound (rad, 40°). LMU's front `mToe` includes the steering angle of the road wheel: Gate 1 (LMU
+/// 1.4.2.0, Hypercar) saw ±0.35 rad (2.4 % of samples beyond the old ±0.2 rad, A-LMU-068); 40° is beyond any
+/// road-wheel steering lock. The four wheels of a group share one range (registry rule), so the rear toe
+/// (which does not steer) gets the same garbage bound.
+const MAX_TOE_RAD: f64 = 40.0 * RAD_PER_DEG;
+/// Hybrid motor torque bound (N·m). Gate 1 (LMU 1.4.2.0, Hypercar) saw −3,676 N·m under regeneration (high
+/// torque at low motor speed within the 200 kW limit) and +754 N·m propelling; 10,000 N·m keeps a 2.7× margin.
+const MAX_HYBRID_MOTOR_TORQUE_NM: f64 = 10_000.0;
+/// Highest `mElectricBoostMotorState`: 0..3 documented, 4 observed after a garage release (A-LMU-064).
+const MAX_HYBRID_MOTOR_STATE: f64 = 4.0;
+/// Highest `mPitState`: 0..4 documented, 5 observed in the garage and on the way out of it (A-LMU-063).
+const MAX_PIT_STATE: f64 = 5.0;
 /// Fuel: capacity bound, level bound (capacity + 1 L) and rate (L/s; refuelling allowed, teleports not).
 const MAX_FUEL_CAPACITY_L: f64 = 200.0;
 const MAX_FUEL_LEVEL_L: f64 = MAX_FUEL_CAPACITY_L + 1.0;
@@ -538,7 +563,7 @@ registry! {
     RPM = 0x0101, "powertrain.engine_rpm", "RPM" => tel("Engine speed", U::Rpm, T::F32, tp!("mEngineRPM")).p0().range(MIN_RPM, MAX_RPM);
     RPM_MAX = 0x0102, "vehicle.engine_max_rpm", "RPMMax" => tel("Rev limit", U::Rpm, T::F32, tp!("mEngineMaxRPM")).stat().range(1_000.0, 25_000.0);
     GEARS_MAX = 0x0103, "vehicle.max_gears", "GearsMax" => tel("Number of forward gears", U::Count, T::U8, tp!("mMaxGears")).p2().stat().range(1.0, MAX_GEARS);
-    CLUTCH_RPM = 0x0104, "powertrain.clutch_rpm", "ClutchRPM" => tel("Clutch speed", U::Rpm, T::F32, tp!("mClutchRPM")).p2().range(MIN_RPM, MAX_RPM);
+    CLUTCH_RPM = 0x0104, "powertrain.clutch_rpm", "ClutchRPM" => tel("Clutch speed", U::Rpm, T::F32, tp!("mClutchRPM")).p2().range(MIN_CLUTCH_RPM, MAX_RPM);
     ENGINE_TORQUE = 0x0105, "powertrain.engine_torque_nm", "EngineTorque" => tel("Engine torque", U::NewtonMetre, T::F32, tp!("mEngineTorque")).p2().range(-1_000.0, 3_000.0);
     WATER_TEMP = 0x0106, "powertrain.water_temp_c", "WaterTemp" => tel("Water temperature", U::Celsius, T::F32, tp!("mEngineWaterTemp")).range(FLUID_TEMP_MIN_C, FLUID_TEMP_MAX_C).rate(FLUID_TEMP_RATE_C_PER_S);
     OIL_TEMP = 0x0107, "powertrain.oil_temp_c", "OilTemp" => tel("Oil temperature", U::Celsius, T::F32, tp!("mEngineOilTemp")).range(FLUID_TEMP_MIN_C, FLUID_TEMP_MAX_C).rate(FLUID_TEMP_RATE_C_PER_S);
@@ -764,10 +789,10 @@ registry! {
     SUSP_POS_FR = 0x0541, "suspension.fr.deflection_m", "SuspPos_FR" => tel("Suspension deflection FR", U::Metre, T::F32, tp!("mWheel[1].mSuspensionDeflection")).range(-0.3, 0.3);
     SUSP_POS_RL = 0x0542, "suspension.rl.deflection_m", "SuspPos_RL" => tel("Suspension deflection RL", U::Metre, T::F32, tp!("mWheel[2].mSuspensionDeflection")).range(-0.3, 0.3);
     SUSP_POS_RR = 0x0543, "suspension.rr.deflection_m", "SuspPos_RR" => tel("Suspension deflection RR", U::Metre, T::F32, tp!("mWheel[3].mSuspensionDeflection")).range(-0.3, 0.3);
-    RIDE_HEIGHT_FL = 0x0544, "suspension.fl.ride_height_m", "RideHeight_FL" => tel("Ride height FL", U::Metre, T::F32, tp!("mWheel[0].mRideHeight")).range(RIDE_HEIGHT_MIN_M, RIDE_HEIGHT_MAX_M);
-    RIDE_HEIGHT_FR = 0x0545, "suspension.fr.ride_height_m", "RideHeight_FR" => tel("Ride height FR", U::Metre, T::F32, tp!("mWheel[1].mRideHeight")).range(RIDE_HEIGHT_MIN_M, RIDE_HEIGHT_MAX_M);
-    RIDE_HEIGHT_RL = 0x0546, "suspension.rl.ride_height_m", "RideHeight_RL" => tel("Ride height RL", U::Metre, T::F32, tp!("mWheel[2].mRideHeight")).range(RIDE_HEIGHT_MIN_M, RIDE_HEIGHT_MAX_M);
-    RIDE_HEIGHT_RR = 0x0547, "suspension.rr.ride_height_m", "RideHeight_RR" => tel("Ride height RR", U::Metre, T::F32, tp!("mWheel[3].mRideHeight")).range(RIDE_HEIGHT_MIN_M, RIDE_HEIGHT_MAX_M);
+    RIDE_HEIGHT_FL = 0x0544, "suspension.fl.ride_height_m", "RideHeight_FL" => tel("Ride height FL", U::Metre, T::F32, tp!("mWheel[0].mRideHeight")).range(RIDE_HEIGHT_MIN_M, WHEEL_RIDE_HEIGHT_MAX_M);
+    RIDE_HEIGHT_FR = 0x0545, "suspension.fr.ride_height_m", "RideHeight_FR" => tel("Ride height FR", U::Metre, T::F32, tp!("mWheel[1].mRideHeight")).range(RIDE_HEIGHT_MIN_M, WHEEL_RIDE_HEIGHT_MAX_M);
+    RIDE_HEIGHT_RL = 0x0546, "suspension.rl.ride_height_m", "RideHeight_RL" => tel("Ride height RL", U::Metre, T::F32, tp!("mWheel[2].mRideHeight")).range(RIDE_HEIGHT_MIN_M, WHEEL_RIDE_HEIGHT_MAX_M);
+    RIDE_HEIGHT_RR = 0x0547, "suspension.rr.ride_height_m", "RideHeight_RR" => tel("Ride height RR", U::Metre, T::F32, tp!("mWheel[3].mRideHeight")).range(RIDE_HEIGHT_MIN_M, WHEEL_RIDE_HEIGHT_MAX_M);
     PUSHROD_FORCE_FL = 0x0548, "suspension.fl.pushrod_force_n", "PushrodForce_FL" => tel("Pushrod force FL", U::Newton, T::F32, tp!("mWheel[0].mSuspForce")).p2().range(-2.0e4, 1.5e5);
     PUSHROD_FORCE_FR = 0x0549, "suspension.fr.pushrod_force_n", "PushrodForce_FR" => tel("Pushrod force FR", U::Newton, T::F32, tp!("mWheel[1].mSuspForce")).p2().range(-2.0e4, 1.5e5);
     PUSHROD_FORCE_RL = 0x054A, "suspension.rl.pushrod_force_n", "PushrodForce_RL" => tel("Pushrod force RL", U::Newton, T::F32, tp!("mWheel[2].mSuspForce")).p2().range(-2.0e4, 1.5e5);
@@ -776,10 +801,10 @@ registry! {
     CAMBER_FR = 0x054D, "wheels.fr.camber_rad", "Camber_FR" => tel("Camber FR", U::Radian, T::F32, tp!("mWheel[1].mCamber")).p2().range(-0.35, 0.35);
     CAMBER_RL = 0x054E, "wheels.rl.camber_rad", "Camber_RL" => tel("Camber RL", U::Radian, T::F32, tp!("mWheel[2].mCamber")).p2().range(-0.35, 0.35);
     CAMBER_RR = 0x054F, "wheels.rr.camber_rad", "Camber_RR" => tel("Camber RR", U::Radian, T::F32, tp!("mWheel[3].mCamber")).p2().range(-0.35, 0.35);
-    TOE_FL = 0x0550, "wheels.fl.toe_rad", "Toe_FL" => tel("Toe FL", U::Radian, T::F32, tp!("mWheel[0].mToe")).p2().range(-0.2, 0.2);
-    TOE_FR = 0x0551, "wheels.fr.toe_rad", "Toe_FR" => tel("Toe FR", U::Radian, T::F32, tp!("mWheel[1].mToe")).p2().range(-0.2, 0.2);
-    TOE_RL = 0x0552, "wheels.rl.toe_rad", "Toe_RL" => tel("Toe RL", U::Radian, T::F32, tp!("mWheel[2].mToe")).p2().range(-0.2, 0.2);
-    TOE_RR = 0x0553, "wheels.rr.toe_rad", "Toe_RR" => tel("Toe RR", U::Radian, T::F32, tp!("mWheel[3].mToe")).p2().range(-0.2, 0.2);
+    TOE_FL = 0x0550, "wheels.fl.toe_rad", "Toe_FL" => tel("Toe FL", U::Radian, T::F32, tp!("mWheel[0].mToe")).p2().range(-MAX_TOE_RAD, MAX_TOE_RAD);
+    TOE_FR = 0x0551, "wheels.fr.toe_rad", "Toe_FR" => tel("Toe FR", U::Radian, T::F32, tp!("mWheel[1].mToe")).p2().range(-MAX_TOE_RAD, MAX_TOE_RAD);
+    TOE_RL = 0x0552, "wheels.rl.toe_rad", "Toe_RL" => tel("Toe RL", U::Radian, T::F32, tp!("mWheel[2].mToe")).p2().range(-MAX_TOE_RAD, MAX_TOE_RAD);
+    TOE_RR = 0x0553, "wheels.rr.toe_rad", "Toe_RR" => tel("Toe RR", U::Radian, T::F32, tp!("mWheel[3].mToe")).p2().range(-MAX_TOE_RAD, MAX_TOE_RAD);
     WHEEL_ROT_FL = 0x0554, "wheels.fl.rotation_radps", "WheelRot_FL" => tel("Wheel rotation FL", U::RadianPerSecond, T::F32, tp!("mWheel[0].mRotation")).range(-MAX_WHEEL_ROT_RADPS, MAX_WHEEL_ROT_RADPS);
     WHEEL_ROT_FR = 0x0555, "wheels.fr.rotation_radps", "WheelRot_FR" => tel("Wheel rotation FR", U::RadianPerSecond, T::F32, tp!("mWheel[1].mRotation")).range(-MAX_WHEEL_ROT_RADPS, MAX_WHEEL_ROT_RADPS);
     WHEEL_ROT_RL = 0x0556, "wheels.rl.rotation_radps", "WheelRot_RL" => tel("Wheel rotation RL", U::RadianPerSecond, T::F32, tp!("mWheel[2].mRotation")).range(-MAX_WHEEL_ROT_RADPS, MAX_WHEEL_ROT_RADPS);
@@ -810,11 +835,11 @@ registry! {
     BATTERY_SOC = 0x0601, "energy.soc_frac", "BatterySoC" => tel("Battery state of charge (scale detected)", U::Fraction, T::F32, tp!("mSoC")).range(0.0, 1.0).rate(ENERGY_RATE_FRAC_PER_S).vd();
     BATTERY_CHARGE = 0x0602, "energy.battery_charge_frac", "BatteryCharge" => tel("Battery charge", U::Fraction, T::F32, tp!("mBatteryChargeFraction")).range(0.0, 1.0).rate(ENERGY_RATE_FRAC_PER_S).vd();
     REGEN_POWER = 0x0603, "energy.regen_power_w", "RegenPower" => tel("Regeneration power", U::Watt, T::F32, tp!("mRegen")).range(-1.0e6, 1.0e6).vd();
-    HYBRID_MOTOR_TORQUE = 0x0604, "hybrid.motor_torque_nm", "HybridMotorTorque" => tel("Hybrid motor torque (- regenerating)", U::NewtonMetre, T::F32, tp!("mElectricBoostMotorTorque")).p2().range(-2_000.0, 2_000.0).vd();
+    HYBRID_MOTOR_TORQUE = 0x0604, "hybrid.motor_torque_nm", "HybridMotorTorque" => tel("Hybrid motor torque (- regenerating)", U::NewtonMetre, T::F32, tp!("mElectricBoostMotorTorque")).p2().range(-MAX_HYBRID_MOTOR_TORQUE_NM, MAX_HYBRID_MOTOR_TORQUE_NM).vd();
     HYBRID_MOTOR_RPM = 0x0605, "hybrid.motor_rpm", "HybridMotorRPM" => tel("Hybrid motor speed", U::Rpm, T::F32, tp!("mElectricBoostMotorRPM")).p2().range(-50_000.0, 50_000.0).vd();
     HYBRID_MOTOR_TEMP = 0x0606, "hybrid.motor_temp_c", "HybridMotorTemp" => tel("Hybrid motor temperature", U::Celsius, T::F32, tp!("mElectricBoostMotorTemperature")).range(-40.0, 250.0).rate(HYBRID_TEMP_RATE_C_PER_S).vd();
     HYBRID_WATER_TEMP = 0x0607, "hybrid.motor_water_temp_c", "HybridWaterTemp" => tel("Hybrid cooler temperature", U::Celsius, T::F32, tp!("mElectricBoostWaterTemperature")).range(-40.0, 200.0).rate(HYBRID_TEMP_RATE_C_PER_S).vd();
-    HYBRID_MOTOR_STATE = 0x0608, "hybrid.motor_state", "HybridMotorState" => tel("Hybrid motor state", U::Enum, T::U8, tp!("mElectricBoostMotorState")).range(0.0, 3.0).vd();
+    HYBRID_MOTOR_STATE = 0x0608, "hybrid.motor_state", "HybridMotorState" => tel("Hybrid motor state", U::Enum, T::U8, tp!("mElectricBoostMotorState")).range(0.0, MAX_HYBRID_MOTOR_STATE).vd();
     LIFT_AND_COAST = 0x0609, "energy.lift_and_coast_progress", "LiftAndCoast" => tel("Lift-and-coast progress (raw)", U::Count, T::U8, tp!("mLiftAndCoastProgress")).p2().vd();
 
     // ===== 0x0700 timing ===========================================================================================
@@ -939,7 +964,7 @@ registry! {
     LOCAL_YELLOW_S2 = 0x0B0A, "flags.local_yellow_s2", "LocalYellowS2" => calc("Local yellow sector 2 (experimental)", U::None, T::Bool, "formula:local_yellow_from_sector_flags").p0().scoring().experimental();
     LOCAL_YELLOW_S3 = 0x0B0B, "flags.local_yellow_s3", "LocalYellowS3" => calc("Local yellow sector 3 (experimental)", U::None, T::Bool, "formula:local_yellow_from_sector_flags").p0().scoring().experimental();
     IN_PITS = 0x0B20, "pit.in_pits", "InPits" => sco("In pits", U::None, T::Bool, sp!("mInPits")).p0();
-    PIT_STATE = 0x0B21, "pit.state", "PitState" => sco("Pit state", U::Enum, T::U8, sp!("mPitState")).p0().range(0.0, 4.0);
+    PIT_STATE = 0x0B21, "pit.state", "PitState" => sco("Pit state", U::Enum, T::U8, sp!("mPitState")).p0().range(0.0, MAX_PIT_STATE);
     IN_GARAGE = 0x0B22, "pit.in_garage_stall", "InGarage" => sco("In garage stall", U::None, T::Bool, sp!("mInGarageStall"));
     PIT_LAP_DISTANCE = 0x0B23, "pit.lap_dist_m", "PitLapDistance" => sco("Pit box lap distance", U::Metre, T::F32, sp!("mPitLapDist")).p2().stat().range(0.0, MAX_TRACK_LENGTH_M);
     PIT_STOPS = 0x0B24, "pit.num_stops", "PitStops" => sco("Pit stops", U::Count, T::I32, sp!("mNumPitstops")).p0().range(0.0, MAX_PIT_STOPS);

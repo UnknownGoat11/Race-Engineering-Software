@@ -116,7 +116,7 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0101 | `powertrain.engine_rpm` | `RPM` | Engine speed | rpm | F32 | SM/tel | M | P0 | PHY | C | A | -1000 … 30000 |  | `telemetry.telemInfo[player].mEngineRPM` |
 | 0x0102 | `vehicle.engine_max_rpm` | `RPMMax` | Rev limit | rpm | F32 | SM/tel | M | P1 | STA | D | A | 1000 … 25000 |  | `telemetry.telemInfo[player].mEngineMaxRPM` |
 | 0x0103 | `vehicle.max_gears` | `GearsMax` | Number of forward gears | count | U8 | SM/tel | M | P2 | STA | D | A | 1 … 10 |  | `telemetry.telemInfo[player].mMaxGears` |
-| 0x0104 | `powertrain.clutch_rpm` | `ClutchRPM` | Clutch speed | rpm | F32 | SM/tel | M | P2 | PHY | C | A | -1000 … 30000 |  | `telemetry.telemInfo[player].mClutchRPM` |
+| 0x0104 | `powertrain.clutch_rpm` | `ClutchRPM` | Clutch speed | rpm | F32 | SM/tel | M | P2 | PHY | C | A | -30000 … 30000 |  | `telemetry.telemInfo[player].mClutchRPM` |
 | 0x0105 | `powertrain.engine_torque_nm` | `EngineTorque` | Engine torque | N·m | F32 | SM/tel | M | P2 | PHY | C | A | -1000 … 3000 |  | `telemetry.telemInfo[player].mEngineTorque` |
 | 0x0106 | `powertrain.water_temp_c` | `WaterTemp` | Water temperature | °C | F32 | SM/tel | M | P1 | PHY | C | A | -40 … 200 | 50 | `telemetry.telemInfo[player].mEngineWaterTemp` |
 | 0x0107 | `powertrain.oil_temp_c` | `OilTemp` | Oil temperature | °C | F32 | SM/tel | M | P1 | PHY | C | A | -40 … 200 | 50 | `telemetry.telemInfo[player].mEngineOilTemp` |
@@ -147,18 +147,18 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0301 | `tyres.fr.pressure_pa` | `TyrePressure_FR` | Tyre pressure FR | Pa | F32 | SM/tel | M | P1 | PHY | C | A | 0 … 600000 | 2000000 | `telemetry.telemInfo[player].mWheel[1].mPressure` |
 | 0x0302 | `tyres.rl.pressure_pa` | `TyrePressure_RL` | Tyre pressure RL | Pa | F32 | SM/tel | M | P1 | PHY | C | A | 0 … 600000 | 2000000 | `telemetry.telemInfo[player].mWheel[2].mPressure` |
 | 0x0303 | `tyres.rr.pressure_pa` | `TyrePressure_RR` | Tyre pressure RR | Pa | F32 | SM/tel | M | P1 | PHY | C | A | 0 … 600000 | 2000000 | `telemetry.telemInfo[player].mWheel[3].mPressure` |
-| 0x0304 | `tyres.fl.temp_surface_left_c` | `TyreTemp_FL_Left` | Tyre surface temp FL left edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[0].mTemperature[0]` |
-| 0x0305 | `tyres.fr.temp_surface_left_c` | `TyreTemp_FR_Left` | Tyre surface temp FR left edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[1].mTemperature[0]` |
-| 0x0306 | `tyres.rl.temp_surface_left_c` | `TyreTemp_RL_Left` | Tyre surface temp RL left edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[2].mTemperature[0]` |
-| 0x0307 | `tyres.rr.temp_surface_left_c` | `TyreTemp_RR_Left` | Tyre surface temp RR left edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[3].mTemperature[0]` |
-| 0x0308 | `tyres.fl.temp_surface_center_c` | `TyreTemp_FL_Middle` | Tyre surface temp FL middle | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[0].mTemperature[1]` |
-| 0x0309 | `tyres.fr.temp_surface_center_c` | `TyreTemp_FR_Middle` | Tyre surface temp FR middle | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[1].mTemperature[1]` |
-| 0x030A | `tyres.rl.temp_surface_center_c` | `TyreTemp_RL_Middle` | Tyre surface temp RL middle | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[2].mTemperature[1]` |
-| 0x030B | `tyres.rr.temp_surface_center_c` | `TyreTemp_RR_Middle` | Tyre surface temp RR middle | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[3].mTemperature[1]` |
-| 0x030C | `tyres.fl.temp_surface_right_c` | `TyreTemp_FL_Right` | Tyre surface temp FL right edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[0].mTemperature[2]` |
-| 0x030D | `tyres.fr.temp_surface_right_c` | `TyreTemp_FR_Right` | Tyre surface temp FR right edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[1].mTemperature[2]` |
-| 0x030E | `tyres.rl.temp_surface_right_c` | `TyreTemp_RL_Right` | Tyre surface temp RL right edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[2].mTemperature[2]` |
-| 0x030F | `tyres.rr.temp_surface_right_c` | `TyreTemp_RR_Right` | Tyre surface temp RR right edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `telemetry.telemInfo[player].mWheel[3].mTemperature[2]` |
+| 0x0304 | `tyres.fl.temp_surface_left_c` | `TyreTemp_FL_Left` | Tyre surface temp FL left edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[0].mTemperature[0]` |
+| 0x0305 | `tyres.fr.temp_surface_left_c` | `TyreTemp_FR_Left` | Tyre surface temp FR left edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[1].mTemperature[0]` |
+| 0x0306 | `tyres.rl.temp_surface_left_c` | `TyreTemp_RL_Left` | Tyre surface temp RL left edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[2].mTemperature[0]` |
+| 0x0307 | `tyres.rr.temp_surface_left_c` | `TyreTemp_RR_Left` | Tyre surface temp RR left edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[3].mTemperature[0]` |
+| 0x0308 | `tyres.fl.temp_surface_center_c` | `TyreTemp_FL_Middle` | Tyre surface temp FL middle | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[0].mTemperature[1]` |
+| 0x0309 | `tyres.fr.temp_surface_center_c` | `TyreTemp_FR_Middle` | Tyre surface temp FR middle | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[1].mTemperature[1]` |
+| 0x030A | `tyres.rl.temp_surface_center_c` | `TyreTemp_RL_Middle` | Tyre surface temp RL middle | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[2].mTemperature[1]` |
+| 0x030B | `tyres.rr.temp_surface_center_c` | `TyreTemp_RR_Middle` | Tyre surface temp RR middle | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[3].mTemperature[1]` |
+| 0x030C | `tyres.fl.temp_surface_right_c` | `TyreTemp_FL_Right` | Tyre surface temp FL right edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[0].mTemperature[2]` |
+| 0x030D | `tyres.fr.temp_surface_right_c` | `TyreTemp_FR_Right` | Tyre surface temp FR right edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[1].mTemperature[2]` |
+| 0x030E | `tyres.rl.temp_surface_right_c` | `TyreTemp_RL_Right` | Tyre surface temp RL right edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[2].mTemperature[2]` |
+| 0x030F | `tyres.rr.temp_surface_right_c` | `TyreTemp_RR_Right` | Tyre surface temp RR right edge (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `telemetry.telemInfo[player].mWheel[3].mTemperature[2]` |
 | 0x0310 | `tyres.fl.temp_inner_layer_left_c` | `TyreLayerTemp_FL_Left` | Tyre inner-layer temp FL left (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 1000 | `telemetry.telemInfo[player].mWheel[0].mTireInnerLayerTemperature[0]` |
 | 0x0311 | `tyres.fr.temp_inner_layer_left_c` | `TyreLayerTemp_FR_Left` | Tyre inner-layer temp FR left (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 1000 | `telemetry.telemInfo[player].mWheel[1].mTireInnerLayerTemperature[0]` |
 | 0x0312 | `tyres.rl.temp_inner_layer_left_c` | `TyreLayerTemp_RL_Left` | Tyre inner-layer temp RL left (car frame) | °C | F32 | SM/tel | M | P1 | PHY | C | A | -73.15 … 426.85 | 1000 | `telemetry.telemInfo[player].mWheel[2].mTireInnerLayerTemperature[0]` |
@@ -243,22 +243,22 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0361 | `tyres.fr.terrain_name` | `TerrainName_FR` | Terrain material FR | text | Str | SM/tel | M | P2 | PHY | D | A |  |  | `telemetry.telemInfo[player].mWheel[1].mTerrainName` |
 | 0x0362 | `tyres.rl.terrain_name` | `TerrainName_RL` | Terrain material RL | text | Str | SM/tel | M | P2 | PHY | D | A |  |  | `telemetry.telemInfo[player].mWheel[2].mTerrainName` |
 | 0x0363 | `tyres.rr.terrain_name` | `TerrainName_RR` | Terrain material RR | text | Str | SM/tel | M | P2 | PHY | D | A |  |  | `telemetry.telemInfo[player].mWheel[3].mTerrainName` |
-| 0x0364 | `tyres.fl.temp_surface_inner_c` | `TyreTemp_FL_Inner` | Tyre surface temp FL inner edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `formula:tyre_surface_inner_edge` |
-| 0x0365 | `tyres.fr.temp_surface_inner_c` | `TyreTemp_FR_Inner` | Tyre surface temp FR inner edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `formula:tyre_surface_inner_edge` |
-| 0x0366 | `tyres.rl.temp_surface_inner_c` | `TyreTemp_RL_Inner` | Tyre surface temp RL inner edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `formula:tyre_surface_inner_edge` |
-| 0x0367 | `tyres.rr.temp_surface_inner_c` | `TyreTemp_RR_Inner` | Tyre surface temp RR inner edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `formula:tyre_surface_inner_edge` |
-| 0x0368 | `tyres.fl.temp_surface_outer_c` | `TyreTemp_FL_Outer` | Tyre surface temp FL outer edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `formula:tyre_surface_outer_edge` |
-| 0x0369 | `tyres.fr.temp_surface_outer_c` | `TyreTemp_FR_Outer` | Tyre surface temp FR outer edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `formula:tyre_surface_outer_edge` |
-| 0x036A | `tyres.rl.temp_surface_outer_c` | `TyreTemp_RL_Outer` | Tyre surface temp RL outer edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `formula:tyre_surface_outer_edge` |
-| 0x036B | `tyres.rr.temp_surface_outer_c` | `TyreTemp_RR_Outer` | Tyre surface temp RR outer edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 3000 | `formula:tyre_surface_outer_edge` |
+| 0x0364 | `tyres.fl.temp_surface_inner_c` | `TyreTemp_FL_Inner` | Tyre surface temp FL inner edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `formula:tyre_surface_inner_edge` |
+| 0x0365 | `tyres.fr.temp_surface_inner_c` | `TyreTemp_FR_Inner` | Tyre surface temp FR inner edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `formula:tyre_surface_inner_edge` |
+| 0x0366 | `tyres.rl.temp_surface_inner_c` | `TyreTemp_RL_Inner` | Tyre surface temp RL inner edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `formula:tyre_surface_inner_edge` |
+| 0x0367 | `tyres.rr.temp_surface_inner_c` | `TyreTemp_RR_Inner` | Tyre surface temp RR inner edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `formula:tyre_surface_inner_edge` |
+| 0x0368 | `tyres.fl.temp_surface_outer_c` | `TyreTemp_FL_Outer` | Tyre surface temp FL outer edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `formula:tyre_surface_outer_edge` |
+| 0x0369 | `tyres.fr.temp_surface_outer_c` | `TyreTemp_FR_Outer` | Tyre surface temp FR outer edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `formula:tyre_surface_outer_edge` |
+| 0x036A | `tyres.rl.temp_surface_outer_c` | `TyreTemp_RL_Outer` | Tyre surface temp RL outer edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `formula:tyre_surface_outer_edge` |
+| 0x036B | `tyres.rr.temp_surface_outer_c` | `TyreTemp_RR_Outer` | Tyre surface temp RR outer edge (A-LMU-016) | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 | 15000 | `formula:tyre_surface_outer_edge` |
 | 0x036C | `tyres.fl.temp_surface_avg_c` | `TyreTemp_FL_Avg` | Tyre surface temp FL average | °C | F32 | CALC | D | P2 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_mean` |
 | 0x036D | `tyres.fr.temp_surface_avg_c` | `TyreTemp_FR_Avg` | Tyre surface temp FR average | °C | F32 | CALC | D | P2 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_mean` |
 | 0x036E | `tyres.rl.temp_surface_avg_c` | `TyreTemp_RL_Avg` | Tyre surface temp RL average | °C | F32 | CALC | D | P2 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_mean` |
 | 0x036F | `tyres.rr.temp_surface_avg_c` | `TyreTemp_RR_Avg` | Tyre surface temp RR average | °C | F32 | CALC | D | P2 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_mean` |
-| 0x0370 | `tyres.fl.inner_outer_spread_c` | `TyreTempSpread_FL` | Tyre inner-minus-outer FL | °C | F32 | CALC | D | P2 | PHY | C | A | -100 … 100 |  | `formula:tyre_inner_minus_outer` |
-| 0x0371 | `tyres.fr.inner_outer_spread_c` | `TyreTempSpread_FR` | Tyre inner-minus-outer FR | °C | F32 | CALC | D | P2 | PHY | C | A | -100 … 100 |  | `formula:tyre_inner_minus_outer` |
-| 0x0372 | `tyres.rl.inner_outer_spread_c` | `TyreTempSpread_RL` | Tyre inner-minus-outer RL | °C | F32 | CALC | D | P2 | PHY | C | A | -100 … 100 |  | `formula:tyre_inner_minus_outer` |
-| 0x0373 | `tyres.rr.inner_outer_spread_c` | `TyreTempSpread_RR` | Tyre inner-minus-outer RR | °C | F32 | CALC | D | P2 | PHY | C | A | -100 … 100 |  | `formula:tyre_inner_minus_outer` |
+| 0x0370 | `tyres.fl.inner_outer_spread_c` | `TyreTempSpread_FL` | Tyre inner-minus-outer FL | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_inner_minus_outer` |
+| 0x0371 | `tyres.fr.inner_outer_spread_c` | `TyreTempSpread_FR` | Tyre inner-minus-outer FR | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_inner_minus_outer` |
+| 0x0372 | `tyres.rl.inner_outer_spread_c` | `TyreTempSpread_RL` | Tyre inner-minus-outer RL | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_inner_minus_outer` |
+| 0x0373 | `tyres.rr.inner_outer_spread_c` | `TyreTempSpread_RR` | Tyre inner-minus-outer RR | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_inner_minus_outer` |
 | 0x0374 | `tyres.fl.temp_rim_c` | `TyreRimTemp_FL` | Rim temp FL | °C | F32 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only (TyresRimTemp)` |
 | 0x0375 | `tyres.fr.temp_rim_c` | `TyreRimTemp_FR` | Rim temp FR | °C | F32 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only (TyresRimTemp)` |
 | 0x0376 | `tyres.rl.temp_rim_c` | `TyreRimTemp_RL` | Rim temp RL | °C | F32 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only (TyresRimTemp)` |
@@ -354,10 +354,10 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0541 | `suspension.fr.deflection_m` | `SuspPos_FR` | Suspension deflection FR | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.3 … 0.3 |  | `telemetry.telemInfo[player].mWheel[1].mSuspensionDeflection` |
 | 0x0542 | `suspension.rl.deflection_m` | `SuspPos_RL` | Suspension deflection RL | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.3 … 0.3 |  | `telemetry.telemInfo[player].mWheel[2].mSuspensionDeflection` |
 | 0x0543 | `suspension.rr.deflection_m` | `SuspPos_RR` | Suspension deflection RR | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.3 … 0.3 |  | `telemetry.telemInfo[player].mWheel[3].mSuspensionDeflection` |
-| 0x0544 | `suspension.fl.ride_height_m` | `RideHeight_FL` | Ride height FL | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.05 … 0.3 |  | `telemetry.telemInfo[player].mWheel[0].mRideHeight` |
-| 0x0545 | `suspension.fr.ride_height_m` | `RideHeight_FR` | Ride height FR | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.05 … 0.3 |  | `telemetry.telemInfo[player].mWheel[1].mRideHeight` |
-| 0x0546 | `suspension.rl.ride_height_m` | `RideHeight_RL` | Ride height RL | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.05 … 0.3 |  | `telemetry.telemInfo[player].mWheel[2].mRideHeight` |
-| 0x0547 | `suspension.rr.ride_height_m` | `RideHeight_RR` | Ride height RR | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.05 … 0.3 |  | `telemetry.telemInfo[player].mWheel[3].mRideHeight` |
+| 0x0544 | `suspension.fl.ride_height_m` | `RideHeight_FL` | Ride height FL | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.05 … 2 |  | `telemetry.telemInfo[player].mWheel[0].mRideHeight` |
+| 0x0545 | `suspension.fr.ride_height_m` | `RideHeight_FR` | Ride height FR | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.05 … 2 |  | `telemetry.telemInfo[player].mWheel[1].mRideHeight` |
+| 0x0546 | `suspension.rl.ride_height_m` | `RideHeight_RL` | Ride height RL | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.05 … 2 |  | `telemetry.telemInfo[player].mWheel[2].mRideHeight` |
+| 0x0547 | `suspension.rr.ride_height_m` | `RideHeight_RR` | Ride height RR | m | F32 | SM/tel | M | P1 | PHY | C | A | -0.05 … 2 |  | `telemetry.telemInfo[player].mWheel[3].mRideHeight` |
 | 0x0548 | `suspension.fl.pushrod_force_n` | `PushrodForce_FL` | Pushrod force FL | N | F32 | SM/tel | M | P2 | PHY | C | A | -20000 … 150000 |  | `telemetry.telemInfo[player].mWheel[0].mSuspForce` |
 | 0x0549 | `suspension.fr.pushrod_force_n` | `PushrodForce_FR` | Pushrod force FR | N | F32 | SM/tel | M | P2 | PHY | C | A | -20000 … 150000 |  | `telemetry.telemInfo[player].mWheel[1].mSuspForce` |
 | 0x054A | `suspension.rl.pushrod_force_n` | `PushrodForce_RL` | Pushrod force RL | N | F32 | SM/tel | M | P2 | PHY | C | A | -20000 … 150000 |  | `telemetry.telemInfo[player].mWheel[2].mSuspForce` |
@@ -366,10 +366,10 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x054D | `wheels.fr.camber_rad` | `Camber_FR` | Camber FR | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.35 … 0.35 |  | `telemetry.telemInfo[player].mWheel[1].mCamber` |
 | 0x054E | `wheels.rl.camber_rad` | `Camber_RL` | Camber RL | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.35 … 0.35 |  | `telemetry.telemInfo[player].mWheel[2].mCamber` |
 | 0x054F | `wheels.rr.camber_rad` | `Camber_RR` | Camber RR | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.35 … 0.35 |  | `telemetry.telemInfo[player].mWheel[3].mCamber` |
-| 0x0550 | `wheels.fl.toe_rad` | `Toe_FL` | Toe FL | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.2 … 0.2 |  | `telemetry.telemInfo[player].mWheel[0].mToe` |
-| 0x0551 | `wheels.fr.toe_rad` | `Toe_FR` | Toe FR | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.2 … 0.2 |  | `telemetry.telemInfo[player].mWheel[1].mToe` |
-| 0x0552 | `wheels.rl.toe_rad` | `Toe_RL` | Toe RL | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.2 … 0.2 |  | `telemetry.telemInfo[player].mWheel[2].mToe` |
-| 0x0553 | `wheels.rr.toe_rad` | `Toe_RR` | Toe RR | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.2 … 0.2 |  | `telemetry.telemInfo[player].mWheel[3].mToe` |
+| 0x0550 | `wheels.fl.toe_rad` | `Toe_FL` | Toe FL | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.698132 … 0.698132 |  | `telemetry.telemInfo[player].mWheel[0].mToe` |
+| 0x0551 | `wheels.fr.toe_rad` | `Toe_FR` | Toe FR | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.698132 … 0.698132 |  | `telemetry.telemInfo[player].mWheel[1].mToe` |
+| 0x0552 | `wheels.rl.toe_rad` | `Toe_RL` | Toe RL | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.698132 … 0.698132 |  | `telemetry.telemInfo[player].mWheel[2].mToe` |
+| 0x0553 | `wheels.rr.toe_rad` | `Toe_RR` | Toe RR | rad | F32 | SM/tel | M | P2 | PHY | C | A | -0.698132 … 0.698132 |  | `telemetry.telemInfo[player].mWheel[3].mToe` |
 | 0x0554 | `wheels.fl.rotation_radps` | `WheelRot_FL` | Wheel rotation FL | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1500 … 1500 |  | `telemetry.telemInfo[player].mWheel[0].mRotation` |
 | 0x0555 | `wheels.fr.rotation_radps` | `WheelRot_FR` | Wheel rotation FR | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1500 … 1500 |  | `telemetry.telemInfo[player].mWheel[1].mRotation` |
 | 0x0556 | `wheels.rl.rotation_radps` | `WheelRot_RL` | Wheel rotation RL | rad/s | F32 | SM/tel | M | P1 | PHY | C | A | -1500 … 1500 |  | `telemetry.telemInfo[player].mWheel[2].mRotation` |
@@ -403,11 +403,11 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0601 | `energy.soc_frac` | `BatterySoC` | Battery state of charge (scale detected) | 0..1 | F32 | SM/tel | M | P1 | PHY | C | V | 0 … 1 | 1 | `telemetry.telemInfo[player].mSoC` |
 | 0x0602 | `energy.battery_charge_frac` | `BatteryCharge` | Battery charge | 0..1 | F32 | SM/tel | M | P1 | PHY | C | V | 0 … 1 | 1 | `telemetry.telemInfo[player].mBatteryChargeFraction` |
 | 0x0603 | `energy.regen_power_w` | `RegenPower` | Regeneration power | W | F32 | SM/tel | M | P1 | PHY | C | V | -1000000 … 1000000 |  | `telemetry.telemInfo[player].mRegen` |
-| 0x0604 | `hybrid.motor_torque_nm` | `HybridMotorTorque` | Hybrid motor torque (- regenerating) | N·m | F32 | SM/tel | M | P2 | PHY | C | V | -2000 … 2000 |  | `telemetry.telemInfo[player].mElectricBoostMotorTorque` |
+| 0x0604 | `hybrid.motor_torque_nm` | `HybridMotorTorque` | Hybrid motor torque (- regenerating) | N·m | F32 | SM/tel | M | P2 | PHY | C | V | -10000 … 10000 |  | `telemetry.telemInfo[player].mElectricBoostMotorTorque` |
 | 0x0605 | `hybrid.motor_rpm` | `HybridMotorRPM` | Hybrid motor speed | rpm | F32 | SM/tel | M | P2 | PHY | C | V | -50000 … 50000 |  | `telemetry.telemInfo[player].mElectricBoostMotorRPM` |
 | 0x0606 | `hybrid.motor_temp_c` | `HybridMotorTemp` | Hybrid motor temperature | °C | F32 | SM/tel | M | P1 | PHY | C | V | -40 … 250 | 100 | `telemetry.telemInfo[player].mElectricBoostMotorTemperature` |
 | 0x0607 | `hybrid.motor_water_temp_c` | `HybridWaterTemp` | Hybrid cooler temperature | °C | F32 | SM/tel | M | P1 | PHY | C | V | -40 … 200 | 100 | `telemetry.telemInfo[player].mElectricBoostWaterTemperature` |
-| 0x0608 | `hybrid.motor_state` | `HybridMotorState` | Hybrid motor state | enum | U8 | SM/tel | M | P1 | PHY | D | V | 0 … 3 |  | `telemetry.telemInfo[player].mElectricBoostMotorState` |
+| 0x0608 | `hybrid.motor_state` | `HybridMotorState` | Hybrid motor state | enum | U8 | SM/tel | M | P1 | PHY | D | V | 0 … 4 |  | `telemetry.telemInfo[player].mElectricBoostMotorState` |
 | 0x0609 | `energy.lift_and_coast_progress` | `LiftAndCoast` | Lift-and-coast progress (raw) | count | U8 | SM/tel | M | P2 | PHY | D | V |  |  | `telemetry.telemInfo[player].mLiftAndCoastProgress` |
 
 ## 0x0700 Timing
@@ -547,7 +547,7 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0B0A | `flags.local_yellow_s2` | `LocalYellowS2` | Local yellow sector 2 (experimental) | — | Bool | CALC | D | P0 | SCO | D | X |  |  | `formula:local_yellow_from_sector_flags` |
 | 0x0B0B | `flags.local_yellow_s3` | `LocalYellowS3` | Local yellow sector 3 (experimental) | — | Bool | CALC | D | P0 | SCO | D | X |  |  | `formula:local_yellow_from_sector_flags` |
 | 0x0B20 | `pit.in_pits` | `InPits` | In pits | — | Bool | SM/sco | M | P0 | SCO | D | A |  |  | `scoring.vehScoringInfo[player].mInPits` |
-| 0x0B21 | `pit.state` | `PitState` | Pit state | enum | U8 | SM/sco | M | P0 | SCO | D | A | 0 … 4 |  | `scoring.vehScoringInfo[player].mPitState` |
+| 0x0B21 | `pit.state` | `PitState` | Pit state | enum | U8 | SM/sco | M | P0 | SCO | D | A | 0 … 5 |  | `scoring.vehScoringInfo[player].mPitState` |
 | 0x0B22 | `pit.in_garage_stall` | `InGarage` | In garage stall | — | Bool | SM/sco | M | P1 | SCO | D | A |  |  | `scoring.vehScoringInfo[player].mInGarageStall` |
 | 0x0B23 | `pit.lap_dist_m` | `PitLapDistance` | Pit box lap distance | m | F32 | SM/sco | M | P2 | STA | D | A | 0 … 30000 |  | `scoring.vehScoringInfo[player].mPitLapDist` |
 | 0x0B24 | `pit.num_stops` | `PitStops` | Pit stops | count | I32 | SM/sco | M | P0 | SCO | D | A | 0 … 100 |  | `scoring.vehScoringInfo[player].mNumPitstops` |

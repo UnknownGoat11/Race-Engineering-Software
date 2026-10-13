@@ -131,13 +131,17 @@ lmu_enum! {
 }
 
 lmu_enum! {
-    /// Pit state (`vehScoringInfo[i].mPitState`).
+    /// Pit state (`vehScoringInfo[i].mPitState`). 0..4 are documented by the header; 5 is observed only.
     PitState: u8 {
         Idle = 0 => "None",
         Requested = 1 => "Requested",
         Entering = 2 => "Entering",
         Stopped = 3 => "Stopped",
         Exiting = 4 => "Exiting",
+        /// OBSERVED, NOT DOCUMENTED (A-LMU-063): LMU 1.4.2.0 reports 5 while the car sits in its garage stall
+        /// and while it drives from the garage down the pit lane to the track (seen 0 → 1 → 5 → 0 on a return
+        /// to the garage); never on track. The meaning is inferred from where it was seen.
+        Garage = 5 => "Garage / leaving garage",
     }
 }
 
@@ -246,6 +250,10 @@ lmu_enum! {
         Inactive = 1 => "Inactive",
         Propulsion = 2 => "Propulsion",
         Regeneration = 3 => "Regeneration",
+        /// OBSERVED, NOT DOCUMENTED (A-LMU-064): LMU 1.4.2.0 (Hypercar) reports 4 for 1.64 s right after the car
+        /// is released from the garage stall (stationary, battery full, no torque), then 1. Meaning unknown
+        /// beyond that; the car is hybrid while it is reported.
+        GarageRelease = 4 => "After garage release (undocumented)",
     }
 }
 
@@ -455,7 +463,23 @@ mod tests {
         for raw in 0..=u8::MAX {
             assert_eq!(PitState::from_raw(raw).raw(), raw);
             assert_eq!(SurfaceType::from_raw(raw).raw(), raw);
+            assert_eq!(HybridMotorState::from_raw(raw).raw(), raw);
         }
+    }
+
+    /// Gate 1 (LMU 1.4.2.0): values outside the header's documented sets that real data showed are named
+    /// variants now, and the next unknown value still stays verbatim.
+    #[test]
+    fn values_observed_at_gate1_are_known() {
+        assert_eq!(PitState::from_raw(5), PitState::Garage);
+        assert_eq!(PitState::Garage.raw(), 5);
+        assert_eq!(PitState::from_raw(6), PitState::Unknown(6));
+        assert_eq!(
+            HybridMotorState::from_raw(4),
+            HybridMotorState::GarageRelease
+        );
+        assert_eq!(HybridMotorState::GarageRelease.raw(), 4);
+        assert_eq!(HybridMotorState::from_raw(5), HybridMotorState::Unknown(5));
     }
 
     /// Serialised as the raw LMU value, not the declaration index: adding a known variant can never shift the

@@ -24,18 +24,27 @@ use serde::{Deserialize, Serialize};
 use telemetry_model::enums::{SessionType, VehicleClass};
 use telemetry_model::events::{EventRecord, EventTime, Severity};
 use telemetry_model::frame::TelemetryFrame;
+use telemetry_model::registry;
 use telemetry_model::scoring::{CapabilityMap, ScoringState, SessionIdentity, VehicleCapabilities};
 use telemetry_model::validate::{EtStep, FrameValidator, Rejection, classify_et};
 
 /// Consecutive published frames a channel must be rejected by validation before a
 /// [`NoticeCode::ValueRejectedSustained`] diagnostic is raised (≈ 1 s at 100 Hz; A-LMU-049).
 pub const SUSTAINED_REJECTION_FRAMES: u32 = 100;
+/// Fastest plausible motion (m/s) if the registry ever lost the position rate bound (it has one: 200 m/s).
+const FALLBACK_MAX_MOTION_MPS: f64 = 200.0;
 use telemetry_model::{ChannelId, Quality, ch};
 
 use crate::capability::{self, VehicleCapabilityTracker};
-use crate::detect::{BrakeTempUnit, BrakeTempUnitDecision, FractionScale, UnitDecisionState};
+use crate::detect::{
+    BrakeTempUnit, BrakeTempUnitDecision, FillState, FractionScale, UnitDecisionState,
+};
+use crate::discontinuity::{CarSample, Discontinuity, DiscontinuityDetector, pit_service_channels};
 use crate::identity::IdentityTracker;
-use crate::mapping::{self, MapInput, MapState, SessionDetectors, wheel_id};
+use crate::mapping::{
+    self, FILL_CHECKED_CHANNELS, MapInput, MapState, SessionDetectors, decode_current_sector,
+    wheel_id,
+};
 use crate::notice::{DiagnosticNotice, NoticeCode, NoticeLog, push_logged};
 use crate::standings::{self, PlayerRowIssue};
 use crate::writer::FrameWriter;
@@ -117,6 +126,15 @@ pub struct NormalizerStats {
     /// Scoring updates dropped as inconsistent.
     pub scoring_rejected: u64,
     pub session_resets: u64,
+    /// Garage teleports recognised (rate history reset instead of rejecting, A-LMU-067).
+    #[serde(default)]
+    pub teleports: u64,
+    /// Realtime entries that reset the rate history (A-LMU-067).
+    #[serde(default)]
+    pub realtime_entries: u64,
+    /// Published samples taken while the car stood in the pit area (service channels' rate history reset).
+    #[serde(default)]
+    pub pit_service_samples: u64,
 }
 
 /// The raw inputs of one step, independent of how they were obtained (live reader, capture replay, test).
@@ -231,6 +249,12 @@ pub struct Normalizer {
     pending_restart: Option<(EventTime, Option<u32>)>,
     /// Consecutive-frame validation rejections per channel (bounded by the registry size).
     rejection_streaks: BTreeMap<ChannelId, u32>,
+    /// Garage teleports, realtime entries and pit services (A-LMU-067).
+    discontinuity: DiscontinuityDetector,
+    /// Channels whose rate history a pit service resets.
+    service_channels: Vec<ChannelId>,
+    /// Fastest plausible motion (m/s): the registry's position rate bound.
+    max_motion_mps: f64,
     stats: NormalizerStats,
 }
 
@@ -258,6 +282,11 @@ impl Normalizer {
             scoring_seen: false,
             pending_restart: None,
             rejection_streaks: BTreeMap::new(),
+            discontinuity: DiscontinuityDetector::default(),
+            service_channels: pit_service_channels(),
+            max_motion_mps: registry::by_id(ch::POS_X)
+                .and_then(|d| d.max_rate_per_s)
+                .unwrap_or(FALLBACK_MAX_MOTION_MPS),
             stats: NormalizerStats::default(),
         };
         n.capability_map = n.fresh_capability_map();
@@ -352,6 +381,8 @@ impl Normalizer {
         // opens the cold-brake evidence window (A-LMU-015).
         self.det
             .brake_unit
+            .note_realtime(input.scoring_info.in_realtime);
+        self.discontinuity
             .note_realtime(input.scoring_info.in_realtime);
 
         let Some(telemetry) = input.player else {
@@ -504,6 +535,7 @@ impl Normalizer {
         self.last_et = None;
         self.last_player_id = None;
         self.rejection_streaks.clear();
+        self.discontinuity = DiscontinuityDetector::default();
         self.det = SessionDetectors::default();
         self.notice_log.reset();
         self.validator.reset();
@@ -603,6 +635,8 @@ impl Normalizer {
             }
         }
 
+        // Known discontinuities reset the rate history they void, before validation (A-LMU-067).
+        self.apply_discontinuity(telemetry, player_row);
         // Registry validation of every value: finiteness, plausible range, plausible rate of change.
         let validation = self.validator.validate(&mut frame);
         out.rejections = validation.rejected;
@@ -624,6 +658,39 @@ impl Normalizer {
         self.last_et = Some(et);
         self.last_player_id = Some(telemetry.id);
         out.frame = Some(frame);
+    }
+
+    /// Recognises a garage teleport, a realtime entry or a pit service for this sample and resets the rate
+    /// history of the channels it voids: everything for a teleport or a realtime entry, the fuel, energy and
+    /// tyre channels for a service. Range checks still apply; an uncorroborated jump is still rejected.
+    fn apply_discontinuity(&mut self, t: &RawTelemetry, row: Option<&RawVehicleScoring>) {
+        let (_, pit_lane_bit) = decode_current_sector(t.current_sector);
+        let sample = CarSample {
+            et_s: t.elapsed_time,
+            pos: [t.pos.x, t.pos.y, t.pos.z],
+            speed_mps: crate::convention::speed_mps(t.local_vel),
+            in_pit_area: pit_lane_bit || row.is_some_and(|r| r.in_pits || r.in_garage_stall),
+        };
+        match self.discontinuity.observe(sample, self.max_motion_mps) {
+            Some(Discontinuity::Teleport) => {
+                self.stats.teleports = self.stats.teleports.saturating_add(1);
+                tracing::debug!(
+                    component = "lmu-normalizer",
+                    et = t.elapsed_time,
+                    "garage teleport: rate history reset"
+                );
+                self.validator.reset();
+            }
+            Some(Discontinuity::RealtimeEntry) => {
+                self.stats.realtime_entries = self.stats.realtime_entries.saturating_add(1);
+                self.validator.reset();
+            }
+            Some(Discontinuity::PitService) => {
+                self.stats.pit_service_samples = self.stats.pit_service_samples.saturating_add(1);
+                self.validator.reset_channels(&self.service_channels);
+            }
+            None => {}
+        }
     }
 
     /// Counts consecutive rejections per channel and raises a deduplicated diagnostic when a channel stays
@@ -715,10 +782,13 @@ impl Normalizer {
                 Some(pressure_note),
             );
         }
-        let scale_note = |scale: FractionScale| match scale {
+        let scale_note = |scale: FractionScale, verified: bool| match scale {
             FractionScale::Undecided => {
                 "scale undecided (0..1 or %): withheld until a value > 1.5 or two laps of changing values \
                  decide it (A-LMU-013/014)"
+            }
+            FractionScale::Fraction if verified => {
+                "0..1, verified with real data for this LMU version (Gate 1, A-LMU-013)"
             }
             FractionScale::Fraction => {
                 "0..1 confirmed by two laps of changing values in 0..1.5 (A-LMU-013/014)"
@@ -727,16 +797,32 @@ impl Normalizer {
                 "percent detected (values > 1.5), divided by 100 (A-LMU-013/014)"
             }
             FractionScale::Unrecognized => "unrecognized scale: published INVALID (A-LMU-013/014)",
+            FractionScale::Conflicting => {
+                "value contradicts the scale verified for this LMU version: withheld for the session \
+                 (A-LMU-013/014)"
+            }
         };
         let caps = self.vehicle_caps.capabilities();
         let ve_note = if caps.supports_virtual_energy == Some(false) {
             "car reports no virtual energy"
         } else {
-            scale_note(self.det.virtual_energy.scale())
+            let ve = &self.det.virtual_energy;
+            scale_note(ve.scale(), ve.is_verified())
         };
         changed |= capability::set_note(map, ch::VIRTUAL_ENERGY, Some(ve_note));
-        changed |=
-            capability::set_note(map, ch::BATTERY_SOC, Some(scale_note(self.det.soc.scale())));
+        let soc = &self.det.soc;
+        changed |= capability::set_note(
+            map,
+            ch::BATTERY_SOC,
+            Some(scale_note(soc.scale(), soc.is_verified())),
+        );
+        for &(id, _) in FILL_CHECKED_CHANNELS {
+            let note = (self.det.fill_state(id) == FillState::NotFilled).then_some(
+                "never changed from its first value while the car drove: not filled by LMU for this \
+                 car/version, withheld (A-LMU-065)",
+            );
+            changed |= capability::set_note(map, id, note);
+        }
         let hybrid_note = (caps.supports_hybrid == Some(false))
             .then_some("car reports no hybrid system (electric motor state unavailable)");
         for id in capability::HYBRID_GATED {
