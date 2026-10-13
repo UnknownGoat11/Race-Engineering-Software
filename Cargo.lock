@@ -4498,6 +4498,16 @@ dependencies = [
 [[package]]
 name = "synthetic"
 version = "0.1.0"
+dependencies = [
+ "bytes",
+ "protocol",
+ "rand 0.9.5",
+ "rand_chacha",
+ "telemetry-model",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "system-deps"
