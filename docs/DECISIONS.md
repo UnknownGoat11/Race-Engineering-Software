@@ -108,6 +108,28 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
   uPlot (canvas, ~50 KB, handles 100k+ points at 60 FPS); track map is a custom canvas renderer.
 - **Tradeoffs:** Must be benchmarked (TEST_PLAN §perf); WebGL fallback if uPlot cannot hold 60 FPS.
 - **Date:** 2026-09-30
+- **Clarification (2026-10-14, graph review; additive, CONFIRMED by the owner 2026-10-14): graph series default to WebGL.**
+  Benchmarked with `apps/desktop/bench` (`pnpm bench:graph:prod`: production build, 4 graphs × 6 series ×
+  60 s window at 100 Hz, live; visible Chrome 155, 144 Hz display, dpr 1, 1604 × 905 px; 10 s per run, 3
+  interleaved repeats on a shared, noisy host; "long" = interval > 1.5 × median). uPlot did not hold 60 FPS, so
+  the WebGL fallback above applies. Every renderer draws the same per-device-pixel min/max decimation (spec §277),
+  so the engine, axes, cursor, readouts and gap rules do not change.
+  - Before the review: Canvas2D 49 FPS (p50 20.8 ms, p95 41.7 ms, 69–82 long of ~490 frames); alone 82 FPS but
+    alternating 7 / 28 ms (p95 27.8 ms, 210 long of 497). uPlot 39–44 FPS (p95 34.8 ms, JS 16–21 ms/frame).
+  - Root cause (Chrome traces): the GPU process, not JavaScript. Canvas2D and uPlot rasterise each stroked path
+    there (GPU main thread ~87 % / ~80 % busy at 60 batches/s), and the canvas rate limiter blocks the page
+    waiting for it ("GPU backpressure", ~0.6 s per 4 s), which is the 7 / 28 ms stutter. WebGL uploads the decimated
+    vertices once per repaint and draws line strips: GPU main thread ~48 % busy, no backpressure.
+  - After (60 batches/s, D-012): WebGL 144 FPS, interval p50 6.9 / p95 7.1 ms, 1–2 long of ~1 440, JS
+    p95 ~5 ms/frame, heap 19–32 MB. Canvas2D 74–144 FPS, p95 7.1–27.8 ms, up to 393 long. uPlot 67–101 FPS,
+    p95 14–28 ms, JS 11–17 ms/frame. Stress (a batch every display frame): WebGL 132–144 FPS (p95 7.1–13.9 ms),
+    Canvas2D 81–99 FPS (p95 21–28 ms, ~300 long), uPlot 50–62 FPS.
+  - Visual parity (bench `?parity=1`, dpr 1 and 1.25): WebGL against Canvas2D, at most 2 device px difference in
+    any column's drawn extent; one-row spikes kept; NaN rows and time gaps stay empty; steps, clipping and
+    dashed references match.
+  - WebGL switches to Canvas2D by itself when no context is available or the context is lost, and redraws the
+    last frame, so a graph never goes blank. Canvas2D and uPlot stay selectable (`renderer` prop). Series lines are
+    1 device px wide. Re-check in WebView2 (Tauri) before release.
 
 ## D-012 Rust→WebView data path: Tauri `Channel` with ≤60 Hz batches
 - **Chosen:** The UI bridge task batches canonical deltas and pushes them through a `tauri::ipc::Channel`

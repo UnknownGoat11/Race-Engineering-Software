@@ -72,6 +72,7 @@
   --graph-axis: var(--color-border-strong);
   --graph-axis-text: var(--color-text-muted);
   --graph-cursor: var(--color-text);
+  --graph-cursor-text: var(--color-text-inverse);
   --graph-zoom-fill: #4c9dff26;
   --graph-zoom-stroke: var(--color-accent);
   --graph-marker-sector: var(--color-text-dim);
