@@ -4,11 +4,15 @@ import { unitAxisDisplay } from '../lib/units';
 import { RecordingContext } from '../test/recordingContext';
 import { buildYAxes, computeLayout } from './layout';
 import {
+  BREAK_TICK_HEIGHT_CSS,
   CURRENT_LABEL,
   CURRENT_STALE_LABEL,
   CURRENT_DEGRADED_LABEL,
   FIXED_SCALE_SUFFIX,
   GAP_LABEL,
+  MIN_BREAK_WIDTH_CSS,
+  OFF_SCALE_MARK_CSS,
+  OFF_SCALE_SUFFIX,
   drawOverlay,
   drawUnderlay,
   type GraphColors,
@@ -28,6 +32,7 @@ const COLORS: GraphColors = {
   currentCarStale: 'carStale',
   gapFill: 'gapFill',
   gapText: 'gapText',
+  errorText: 'errorText',
 };
 
 const SPEED = unitAxisDisplay(Unit.MetrePerSecond);
@@ -42,8 +47,10 @@ function scene(extra: Partial<OverlayScene> = {}): OverlayScene {
     xTitle: 'Session time',
     yAxes: buildYAxes([{ display: SPEED, label: 'Speed', color: 'speedColor', extent: { min: 0, max: 50 } }], {}, layout.plot.height),
     gaps: [],
+    valueBreaks: [],
     markers: [],
     current: null,
+    staleSeries: [],
     cursor: null,
     zoomBox: null,
     emptyText: null,
@@ -125,24 +132,24 @@ describe('drawOverlay', () => {
 
   it('draws the current-car marker, dashed and labelled STALE when the feed is stale (spec §82)', () => {
     const live = new RecordingContext();
-    drawOverlay(live, scene({ current: { x: 80, stale: false, degraded: false } }));
+    drawOverlay(live, scene({ current: { x: 80, t: 0, stale: false, degraded: false } }));
     expect(live.texts()).toContain(CURRENT_LABEL);
     expect(live.ops('stroke').find((c) => c.style === 'car')?.dash).toEqual([]);
 
     const stale = new RecordingContext();
-    drawOverlay(stale, scene({ current: { x: 80, stale: true, degraded: false } }));
+    drawOverlay(stale, scene({ current: { x: 80, t: 0, stale: true, degraded: false } }));
     expect(stale.texts()).toContain(CURRENT_STALE_LABEL);
     expect(stale.ops('stroke').find((c) => c.style === 'carStale')?.dash).toEqual([3, 3]);
     expect(stale.ops('stroke').some((c) => c.style === 'car')).toBe(false);
 
     const degraded = new RecordingContext();
-    drawOverlay(degraded, scene({ current: { x: 80, stale: false, degraded: true } }));
+    drawOverlay(degraded, scene({ current: { x: 80, t: 0, stale: false, degraded: true } }));
     expect(degraded.texts()).toContain(CURRENT_DEGRADED_LABEL);
   });
 
   it('does not draw a current-car marker outside the visible range', () => {
     const ctx = new RecordingContext();
-    drawOverlay(ctx, scene({ current: { x: 150, stale: false, degraded: false } }));
+    drawOverlay(ctx, scene({ current: { x: 150, t: 0, stale: false, degraded: false } }));
     expect(ctx.texts()).not.toContain(CURRENT_LABEL);
   });
 
@@ -156,7 +163,7 @@ describe('drawOverlay', () => {
 
   it('shows the empty text and no x ticks without a range', () => {
     const ctx = new RecordingContext();
-    drawOverlay(ctx, scene({ xRange: null, emptyText: 'NO DATA', current: { x: 1, stale: false, degraded: false } }));
+    drawOverlay(ctx, scene({ xRange: null, emptyText: 'NO DATA', current: { x: 1, t: 0, stale: false, degraded: false } }));
     expect(ctx.texts()).toContain('NO DATA');
     expect(ctx.texts()).not.toContain('0:50');
     expect(ctx.texts()).not.toContain(CURRENT_LABEL);
@@ -168,5 +175,43 @@ describe('drawOverlay', () => {
     const box = ctx.ops('fillRect').find((c) => c.style === 'zoomFill');
     expect(box?.args[0]).toBe(300);
     expect(box?.args[2]).toBe(100);
+  });
+});
+
+describe('break visibility (silent-failure M2)', () => {
+  it('draws a gap narrower than a pixel at least MIN_BREAK_WIDTH_CSS wide', () => {
+    const ctx = new RecordingContext();
+    // 0.01 s at 7 px/s = 0.07 px.
+    drawUnderlay(ctx, scene({ gaps: [{ min: 50, max: 50.01 }] }));
+    const band = ctx.ops('fillRect').find((c) => c.style === 'gapFill');
+    expect(band?.args[2]).toBeCloseTo(MIN_BREAK_WIDTH_CSS, 9);
+  });
+
+  it('marks each value break of a series with a tick in its colour', () => {
+    const ctx = new RecordingContext();
+    drawOverlay(ctx, scene({ valueBreaks: [{ color: 'speedColor', ranges: [{ min: 20, max: 20 }] }] }));
+    const tick = ctx.ops('fillRect').find((c) => c.style === 'speedColor');
+    expect(tick).toBeDefined();
+    expect(tick?.args[2]).toBeCloseTo(MIN_BREAK_WIDTH_CSS, 9);
+    expect(tick?.args[3]).toBe(BREAK_TICK_HEIGHT_CSS);
+  });
+});
+
+describe('off-scale marking (silent-failure M7)', () => {
+  it('marks a fixed axis that clips visible data in its title and at the clipped end', () => {
+    const ctx = new RecordingContext();
+    const layout = computeLayout(852, 200, 1, 0);
+    const yAxes = buildYAxes(
+      [{ display: SPEED, label: 'Speed', color: 'axisColor', extent: { min: 0, max: 100 } }],
+      { [`${SPEED.label}|${SPEED.factor}|number`]: { mode: 'fixed', min: 0, max: 100 } },
+      layout.plot.height,
+    );
+    expect(yAxes[0]?.offScale).toBe('above');
+    drawOverlay(ctx, scene({ yAxes }));
+    expect(ctx.texts()).toContain(`${SPEED.label}${FIXED_SCALE_SUFFIX}${OFF_SCALE_SUFFIX}`);
+    const bars = ctx.ops('fillRect').filter((c) => c.style === 'axisColor');
+    expect(bars).toHaveLength(1);
+    expect(bars[0]?.args[1]).toBe(layout.plot.top);
+    expect(bars[0]?.args.slice(2)).toEqual([OFF_SCALE_MARK_CSS.width, OFF_SCALE_MARK_CSS.height]);
   });
 });

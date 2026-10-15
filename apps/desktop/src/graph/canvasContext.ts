@@ -35,14 +35,24 @@ export interface Canvas2DLike {
 /** Obtains a 2D context for a canvas; injectable so tests can record drawing. */
 export type ContextFactory = (canvas: HTMLCanvasElement) => Canvas2DLike | null;
 
-/** The browser's 2D context of `canvas` (null where canvas is unsupported, e.g. jsdom). */
+/**
+ * The browser's 2D context of `canvas`, or null where none is available (jsdom; a canvas too large at a high
+ * device pixel ratio; a context limit). A missing context is logged with the canvas size (silent-failure M4); the
+ * engine then shows the graph as unavailable instead of a plot without its axes and STALE markers. Tests inject a
+ * recording context instead.
+ */
 export const browserContext: ContextFactory = (canvas) => {
+  let ctx: CanvasRenderingContext2D | null = null;
+  let error: unknown = null;
   try {
-    return canvas.getContext('2d');
-  } catch {
-    // jsdom throws "not implemented"; a graph without a context simply draws nothing.
-    return null;
+    ctx = canvas.getContext('2d');
+  } catch (e: unknown) {
+    error = e;
   }
+  if (ctx === null) {
+    console.error('[graph] 2D canvas context unavailable', { width: canvas.width, height: canvas.height }, error);
+  }
+  return ctx;
 };
 
 /**

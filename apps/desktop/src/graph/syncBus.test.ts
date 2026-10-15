@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GraphSyncGroup, type SyncEvent } from './syncBus';
+import { GraphSyncGroup, SyncGroupMismatchError, type SyncEvent } from './syncBus';
 import { liveView } from './view';
 
 describe('GraphSyncGroup', () => {
@@ -62,3 +62,37 @@ describe('GraphSyncGroup', () => {
     expect(group.size).toBe(1);
   });
 });
+
+describe('GraphSyncGroup safety (silent-failure M6, L4)', () => {
+  it('refuses a member whose x semantics differ, and forgets them when the group empties', () => {
+    const group = new GraphSyncGroup();
+    const offA = group.subscribe(() => undefined, 'time|live');
+    expect(group.axis).toBe('time|live');
+    expect(() => group.subscribe(() => undefined, 'lapDistance|live')).toThrow(SyncGroupMismatchError);
+    expect(() => group.subscribe(() => undefined, 'time|recording')).toThrow(SyncGroupMismatchError);
+    expect(group.size).toBe(1);
+    const offB = group.subscribe(() => undefined, 'time|live');
+    offA();
+    offB();
+    expect(group.axis).toBeNull();
+    group.subscribe(() => undefined, 'lapDistance|live');
+    expect(group.axis).toBe('lapDistance|live');
+  });
+
+  it('delivers an event to every listener even when one throws, and logs the failure', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const group = new GraphSyncGroup();
+    const seen: string[] = [];
+    group.subscribe(() => {
+      throw new Error('listener bug');
+    });
+    group.subscribe((e) => seen.push(e.kind));
+    expect(() => {
+      group.setCursor('a', 5);
+    }).not.toThrow();
+    expect(seen).toEqual(['cursor']);
+    expect(errors).toHaveBeenCalledWith('[graph] sync group listener failed', expect.objectContaining({ event: 'cursor', source: 'a' }), expect.any(Error));
+    errors.mockRestore();
+  });
+});
+

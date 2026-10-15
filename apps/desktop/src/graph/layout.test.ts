@@ -13,6 +13,7 @@ import {
   computeLayout,
   tickTarget,
   type AxisMember,
+  offScaleOf,
 } from './layout';
 
 const SPEED = unitAxisDisplay(Unit.MetrePerSecond);
@@ -111,3 +112,24 @@ describe('computeLayout', () => {
     expect(tickTarget(10, 36)).toBe(2);
   });
 });
+
+describe('off-scale detection (silent-failure M7)', () => {
+  it('reports which side of a fixed range the visible data exceeds', () => {
+    const r = { min: 0, max: 100 };
+    expect(offScaleOf(r, { min: 10, max: 90 })).toBeNull();
+    expect(offScaleOf(r, { min: 10, max: 140 })).toBe('above');
+    expect(offScaleOf(r, { min: -5, max: 90 })).toBe('below');
+    expect(offScaleOf(r, { min: -5, max: 140 })).toBe('both');
+    expect(offScaleOf(r, null)).toBeNull();
+  });
+
+  it('flags only fixed axes', () => {
+    const d = unitAxisDisplay(Unit.Pascal);
+    const members = [{ display: d, label: 'Brake pressure', color: 'c', extent: { min: 0, max: 14e6 } }];
+    const key = `${d.label}|${d.factor}|${d.tickStyle}`;
+    expect(buildYAxes(members, {}, 200)[0]?.offScale).toBeNull();
+    const fixed = buildYAxes(members, { [key]: { mode: 'fixed', min: 0, max: 14e6 * d.factor / 2 } }, 200)[0];
+    expect(fixed?.offScale).toBe('above');
+  });
+});
+

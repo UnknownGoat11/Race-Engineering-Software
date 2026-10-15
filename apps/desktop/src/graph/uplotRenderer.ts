@@ -15,11 +15,22 @@
  *
  * The module is loaded with a dynamic `import('uplot')`: uPlot reads `matchMedia` at module load, and a lazy
  * chunk keeps it out of code paths that never draw a graph. Frames rendered before it loaded are drawn when it
- * arrives. Drawing happens synchronously inside `uPlot.batch` (no microtask), so frame timing covers it.
+ * arrives. Drawing happens synchronously inside `uPlot.batch` (no microtask), so frame timing covers it. If the
+ * chunk fails to load (e.g. a missing asset in a packaged build), the failure is logged and a Canvas2D renderer
+ * takes over the layer; `status()` reports it, so the graph never just stays blank (silent-failure M5).
  */
 import type uPlot from 'uplot';
 import { tracePolyline } from './decimate';
-import { REFERENCE_DASH_CSS, SERIES_LINE_WIDTH_DEVICE_PX, type RenderFrame, type RenderSeries, type SeriesRenderer } from './renderer';
+import { Canvas2DRenderer } from './canvas2dRenderer';
+import {
+  REFERENCE_DASH_CSS,
+  SERIES_LINE_WIDTH_DEVICE_PX,
+  okStatus,
+  type RenderFrame,
+  type RenderSeries,
+  type RendererStatus,
+  type SeriesRenderer,
+} from './renderer';
 import { visibleRows } from './sample';
 import { linearAffine } from './scale';
 import type { GraphWindow, XRange } from './types';
@@ -94,6 +105,9 @@ export function fillAlignedData(
 
 type UPlotConstructor = typeof uPlot;
 
+/** The missing-path-builder warning is logged once per page. */
+let missingPathsLogged = false;
+
 /** What a group draws; also read by the traced path builder while uPlot redraws. */
 interface GroupFrame {
   window: GraphWindow;
@@ -133,13 +147,26 @@ export class UplotRenderer implements SeriesRenderer {
   #pending: RenderFrame | null = null;
   #destroyed = false;
   #dpr = 1;
-  /** Settles once uPlot has loaded (or failed to load, which is logged). */
+  #host: HTMLElement | null = null;
+  #size: readonly [number, number, number] = [0, 0, 1];
+  readonly #makeFallback: () => SeriesRenderer;
+  #fallback: SeriesRenderer | null = null;
+  #status: RendererStatus = okStatus('uplot');
+  readonly #statusListeners = new Set<() => void>();
+  /** Settles once uPlot has loaded (or failed to load, which is logged and switches to the fallback). */
   readonly ready: Promise<void>;
 
-  /** `load` resolves the uPlot constructor (injectable for tests); default: dynamic import of 'uplot'. */
-  constructor(load: () => Promise<UPlotConstructor> = async () => (await import('uplot')).default) {
+  /**
+   * `load` resolves the uPlot constructor (injectable for tests); default: dynamic import of 'uplot'. `fallback`
+   * draws when uPlot cannot be loaded (default: a Canvas2D renderer).
+   */
+  constructor(
+    load: () => Promise<UPlotConstructor> = async () => (await import('uplot')).default,
+    fallback: () => SeriesRenderer = () => new Canvas2DRenderer(),
+  ) {
     this.#layer = document.createElement('div');
     this.#layer.className = 'telemetry-graph__layer telemetry-graph__uplot';
+    this.#makeFallback = fallback;
     this.ready = load().then(
       (ctor) => {
         if (this.#destroyed) return;
@@ -149,24 +176,62 @@ export class UplotRenderer implements SeriesRenderer {
         if (frame !== null) this.render(frame);
       },
       (error: unknown) => {
-        // Without uPlot nothing can be drawn; the failure must be visible to developers, never silent.
-        console.error('uPlot failed to load', error);
+        console.error('[graph] uPlot failed to load; drawing with Canvas2D', error);
+        if (!this.#destroyed) this.#useFallback(`uPlot failed to load: ${error instanceof Error ? error.message : String(error)}`);
       },
     );
   }
 
+  status(): RendererStatus {
+    return this.#status;
+  }
+
+  onStatusChange(listener: () => void): () => void {
+    this.#statusListeners.add(listener);
+    return () => {
+      this.#statusListeners.delete(listener);
+    };
+  }
+
   mount(host: HTMLElement): void {
+    this.#host = host;
     host.appendChild(this.#layer);
   }
 
   setSize(widthCss: number, heightCss: number, dpr: number): void {
+    this.#size = [widthCss, heightCss, dpr];
+    if (this.#fallback !== null) {
+      this.#fallback.setSize(widthCss, heightCss, dpr);
+      return;
+    }
     // uPlot sizes its canvases for the device pixel ratio itself; the ratio only sets the line width here.
     this.#dpr = dpr > 0 ? dpr : 1;
     this.#layer.style.width = `${widthCss}px`;
     this.#layer.style.height = `${heightCss}px`;
   }
 
+  /** Replaces uPlot by the fallback renderer for good; the engine redraws from a fresh read when told. */
+  #useFallback(reason: string): void {
+    this.#pending = null;
+    this.#layer.remove();
+    const fallback = this.#makeFallback();
+    this.#fallback = fallback;
+    if (this.#host !== null) fallback.mount(this.#host);
+    const [w, h, dpr] = this.#size;
+    fallback.setSize(w, h, dpr);
+    const inner = fallback.status?.() ?? okStatus(fallback.kind);
+    this.#status =
+      inner.state === 'failed'
+        ? { activeKind: inner.activeKind, state: 'failed', reason: `${reason}; fallback: ${inner.reason ?? 'failed'}` }
+        : { activeKind: inner.activeKind, state: 'degraded', reason };
+    for (const listener of [...this.#statusListeners]) listener();
+  }
+
   render(frame: RenderFrame): void {
+    if (this.#fallback !== null) {
+      this.#fallback.render(frame);
+      return;
+    }
     const ctor = this.#UPlot;
     if (ctor === null) {
       this.#pending = frame;
@@ -201,6 +266,9 @@ export class UplotRenderer implements SeriesRenderer {
     this.#groups = [];
     this.#pending = null;
     this.#layer.remove();
+    this.#fallback?.destroy();
+    this.#fallback = null;
+    this.#statusListeners.clear();
   }
 
   #createGroup(
@@ -219,14 +287,19 @@ export class UplotRenderer implements SeriesRenderer {
     });
     const linear = ctor.paths.linear?.();
     const stepped = ctor.paths.stepped?.({ align: 1 });
+    if ((linear === undefined || stepped === undefined) && !missingPathsLogged) {
+      missingPathsLogged = true;
+      console.error('[graph] uPlot build lacks paths.linear / paths.stepped; tracing series paths instead');
+    }
     const buffers = alignedBuffers(series.length);
     const state: GroupFrame = { window, series, start: 0, end: 0, xRange: frame.xRange, maxGapT: frame.maxGapT };
     const pathsFor = (step: boolean): uPlot.Series.PathBuilder => {
       const base = step ? stepped : linear;
       return (u, seriesIdx, idx0, idx1) => {
         // uPlot series 0 is x, so series k of the group is uPlot series k + 1.
-        if (!buffers.sorted) return tracedPaths(u, state, seriesIdx - 1, step);
-        return base === undefined ? null : base(u, seriesIdx, idx0, idx1);
+        // Without uPlot's own path builders (a uPlot build without them) trace the paths ourselves, never draw nothing.
+        if (!buffers.sorted || base === undefined) return tracedPaths(u, state, seriesIdx - 1, step);
+        return base(u, seriesIdx, idx0, idx1);
       };
     };
     const options: uPlot.Options = {

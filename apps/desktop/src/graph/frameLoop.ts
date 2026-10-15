@@ -11,13 +11,15 @@ export interface FrameLoopHost {
   readonly requestFrame: (callback: () => void) => number;
   readonly cancelFrame: (handle: number) => void;
   /**
-   * Receives an error thrown by a callback. Default: rethrown from a microtask, so it reaches the console and
-   * `window.onerror` without stopping the other callbacks of the frame.
+   * Receives an error thrown by a callback. Default: logged with `console.error` and rethrown from a microtask,
+   * so it also reaches `window.onerror`, without stopping the other callbacks of the frame. (Graph engines catch
+   * their own frame errors and show them; this only sees errors of other callbacks.)
    */
   readonly reportError?: (error: unknown) => void;
 }
 
 function rethrowLater(error: unknown): void {
+  console.error('[graph] frame callback failed', error);
   queueMicrotask(() => {
     throw error instanceof Error ? error : new Error(String(error));
   });

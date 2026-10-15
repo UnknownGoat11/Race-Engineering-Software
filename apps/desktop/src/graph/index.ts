@@ -8,14 +8,21 @@ export { TelemetryGraph, type TelemetryGraphProps } from './TelemetryGraph';
 export {
   DEFAULT_LIVE_SPAN_S,
   DEFAULT_MAX_GAP_S,
+  GRAPH_ERROR_TEXT,
   GraphEngine,
   NO_DATA_TEXT,
   SERIES_PALETTE_SIZE,
+  THEME_FALLBACK,
+  cssColorIsValid,
   referenceKey,
   seriesColorSlot,
   seriesKey,
   type AxisSummary,
+  type FeedState,
   type GraphConfig,
+  type GraphHealth,
+  type GraphReadout,
+  type ReadoutKind,
   type GraphEngineOptions,
   type GraphSnapshot,
 } from './engine';
@@ -27,14 +34,15 @@ export {
   type LiveRingSourceOptions,
 } from './liveSource';
 export { StaticSource, type StaticSourceData } from './staticSource';
-export { GraphSyncGroup, type SyncEvent, type SyncListener } from './syncBus';
+export { GraphSyncGroup, SyncGroupMismatchError, type SyncEvent, type SyncListener } from './syncBus';
 export { createFrameLoop, sharedFrameLoop, type FrameLoopHost } from './frameLoop';
 export { DurationRecorder, percentile, summarize, type DurationSummary } from './frameStats';
-export { Canvas2DRenderer, drawSeriesFrame, type Canvas2DRendererOptions } from './canvas2dRenderer';
+export { Canvas2DRenderer, INVALID_COLOR_STROKE, drawSeriesFrame, type Canvas2DRendererOptions } from './canvas2dRenderer';
 export {
   WebGLRenderer,
   StripBuilder,
   browserColorParser,
+  canvasAcceptsColor,
   type ColorParser,
   type Rgba,
   type WebGLRendererOptions,
@@ -43,19 +51,22 @@ export { UplotRenderer, alignedBuffers, fillAlignedData, type AlignedBuffers } f
 export {
   REFERENCE_DASH_CSS,
   SERIES_LINE_WIDTH_DEVICE_PX,
+  okStatus,
   type PlotRect,
+  type RendererStatus,
   type RenderFrame,
   type RenderSeries,
   type SeriesRenderer,
 } from './renderer';
-export { axisKey, type YAxisModel } from './layout';
-export { GRAPH_SOURCE_LABELS, graphSourceText, seriesSourceLabel, type GraphSourceLabel } from './provenance';
+export { axisKey, offScaleOf, type OffScale, type YAxisModel } from './layout';
+export { GRAPH_SOURCE_LABELS, checkDataKind, graphSourceText, isLmuData, seriesSourceLabel, type GraphSourceLabel } from './provenance';
 export { X_AXIS_SPECS, formatX, xAxisTitle, type XAxisSpec } from './xAxis';
 export { liveView, reduceView, resolveRange, type ViewAction, type ViewBounds, type ViewState } from './view';
 export {
   DEFAULT_RENDERER,
   X_AXIS_MODES,
   type CurrentPosition,
+  type DataKind,
   type DataOrigin,
   type GraphDataSource,
   type GraphMarker,

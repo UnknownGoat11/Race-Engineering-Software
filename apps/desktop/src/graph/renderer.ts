@@ -43,9 +43,33 @@ export interface RenderFrame {
   readonly series: readonly RenderSeries[];
 }
 
+/**
+ * What a renderer can currently do (silent-failure M1, M5): 'ok'; 'degraded' = it draws correctly but with a
+ * fallback (e.g. WebGL lost, Canvas2D draws instead); 'failed' = it cannot draw the series at all.
+ */
+export interface RendererStatus {
+  /** The renderer actually drawing ('canvas2d' after a WebGL or uPlot fallback). */
+  readonly activeKind: RendererKind;
+  readonly state: 'ok' | 'degraded' | 'failed';
+  /** Why it is not 'ok' (shader log, context lost, load error …), or null. */
+  readonly reason: string | null;
+}
+
+/** The status of a renderer that has no failure modes of its own. */
+export function okStatus(kind: RendererKind): RendererStatus {
+  return { activeKind: kind, state: 'ok', reason: null };
+}
+
 /** A series renderer (see the module comment). Every method must be cheap when nothing changed. */
 export interface SeriesRenderer {
   readonly kind: RendererKind;
+  /** Current status; absent = always 'ok'. */
+  status?(): RendererStatus;
+  /**
+   * Calls `listener` whenever `status()` changes (fallback, failure). The engine then redraws from a fresh read
+   * (a renderer never replays data it was given earlier) and shows the state. Returns the unsubscribe function.
+   */
+  onStatusChange?(listener: () => void): () => void;
   /** Attaches the renderer's layer to `host` (an absolutely positioned element covering the drawing area). */
   mount(host: HTMLElement): void;
   /** Size of the layer in CSS pixels and the device pixel ratio. */

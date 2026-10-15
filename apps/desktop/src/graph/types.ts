@@ -4,6 +4,7 @@
  * Units: x values are in the x axis mode's internal unit (seconds or metres or lap fraction), y values in each
  * channel's internal (SI) unit; conversion to display units happens only through `lib/units.ts`.
  */
+import type { ChannelSample } from '../telemetry/store';
 
 /** X axis modes (spec §62). The x value of every row comes from the caller's data source. */
 export type XAxisMode = 'time' | 'lapTime' | 'lapDistance' | 'lapFraction';
@@ -19,6 +20,13 @@ export interface XRange {
 
 /** Where a graph's data comes from (spec §317 "Source: …"). */
 export type DataOrigin = 'live' | 'recording';
+
+/**
+ * What the rows are: 'lmu' = telemetry read from Le Mans Ultimate (live or recorded), 'synthetic' = generated test
+ * data (development / demo mode, spec §108–§109). Fail-safe: only a source that states exactly 'lmu' is ever
+ * labelled as LMU data; anything else is labelled synthetic or unverified (provenance.ts).
+ */
+export type DataKind = 'lmu' | 'synthetic';
 
 /**
  * The rows a source returns for one visible range: shared x and time columns plus one value column per
@@ -41,6 +49,8 @@ export interface GraphWindow {
 /** The current car position on the x axis (spec §82) and the freshness of the feed behind it (spec §126). */
 export interface CurrentPosition {
   readonly x: number;
+  /** Session time (s) of the newest row. */
+  readonly t: number;
   /** The feed is STALE (or has no data): the position is not current. */
   readonly stale: boolean;
   /** The feed is DEGRADED: the position is late but still shown. */
@@ -50,11 +60,8 @@ export interface CurrentPosition {
 /** Supplies graph rows. Implementations: `LiveRingSource` (TelemetryStore ring) and `StaticSource` (arrays). */
 export interface GraphDataSource {
   readonly origin: DataOrigin;
-  /**
-   * The rows are generated test data (development / demo mode, spec §108–§109): labelled "Synthetic Test Data",
-   * never as LMU telemetry or a session recording. Absent = false.
-   */
-  readonly synthetic?: boolean;
+  /** What the rows are (required: there is no default, so a source can never be LMU data by omission). */
+  readonly dataKind: DataKind;
   /** Calls `listener` when data or freshness changed; returns the unsubscribe function. */
   subscribe(listener: () => void): () => void;
   /** X extent of the available rows, or null when there are none. */
@@ -66,6 +73,13 @@ export interface GraphDataSource {
   read(range: XRange, channelIds: readonly number[]): GraphWindow;
   /** Current car position for live sources; null for recordings or before data. */
   current(): CurrentPosition | null;
+  /**
+   * The newest sample of `channelId` exactly as the application's other readouts show it (live sources: the
+   * TelemetryStore's `getSample`, so freshness is judged per channel and frequency class, with in-band quality,
+   * like `ValueReadout`); null for recordings. Graph readouts of the newest data and the stale marking of a
+   * series come from here, never from the ring rows, which repeat a stale channel's last value.
+   */
+  latest(channelId: number): ChannelSample | null;
 }
 
 /** One plotted channel. */

@@ -83,6 +83,8 @@
   --graph-gap-fill: #ffffff0f;
   --graph-gap-text: var(--color-text-dim);
   --graph-reference: var(--color-text-muted);
+  /* Text of a graph that cannot show current data (frame error, renderer failure). */
+  --graph-error-text: var(--color-error);
 
   /* Typography */
   --font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;

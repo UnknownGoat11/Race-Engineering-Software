@@ -56,6 +56,11 @@ export interface YAxisModel {
   readonly range: XRange | null;
   /** Ticks in display units for `range` (empty without range). */
   readonly ticks: Ticks;
+  /**
+   * Where visible data of a FIXED axis lies outside its range and is clipped (silent-failure M7): 'above',
+   * 'below', 'both', or null (autoscaled, or everything inside).
+   */
+  readonly offScale: OffScale | null;
   readonly color: string;
 }
 
@@ -64,6 +69,17 @@ export interface GraphLayout {
   readonly width: number;
   readonly height: number;
   readonly plot: PlotRect;
+}
+
+/** Side(s) of a fixed axis range that visible data exceeds. */
+export type OffScale = 'above' | 'below' | 'both';
+
+/** Where `extent` exceeds `range` (both internal units), or null. */
+export function offScaleOf(range: XRange | null, extent: XRange | null): OffScale | null {
+  if (range === null || extent === null) return null;
+  const above = extent.max > range.max;
+  const below = extent.min < range.min;
+  return above && below ? 'both' : above ? 'above' : below ? 'below' : null;
 }
 
 /** Key of the axis a display belongs to. */
@@ -123,6 +139,7 @@ export function buildYAxes(
       setting,
       range,
       ticks: range === null ? NO_TICKS : niceTicks(range.min * f, range.max * f, target),
+      offScale: setting.mode === 'fixed' ? offScaleOf(range, extent) : null,
       color: first.color,
     });
     index += 1;

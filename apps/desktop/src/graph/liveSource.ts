@@ -12,22 +12,56 @@
  * x never steps back (beyond jitter), the visible rows are found by binary search on x; otherwise (the car
  * reversed) the whole current lap within the ring is returned and the plot clips it to the range.
  */
-import { FrequencyClass } from '../generated/channels';
-import type { TelemetryStore } from '../telemetry/store';
-import type { CurrentPosition, GraphDataSource, GraphWindow, XAxisMode, XRange } from './types';
+import { FrequencyClass, Unit } from '../generated/channels';
+import { channelDef } from '../telemetry/registry';
+import type { ChannelSample, TelemetryStore } from '../telemetry/store';
+import { checkDataKind } from './provenance';
+import type { CurrentPosition, DataKind, GraphDataSource, GraphWindow, XAxisMode, XRange } from './types';
 
-/** Options of a live source. */
-export interface LiveRingSourceOptions {
-  readonly xMode: XAxisMode;
-  /** Channel giving x on lap axes (e.g. `ch.LAP_DISTANCE`, `ch.LAP_PROGRESS`, `ch.LAP_TIME`); unused on 'time'. */
-  readonly xChannel?: number;
+/** Options shared by every live source. */
+interface LiveRingSourceCommon {
   /** Frequency class whose freshness marks the current-car marker stale / degraded (default Physics). */
   readonly freshnessClass?: FrequencyClass;
   /**
-   * The feed is generated test data (development / demo mode, spec §108–§109), so it is labelled "Synthetic Test
-   * Data" and never as LMU telemetry. Default false.
+   * What the store holds: 'lmu' for the bridge's LMU telemetry, 'synthetic' for generated test data (labelled
+   * "Synthetic Test Data", spec §108–§109). Required, no default: a forgotten flag is a type error, never a
+   * synthetic feed labelled as LMU (silent-failure H2). The store itself does not carry the data origin yet.
    */
-  readonly synthetic?: boolean;
+  readonly dataKind: DataKind;
+}
+
+/**
+ * Options of a live source. A lap axis needs the channel that gives x (silent-failure M3: without one the graph
+ * would show NO DATA forever while the feed is live), and that channel's unit must fit the mode.
+ */
+export type LiveRingSourceOptions =
+  | (LiveRingSourceCommon & { readonly xMode: 'time'; readonly xChannel?: undefined })
+  | (LiveRingSourceCommon & {
+      readonly xMode: Exclude<XAxisMode, 'time'>;
+      /** Channel giving x: `ch.LAP_DISTANCE` (lapDistance), `ch.LAP_PROGRESS` (lapFraction), `ch.LAP_TIME` (lapTime). */
+      readonly xChannel: number;
+    });
+
+/** Unit an x channel must have on each lap axis. */
+const LAP_AXIS_UNITS: Readonly<Record<Exclude<XAxisMode, 'time'>, Unit>> = {
+  lapTime: Unit.Second,
+  lapDistance: Unit.Metre,
+  lapFraction: Unit.Fraction,
+};
+
+/** Throws a TypeError when a lap axis has no x channel, an unknown one, or one whose unit does not fit the mode. */
+function checkXChannel(mode: XAxisMode, xChannel: unknown): number | null {
+  if (mode === 'time') return null;
+  if (typeof xChannel !== 'number' || !Number.isInteger(xChannel)) {
+    throw new TypeError(`LiveRingSource on '${mode}' needs an xChannel (got ${String(xChannel)})`);
+  }
+  const def = channelDef(xChannel);
+  if (def === undefined) throw new TypeError(`LiveRingSource xChannel ${String(xChannel)} is not a known channel`);
+  const expected = LAP_AXIS_UNITS[mode];
+  if (def.unit !== expected) {
+    throw new TypeError(`LiveRingSource xChannel ${def.label} (${def.unit}) does not fit the '${mode}' axis (${expected})`);
+  }
+  return xChannel;
 }
 
 const INITIAL_ROWS = 1024;
@@ -156,7 +190,7 @@ class WindowBuffers implements GraphWindow {
 /** A GraphDataSource over the TelemetryStore live ring (see the module comment). */
 export class LiveRingSource implements GraphDataSource {
   readonly origin = 'live' as const;
-  readonly synthetic: boolean;
+  readonly dataKind: DataKind;
   readonly #store: TelemetryStore;
   readonly #timeAxis: boolean;
   readonly #xChannel: number | null;
@@ -178,9 +212,9 @@ export class LiveRingSource implements GraphDataSource {
   constructor(store: TelemetryStore, options: LiveRingSourceOptions) {
     this.#store = store;
     this.#timeAxis = options.xMode === 'time';
-    this.#xChannel = this.#timeAxis ? null : (options.xChannel ?? null);
+    this.#xChannel = checkXChannel(options.xMode, options.xChannel);
     this.#freshnessClass = options.freshnessClass ?? FrequencyClass.Physics;
-    this.synthetic = options.synthetic ?? false;
+    this.dataKind = checkDataKind(options.dataKind);
   }
 
   subscribe(listener: () => void): () => void {
@@ -221,8 +255,15 @@ export class LiveRingSource implements GraphDataSource {
       x = newest === null ? null : newest[1];
     }
     if (x === null) return null;
+    const t = ring.newestTime();
+    if (t === null) return null;
     const state = this.#store.getStreamState(this.#freshnessClass);
-    return { x, stale: state === 'stale' || state === 'noData', degraded: state === 'degraded' };
+    return { x, t, stale: state === 'stale' || state === 'noData', degraded: state === 'degraded' };
+  }
+
+  /** The store's own snapshot of the channel (same state rules as `ValueReadout`). */
+  latest(channelId: number): ChannelSample {
+    return this.#store.getSample(channelId);
   }
 
   #readTime(range: XRange, channelIds: readonly number[]): void {

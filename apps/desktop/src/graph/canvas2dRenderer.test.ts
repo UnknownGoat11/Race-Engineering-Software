@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RecordingContext, type RecordedCall } from '../test/recordingContext';
-import { Canvas2DRenderer, drawSeriesFrame } from './canvas2dRenderer';
+import { Canvas2DRenderer, INVALID_COLOR_STROKE, drawSeriesFrame } from './canvas2dRenderer';
 import type { RenderFrame, RenderSeries } from './renderer';
 import type { GraphWindow } from './types';
 
@@ -142,5 +142,37 @@ describe('Canvas2DRenderer', () => {
     expect(ctx.ops('stroke')).toHaveLength(1);
     renderer.destroy();
     expect(host.querySelector('canvas')).toBeNull();
+  });
+});
+
+describe('Canvas2D colour and context failures (silent-failure H5, M4)', () => {
+  /** A recording context that ignores invalid colours, as a real canvas does. */
+  function strictContext(): RecordingContext {
+    const ctx = new RecordingContext();
+    let stroke = '#000000';
+    Object.defineProperty(ctx, 'strokeStyle', {
+      get: () => stroke,
+      set: (css: string) => {
+        if (css.startsWith('#')) stroke = css;
+      },
+    });
+    return ctx;
+  }
+
+  it('never strokes a series with an invalid colour in the previous series\' colour', () => {
+    const ctx = strictContext();
+    const w = windowOf([0, 1]);
+    drawSeriesFrame(ctx, frame([series(w, [1, 2], { color: '#aa0000' }), series(w, [0, 1], { key: 'b', color: 'bogus' })]), 1);
+    const strokes = ctx.ops('stroke').map((c) => c.style);
+    expect(strokes).toEqual(['#aa0000', INVALID_COLOR_STROKE]);
+  });
+
+  it('reports a failed status when it has no 2D context', () => {
+    const renderer = new Canvas2DRenderer({ context: () => null });
+    const changes = vi.fn();
+    renderer.onStatusChange(changes);
+    renderer.mount(document.createElement('div'));
+    expect(renderer.status()).toMatchObject({ activeKind: 'canvas2d', state: 'failed' });
+    expect(changes).toHaveBeenCalledTimes(1);
   });
 });

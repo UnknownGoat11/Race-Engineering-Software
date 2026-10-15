@@ -5,7 +5,14 @@
  */
 import { browserContext, sizeCanvas, type Canvas2DLike, type ContextFactory } from './canvasContext';
 import { tracePolyline } from './decimate';
-import { REFERENCE_DASH_CSS, SERIES_LINE_WIDTH_DEVICE_PX, type RenderFrame, type SeriesRenderer } from './renderer';
+import {
+  REFERENCE_DASH_CSS,
+  SERIES_LINE_WIDTH_DEVICE_PX,
+  okStatus,
+  type RenderFrame,
+  type RendererStatus,
+  type SeriesRenderer,
+} from './renderer';
 import { visibleRows } from './sample';
 import { linearAffine } from './scale';
 
@@ -16,6 +23,12 @@ export interface Canvas2DRendererOptions {
 }
 
 const NO_DASH: number[] = [];
+/**
+ * Stroke set before each series' colour: an invalid colour assignment is ignored by the canvas, so without this
+ * the series would take the PREVIOUS series' colour and the legend swatch would point at the wrong trace
+ * (silent-failure H5). The engine validates its colour tokens; this is the last line of defence.
+ */
+export const INVALID_COLOR_STROKE = '#ffffff';
 
 /** Strokes `frame` into `ctx`, whose backing store is `dpr` device pixels per CSS pixel. Returns path commands. */
 export function drawSeriesFrame(ctx: Canvas2DLike, frame: RenderFrame, dpr: number): number {
@@ -39,6 +52,7 @@ export function drawSeriesFrame(ctx: Canvas2DLike, frame: RenderFrame, dpr: numb
     if (!(s.yRange.max > s.yRange.min)) continue;
     const { start, end } = visibleRows(s.window, xRange);
     if (end <= start) continue;
+    ctx.strokeStyle = INVALID_COLOR_STROKE;
     ctx.strokeStyle = s.color;
     ctx.setLineDash(s.dashed ? dash : NO_DASH);
     ctx.beginPath();
@@ -70,6 +84,8 @@ export class Canvas2DRenderer implements SeriesRenderer {
   readonly #context: ContextFactory;
   #ctx: Canvas2DLike | null = null;
   #dpr = 1;
+  #status: RendererStatus = okStatus('canvas2d');
+  readonly #statusListeners = new Set<() => void>();
 
   constructor(options: Canvas2DRendererOptions = {}) {
     this.#canvas = document.createElement('canvas');
@@ -77,9 +93,26 @@ export class Canvas2DRenderer implements SeriesRenderer {
     this.#context = options.context ?? browserContext;
   }
 
+  status(): RendererStatus {
+    return this.#status;
+  }
+
+  onStatusChange(listener: () => void): () => void {
+    this.#statusListeners.add(listener);
+    return () => {
+      this.#statusListeners.delete(listener);
+    };
+  }
+
   mount(host: HTMLElement): void {
     host.appendChild(this.#canvas);
     this.#ctx = this.#context(this.#canvas);
+    const next: RendererStatus =
+      this.#ctx === null ? { activeKind: 'canvas2d', state: 'failed', reason: 'no 2D canvas context for the series' } : okStatus('canvas2d');
+    if (next.state !== this.#status.state) {
+      this.#status = next;
+      for (const listener of [...this.#statusListeners]) listener();
+    }
   }
 
   setSize(widthCss: number, heightCss: number, dpr: number): void {
@@ -98,5 +131,6 @@ export class Canvas2DRenderer implements SeriesRenderer {
   destroy(): void {
     this.#canvas.remove();
     this.#ctx = null;
+    this.#statusListeners.clear();
   }
 }

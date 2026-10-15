@@ -3,7 +3,8 @@
  * memory. Data is copied once into Float64Arrays at construction; `read` returns zero-copy subarray views of
  * the rows a range needs.
  */
-import type { DataOrigin, GraphDataSource, GraphWindow, XRange } from './types';
+import { checkDataKind } from './provenance';
+import type { DataKind, DataOrigin, GraphDataSource, GraphWindow, XRange } from './types';
 
 /** Columns of a static source. `ts` defaults to `xs` (a time axis). */
 export interface StaticSourceData {
@@ -14,8 +15,8 @@ export interface StaticSourceData {
   readonly columns: ReadonlyMap<number, ArrayLike<number | null>>;
   /** Default 'recording'. */
   readonly origin?: DataOrigin;
-  /** Generated test data (labelled "Synthetic Test Data", spec §108); default false. */
-  readonly synthetic?: boolean;
+  /** What the rows are ('synthetic' is labelled "Synthetic Test Data", spec §108); required, no default. */
+  readonly dataKind: DataKind;
 }
 
 function toFloat64(values: ArrayLike<number | null>, length: number): Float64Array {
@@ -66,7 +67,7 @@ class SliceWindow implements GraphWindow {
 /** Immutable rows from arrays (see the module comment). */
 export class StaticSource implements GraphDataSource {
   readonly origin: DataOrigin;
-  readonly synthetic: boolean;
+  readonly dataKind: DataKind;
   readonly #xs: Float64Array;
   readonly #ts: Float64Array;
   readonly #columns: ReadonlyMap<number, Float64Array>;
@@ -76,7 +77,7 @@ export class StaticSource implements GraphDataSource {
   constructor(data: StaticSourceData) {
     const length = data.xs.length;
     this.origin = data.origin ?? 'recording';
-    this.synthetic = data.synthetic ?? false;
+    this.dataKind = checkDataKind(data.dataKind);
     this.#xs = toFloat64(data.xs, length);
     this.#ts = data.ts === undefined ? this.#xs : toFloat64(data.ts, length);
     this.#columns = new Map([...data.columns].map(([id, values]) => [id, toFloat64(values, length)] as const));
@@ -119,6 +120,11 @@ export class StaticSource implements GraphDataSource {
 
   /** Recordings have no current car position. */
   current(): null {
+    return null;
+  }
+
+  /** Recordings have no newest sample: their readouts exist only at a cursor. */
+  latest(): null {
     return null;
   }
 }

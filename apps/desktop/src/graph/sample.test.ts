@@ -38,6 +38,7 @@ describe('sampleAt on a time axis', () => {
     const speedValues = Array.from(times, (_, i) => ring.valueAt(ch.SPEED, i));
     const gearValues = Array.from(times, (_, i) => ring.valueAt(ch.GEAR, i));
     const source = new StaticSource({
+      dataKind: 'lmu',
       xs: times,
       columns: new Map([
         [ch.SPEED, speedValues],
@@ -60,7 +61,7 @@ describe('sampleAt on a time axis', () => {
   });
 
   it('returns null for an invalid maxGapT', () => {
-    const source = new StaticSource({ xs: [0, 1], columns: new Map([[1, [1, 2]]]) });
+    const source = new StaticSource({ dataKind: 'lmu', xs: [0, 1], columns: new Map([[1, [1, 2]]]) });
     const w = source.read(ALL, [1]);
     expect(sampleAt(w, column(w, 1), 0.5, false, Number.NaN)).toBeNull();
     expect(sampleAt(w, column(w, 1), 0.5, false, -1)).toBeNull();
@@ -70,6 +71,7 @@ describe('sampleAt on a time axis', () => {
 describe('sampleAt on a lap distance axis', () => {
   it('interpolates by x but applies the gap rule in time', () => {
     const source = new StaticSource({
+      dataKind: 'lmu',
       xs: [100, 200, 300],
       ts: [10, 11, 20],
       columns: new Map([[1, [1, 3, 5]]]),
@@ -85,6 +87,7 @@ describe('sampleAt on a lap distance axis', () => {
 
   it('uses the newest crossing when x is visited twice', () => {
     const source = new StaticSource({
+      dataKind: 'lmu',
       xs: [10, 20, 15, 25],
       ts: [0, 0.01, 0.02, 0.03],
       columns: new Map([[1, [1, 2, 7, 9]]]),
@@ -100,7 +103,7 @@ describe('sampleAt on a lap distance axis', () => {
 
 describe('nearestRowX', () => {
   it('snaps to the nearest row (earlier on ties)', () => {
-    const source = new StaticSource({ xs: [0, 1, 2, 4], columns: new Map() });
+    const source = new StaticSource({ dataKind: 'lmu', xs: [0, 1, 2, 4], columns: new Map() });
     const w = source.read(ALL, []);
     expect(nearestRowX(w, 1.4)).toBe(1);
     expect(nearestRowX(w, 3)).toBe(2);
@@ -111,14 +114,14 @@ describe('nearestRowX', () => {
   });
 
   it('works on non-monotonic axes and skips rows without x', () => {
-    const source = new StaticSource({ xs: [10, Number.NaN, 30, 12], columns: new Map() });
+    const source = new StaticSource({ dataKind: 'lmu', xs: [10, Number.NaN, 30, 12], columns: new Map() });
     const w = source.read(ALL, []);
     expect(nearestRowX(w, 11.5)).toBe(12);
     expect(nearestRowX(w, 29)).toBe(30);
   });
 
   it('is null for an empty window', () => {
-    const source = new StaticSource({ xs: [], columns: new Map() });
+    const source = new StaticSource({ dataKind: 'lmu', xs: [], columns: new Map() });
     expect(nearestRowX(source.read(ALL, []), 1)).toBeNull();
   });
 });

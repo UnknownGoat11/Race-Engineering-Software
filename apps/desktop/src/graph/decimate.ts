@@ -274,8 +274,12 @@ function traceSteps(input: PolylineInput, sink: PathSink): number {
 
 /**
  * X intervals of significant gaps (spec §219) in rows `[start, end)`: wherever consecutive rows with finite
- * times are more than `maxGapT` seconds apart, the interval between their x values. Overlapping or touching
- * intervals are merged; the result is ordered by x for monotonic windows. Appends to `out` and returns it.
+ * times are more than `maxGapT` seconds apart, the interval between their x values (in either x direction, so a
+ * lap axis that steps back still shows it). Rows for which `isBreakRow` is true carry no data (e.g. the all-NaN row
+ * the store inserts in the middle of a dropped stretch) and are skipped, so the gap is measured between the data
+ * rows around them: a drop shorter than 2 × `maxGapT` is no longer split into two harmless-looking halves
+ * (silent-failure M2). Overlapping or touching intervals are merged; the result is ordered by x for monotonic
+ * windows. Appends to `out` and returns it.
  */
 export function findTimeGaps(
   xs: ArrayLike<number>,
@@ -284,6 +288,7 @@ export function findTimeGaps(
   end: number,
   maxGapT: number,
   out: XRange[] = [],
+  isBreakRow?: (row: number) => boolean,
 ): XRange[] {
   let prevT = Number.NaN;
   let prevX = Number.NaN;
@@ -291,16 +296,52 @@ export function findTimeGaps(
     const t = ts[i] ?? Number.NaN;
     const x = xs[i] ?? Number.NaN;
     if (!Number.isFinite(t) || !Number.isFinite(x)) continue;
-    if (Number.isFinite(prevT) && t - prevT > maxGapT && x > prevX) {
+    if (isBreakRow?.(i) === true) continue;
+    if (Number.isFinite(prevT) && t - prevT > maxGapT && x !== prevX) {
+      const lo = Math.min(prevX, x);
+      const hi = Math.max(prevX, x);
       const last = out[out.length - 1];
-      if (last !== undefined && last.max >= prevX) {
-        out[out.length - 1] = { min: last.min, max: Math.max(last.max, x) };
+      if (last !== undefined && last.max >= lo && last.min <= hi) {
+        out[out.length - 1] = { min: Math.min(last.min, lo), max: Math.max(last.max, hi) };
       } else {
-        out.push({ min: prevX, max: x });
+        out.push({ min: lo, max: hi });
       }
     }
     prevT = t;
     prevX = x;
+  }
+  return out;
+}
+
+/**
+ * X intervals where one series has no value between two rows that have one (an invalid / unavailable run or a
+ * short dropout on a regular row clock), in rows `[start, end)`: from the x of the last valid row before the run
+ * to the x of the first valid row after it. Leading and trailing runs (the channel has not started or stopped)
+ * are not reported. Such a break may be narrower than one pixel column, so the overlay marks it with a minimum
+ * width (silent-failure M2). Appends to `out` and returns it.
+ */
+export function findValueBreaks(
+  xs: ArrayLike<number>,
+  ys: ArrayLike<number>,
+  start: number,
+  end: number,
+  out: XRange[] = [],
+): XRange[] {
+  let lastX = Number.NaN;
+  let inRun = false;
+  for (let i = start; i < end; i++) {
+    const x = xs[i] ?? Number.NaN;
+    if (!Number.isFinite(x)) continue;
+    const y = ys[i] ?? Number.NaN;
+    if (!Number.isFinite(y)) {
+      if (Number.isFinite(lastX)) inRun = true;
+      continue;
+    }
+    if (inRun) {
+      out.push({ min: Math.min(lastX, x), max: Math.max(lastX, x) });
+      inRun = false;
+    }
+    lastX = x;
   }
   return out;
 }

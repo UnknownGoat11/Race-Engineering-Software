@@ -13,11 +13,27 @@ export type SyncEvent =
 /** A sync group listener. */
 export type SyncListener = (event: SyncEvent) => void;
 
+/**
+ * Thrown by `subscribe` when a graph's x semantics differ from the group's (silent-failure M6): a cursor in
+ * seconds applied as metres on another graph would show real values at the wrong position.
+ */
+export class SyncGroupMismatchError extends Error {
+  constructor(
+    readonly groupAxis: string,
+    readonly memberAxis: string,
+  ) {
+    super(`sync group shares x as '${groupAxis}', this graph uses '${memberAxis}'`);
+    this.name = 'SyncGroupMismatchError';
+  }
+}
+
 /** Shared cursor and view of a group of graphs. Create one per group and pass it to each graph. */
 export class GraphSyncGroup {
   #cursor: number | null = null;
   #view: ViewState | null = null;
   readonly #listeners = new Set<SyncListener>();
+  /** X semantics of the members (e.g. "time|live"), fixed by the first member while the group has members. */
+  #axis: string | null = null;
 
   /** Current shared cursor x (null when no graph of the group is hovered). */
   get cursor(): number | null {
@@ -47,11 +63,29 @@ export class GraphSyncGroup {
     this.#emit({ kind: 'view', source, view });
   }
 
-  /** Adds a listener; returns the function that removes it. */
-  subscribe(listener: SyncListener): () => void {
+  /** X semantics the group's members share, or null while it has none (or none declared one). */
+  get axis(): string | null {
+    return this.#axis;
+  }
+
+  /**
+   * Adds a listener; returns the function that removes it. `axis` names the member's x semantics (the engine
+   * passes "<xMode>|<origin>"); a member whose axis differs from the group's is refused with a
+   * `SyncGroupMismatchError`. The group forgets its axis when its last member leaves.
+   */
+  subscribe(listener: SyncListener, axis?: string): () => void {
+    if (axis !== undefined) {
+      if (this.#axis !== null && this.#axis !== axis) throw new SyncGroupMismatchError(this.#axis, axis);
+      this.#axis = axis;
+    }
     this.#listeners.add(listener);
     return () => {
       this.#listeners.delete(listener);
+      if (this.#listeners.size === 0) {
+        this.#axis = null;
+        this.#view = null;
+        this.#cursor = null;
+      }
     };
   }
 
@@ -60,7 +94,17 @@ export class GraphSyncGroup {
     return this.#listeners.size;
   }
 
+  /**
+   * Delivers `event` to every listener. One failing listener must not keep the cursor / view from the other graphs
+   * or throw into the publishing graph's input handler (silent-failure L4): its error is logged with context.
+   */
   #emit(event: SyncEvent): void {
-    for (const listener of [...this.#listeners]) listener(event);
+    for (const listener of [...this.#listeners]) {
+      try {
+        listener(event);
+      } catch (error: unknown) {
+        console.error('[graph] sync group listener failed', { event: event.kind, source: event.source, axis: this.#axis }, error);
+      }
+    }
   }
 }

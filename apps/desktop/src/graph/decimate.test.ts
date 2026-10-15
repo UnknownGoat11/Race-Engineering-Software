@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findTimeGaps, tracePolyline, type PathSink, type PolylineInput } from './decimate';
+import { findTimeGaps, findValueBreaks, tracePolyline, type PathSink, type PolylineInput } from './decimate';
 
 type Command = readonly ['M' | 'L', number, number];
 
@@ -257,5 +257,27 @@ describe('findTimeGaps', () => {
     const ts = [10, 10.01, 15];
     const xs = [100, 101, 102];
     expect(findTimeGaps(xs, ts, 0, 3, 1)).toEqual([{ min: 101, max: 102 }]);
+  });
+});
+
+describe('gap and break detection (silent-failure M2)', () => {
+  it('skips rows without data, so a short drop split by the store\'s midpoint gap row still shows a gap', () => {
+    // Rows 1.00 and 1.31 around a 0.31 s drop; the store put an all-NaN row at 1.155 (each half < maxGapT 0.25).
+    const ts = [0.99, 1.0, 1.155, 1.31, 1.32];
+    expect(findTimeGaps(ts, ts, 0, ts.length, 0.25)).toEqual([]);
+    expect(findTimeGaps(ts, ts, 0, ts.length, 0.25, [], (i) => i === 2)).toEqual([{ min: 1.0, max: 1.31 }]);
+  });
+
+  it('reports a gap on an axis whose x steps back (lap axis)', () => {
+    const ts = [10, 10.01, 15];
+    const xs = [500, 501, 300];
+    expect(findTimeGaps(xs, ts, 0, 3, 1)).toEqual([{ min: 300, max: 501 }]);
+  });
+
+  it('finds interior value runs of one series, not leading or trailing ones', () => {
+    const xs = [0, 1, 2, 3, 4, 5, 6, 7];
+    const ys = [Number.NaN, 1, Number.NaN, Number.NaN, 2, 3, Number.NaN, Number.NaN];
+    expect(findValueBreaks(xs, ys, 0, xs.length)).toEqual([{ min: 1, max: 4 }]);
+    expect(findValueBreaks(xs, [1, 2, 3, 4, 5, 6, 7, 8], 0, xs.length)).toEqual([]);
   });
 });

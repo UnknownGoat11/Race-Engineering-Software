@@ -61,6 +61,39 @@
   color: var(--color-text-muted);
 }
 
+/* A live feed that is not current (spec §126): never styled like LIVE. */
+.telemetry-graph__mode[data-mode='degraded'] {
+  color: var(--color-quality-degraded);
+}
+
+.telemetry-graph__mode[data-mode='stale'] {
+  color: var(--color-quality-stale);
+  border-style: dashed;
+}
+
+.telemetry-graph__mode[data-mode='noData'] {
+  color: var(--color-quality-none);
+  border-style: dashed;
+}
+
+.telemetry-graph__mode[data-mode='error'] {
+  color: var(--graph-error-text);
+}
+
+/* A graph that cannot show current data (frame error, renderer failure, bad configuration). */
+.telemetry-graph__problem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-error-bg);
+  border: var(--border-width) solid var(--graph-error-text);
+  border-radius: var(--radius-sm);
+  color: var(--graph-error-text);
+  font-size: var(--font-size-xs);
+}
+
 .telemetry-graph__button {
   padding: 0 var(--space-2);
   background: var(--color-surface-raised);
@@ -91,6 +124,12 @@
 .telemetry-graph__axis[aria-pressed='true'] {
   border-color: var(--color-accent);
   background: var(--color-selected-bg);
+}
+
+/* A fixed scale that clips visible data (values beyond the axis are not shown). */
+.telemetry-graph__axis[data-off-scale='true'] {
+  border-color: var(--color-warn);
+  color: var(--color-warn);
 }
 
 .telemetry-graph__legend {
@@ -227,4 +266,33 @@
 .telemetry-graph .u-cursor-y.u-off,
 .telemetry-graph .u-cursor-pt.u-off {
   display: none;
+}
+
+/* Replaces the MEASURED / DERIVED badge of a series that is not LMU data (synthetic or unverified source). */
+.telemetry-graph__data-badge {
+  color: var(--color-warn);
+  border: var(--border-width) dashed var(--color-warn);
+}
+
+/* A readout that is not the newest data: history at the cursor, or a recording (never styled as current). */
+.telemetry-graph__readout {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.telemetry-graph__readout-at {
+  padding: 0 var(--space-1);
+  border: var(--border-width) dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The series renderer runs on a fallback (e.g. WebGL lost): data is correct, performance may not be. */
+.telemetry-graph__renderer-note {
+  color: var(--color-warn);
+  font-size: var(--font-size-2xs);
 }

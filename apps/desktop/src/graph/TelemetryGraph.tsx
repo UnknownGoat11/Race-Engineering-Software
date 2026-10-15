@@ -3,8 +3,8 @@ import { ProvenanceBadge } from '../components/telemetry/ProvenanceBadge';
 import { SampleReadout } from '../components/telemetry/ValueReadout';
 import { channelDef } from '../telemetry/registry';
 import type { ScheduleFrame } from '../telemetry/store';
-import { GraphEngine, referenceKey, seriesColorSlot, seriesKey, type AxisSummary } from './engine';
-import { graphSourceText, seriesSourceLabel, type GraphSourceLabel } from './provenance';
+import { GraphEngine, referenceKey, seriesColorSlot, seriesKey, type AxisSummary, type GraphReadout } from './engine';
+import { GRAPH_SOURCE_LABELS, graphSourceText, seriesSourceLabel, type GraphSourceLabel } from './provenance';
 import type { SeriesRenderer } from './renderer';
 import type { GraphSyncGroup } from './syncBus';
 import type {
@@ -62,7 +62,54 @@ const MODE_TEXT = {
   live: 'LIVE',
   paused: 'PAUSED · scrolled back',
   zoomed: 'ZOOMED',
+  error: 'GRAPH ERROR',
 } as const;
+
+/** Header text of a live feed that is not current (silent-failure H1: LIVE only while telemetry is fresh). */
+const FEED_TEXT = {
+  degraded: 'DEGRADED',
+  stale: 'STALE',
+  noData: 'NO DATA',
+} as const;
+
+/** Tag of a readout that is not the newest data (silent-failure H3: history never reads as current). */
+const READOUT_KIND_TEXT = { history: 'HISTORY', recorded: 'RECORDED' } as const;
+
+/** A legend readout: the sample, plus "HISTORY @ time" / "RECORDED @ time" when it is not the newest data. */
+function LegendReadout({ readout, label, at }: { readout: GraphReadout; label: string; at: string | null }): JSX.Element {
+  if (readout.kind === 'current') return <SampleReadout sample={readout.sample} label={label} />;
+  const tag = `${READOUT_KIND_TEXT[readout.kind]}${at === null ? '' : ` @ ${at}`}`;
+  return (
+    <span className="telemetry-graph__readout" data-kind={readout.kind}>
+      <SampleReadout sample={readout.sample} label={label} />
+      <span className="telemetry-graph__readout-at">{tag}</span>
+    </span>
+  );
+}
+
+/**
+ * Badge of a series that is not LMU data, shown INSTEAD of its MEASURED / DERIVED badge, whose meaning ("Directly
+ * from LMU") would be false (silent-failure H4, spec §108).
+ */
+const NON_LMU_BADGES: Readonly<Partial<Record<GraphSourceLabel, { readonly label: string; readonly description: string }>>> = {
+  [GRAPH_SOURCE_LABELS.synthetic]: { label: 'SYNTHETIC', description: 'Generated test data, not from LMU' },
+  [GRAPH_SOURCE_LABELS.unverified]: { label: 'UNVERIFIED', description: 'Source not confirmed as LMU data' },
+};
+
+/** The provenance badge of a series: MEASURED / DERIVED / ESTIMATED for LMU data, SYNTHETIC / UNVERIFIED otherwise. */
+function SeriesBadge({ id, sourceLabel }: { id: number; sourceLabel: GraphSourceLabel }): JSX.Element | null {
+  const nonLmu = NON_LMU_BADGES[sourceLabel];
+  if (nonLmu !== undefined) {
+    return (
+      <span className="badge telemetry-graph__data-badge" title={nonLmu.description}>
+        {nonLmu.label}
+        <span className="telemetry-visually-hidden">: {nonLmu.description}</span>
+      </span>
+    );
+  }
+  const def = channelDef(id);
+  return def === undefined ? null : <ProvenanceBadge provenance={def.provenance} />;
+}
 
 function channelLabel(id: number): string {
   return channelDef(id)?.label ?? `Channel ${id}`;
@@ -142,11 +189,29 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
   const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot);
   const scrolling = X_AXIS_SPECS[xMode].viewKind === 'scroll';
   const live = snapshot.origin === 'live';
-  const modeText = snapshot.follow ? (live ? MODE_TEXT.live : null) : live && scrolling ? MODE_TEXT.paused : MODE_TEXT.zoomed;
-  const modeKind = snapshot.follow ? 'live' : live && scrolling ? 'paused' : 'zoomed';
-
   const labelOf = (from: GraphDataSource, id: number): GraphSourceLabel =>
-    seriesSourceLabel(from.origin, channelDef(id), from.synthetic === true);
+    seriesSourceLabel(from.origin, channelDef(id), from.dataKind);
+  const failed = snapshot.health === 'error';
+  const feed = snapshot.feed;
+  const feedText = feed === null || feed === 'live' ? null : FEED_TEXT[feed];
+  let modeText: string | null;
+  let modeKind: string;
+  if (failed) {
+    modeText = MODE_TEXT.error;
+    modeKind = 'error';
+  } else if (live && feedText !== null && feed !== null) {
+    // The feed is not current: never LIVE, whatever the view does.
+    modeText = snapshot.follow ? feedText : `${scrolling ? MODE_TEXT.paused : MODE_TEXT.zoomed} · ${feedText}`;
+    modeKind = feed;
+  } else if (snapshot.follow) {
+    const nonLmu = NON_LMU_BADGES[labelOf(source, series[0]?.channelId ?? -1)];
+    modeText = live ? (nonLmu === undefined ? MODE_TEXT.live : `${MODE_TEXT.live} · ${nonLmu.label}`) : null;
+    modeKind = 'live';
+  } else {
+    modeText = live && scrolling ? MODE_TEXT.paused : MODE_TEXT.zoomed;
+    modeKind = live && scrolling ? 'paused' : 'zoomed';
+  }
+
   const sourceLabels: GraphSourceLabel[] = [
     ...series.map((s) => labelOf(source, s.channelId)),
     ...references.map((r) => labelOf(r.source, r.channelId)),
@@ -179,6 +244,11 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
             Cursor {snapshot.cursorLabel}
           </span>
         )}
+        {snapshot.rendererNote !== null && (
+          <span className="telemetry-graph__renderer-note" title={snapshot.rendererNote}>
+            {snapshot.rendererNote}
+          </span>
+        )}
         {modeText !== null && (
           <span className="telemetry-graph__mode" data-mode={modeKind} role="status">
             {modeText}
@@ -196,9 +266,22 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
           </button>
         )}
       </header>
+      {failed && (
+        <div className="telemetry-graph__problem" role="alert">
+          <span>Graph unavailable: {snapshot.problem}</span>
+          <button
+            type="button"
+            className="telemetry-graph__button"
+            onClick={() => {
+              engine.retry();
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
       <ul className="telemetry-graph__legend" aria-label="Channels">
         {series.map((s, i) => {
-          const def = channelDef(s.channelId);
           const enabled = !disabled.has(s.channelId);
           const label = channelLabel(s.channelId);
           const sample = snapshot.readouts[seriesKey(s.channelId)] ?? null;
@@ -221,16 +304,15 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
                 <span className="telemetry-graph__swatch" data-slot={seriesColorSlot(s, i)} aria-hidden="true" />
               </label>
               {enabled && sample !== null ? (
-                <SampleReadout sample={sample} label={label} />
+                <LegendReadout readout={sample} label={label} at={snapshot.cursorLabel} />
               ) : (
                 <span className="telemetry-graph__series-name">{label}</span>
               )}
-              {def !== undefined && <ProvenanceBadge provenance={def.provenance} />}
+              <SeriesBadge id={s.channelId} sourceLabel={labelOf(source, s.channelId)} />
             </li>
           );
         })}
         {references.map((r) => {
-          const def = channelDef(r.channelId);
           const sample = snapshot.readouts[referenceKey(r.key)] ?? null;
           return (
             <li
@@ -245,11 +327,11 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
                 aria-hidden="true"
               />
               {sample !== null ? (
-                <SampleReadout sample={sample} label={r.label} />
+                <LegendReadout readout={sample} label={r.label} at={snapshot.cursorLabel} />
               ) : (
                 <span className="telemetry-graph__series-name">{r.label}</span>
               )}
-              {def !== undefined && <ProvenanceBadge provenance={def.provenance} />}
+              <SeriesBadge id={r.channelId} sourceLabel={labelOf(r.source, r.channelId)} />
             </li>
           );
         })}
@@ -264,13 +346,14 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
                 type="button"
                 className="telemetry-graph__button telemetry-graph__axis"
                 aria-pressed={fixed}
+                data-off-scale={axis.offScale}
                 disabled={!fixed && axis.displayRange === null}
                 title={fixed ? 'Fixed scale: click to autoscale' : 'Autoscale: click to fix the current scale'}
                 onClick={() => {
                   toggleScale(axis);
                 }}
               >
-                {axis.title} {fixed ? 'FIXED' : 'AUTO'}
+                {axis.title} {fixed ? (axis.offScale ? 'FIXED · OFF-SCALE' : 'FIXED') : 'AUTO'}
               </button>
             );
           })}

@@ -243,3 +243,61 @@ describe('UplotRenderer', () => {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+describe('UplotRenderer failures (silent-failure M5)', () => {
+  it('switches to the fallback renderer when uPlot fails to load, logs it and reports the status', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const drawn: RenderFrame[] = [];
+    const fallback = { kind: 'canvas2d' as const, mount: vi.fn(), setSize: vi.fn(), render: (f: RenderFrame) => drawn.push(f), destroy: vi.fn() };
+    const renderer = new UplotRenderer(() => Promise.reject(new Error('chunk missing')), () => fallback);
+    const changes = vi.fn();
+    renderer.onStatusChange(changes);
+    const host = document.createElement('div');
+    renderer.mount(host);
+    renderer.setSize(400, 150, 1);
+    const f = frame([series(windowOf([0, 1, 2]), 'a')]);
+    renderer.render(f);
+    await renderer.ready;
+    expect(errors).toHaveBeenCalledWith('[graph] uPlot failed to load; drawing with Canvas2D', expect.any(Error));
+    expect(renderer.status()).toEqual({ activeKind: 'canvas2d', state: 'degraded', reason: 'uPlot failed to load: chunk missing' });
+    expect(changes).toHaveBeenCalledTimes(1);
+    expect(fallback.mount).toHaveBeenCalledWith(host);
+    expect(fallback.setSize).toHaveBeenCalledWith(400, 150, 1);
+    // The pending frame is not replayed (the engine redraws from a fresh read); later frames are drawn.
+    expect(drawn).toEqual([]);
+    renderer.render(f);
+    expect(drawn).toEqual([f]);
+    errors.mockRestore();
+  });
+
+  it('traces the paths itself when the uPlot build has no path builders (never draws nothing)', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const fake = fakeUPlot();
+    vi.stubGlobal('Path2D', class {
+      moveTo(): void {
+        // Recorded nowhere: only the builder's result matters here.
+      }
+      lineTo(): void {
+        // As moveTo.
+      }
+    });
+    const bare = fake.ctor as unknown as { paths: Record<string, unknown> };
+    const saved = bare.paths;
+    bare.paths = {};
+    const renderer = new UplotRenderer(() => Promise.resolve(fake.ctor));
+    renderer.mount(document.createElement('div'));
+    renderer.setSize(400, 150, 1);
+    renderer.render(frame([series(windowOf([0, 1, 2]), 'a')]));
+    await renderer.ready;
+    const builder = fake.instances[0]?.opts.series[1]?.paths;
+    expect(typeof builder).toBe('function');
+    if (typeof builder === 'function') {
+      const fakeU = { bbox: { left: 0, top: 0, width: 300, height: 100 } } as unknown as uPlot;
+      expect(builder(fakeU, 1, 0, 2)).not.toBeNull();
+    }
+    expect(errors).toHaveBeenCalled();
+    bare.paths = saved;
+    errors.mockRestore();
+    vi.unstubAllGlobals();
+  });
+});

@@ -4,7 +4,7 @@ import { FakeClock, FakeFrames } from '../test/fakeScheduler';
 import { encodeTlvBlock, encodeUiBatch, rec, type FixtureRecord } from '../test/tlvEncoder';
 import { TelemetryStore } from '../telemetry/store';
 import { UI_BATCH_FLAG_RESET } from '../telemetry/uiBatch';
-import { LiveRingSource, advanceLapScan, newLapScan, type LapScanState } from './liveSource';
+import { LiveRingSource, advanceLapScan, newLapScan, type LapScanState, type LiveRingSourceOptions } from './liveSource';
 
 const ROW_DT = 0.01;
 
@@ -49,7 +49,7 @@ describe('LiveRingSource on the time axis', () => {
   it('returns the rows of the range plus one row past each edge, x = session time', () => {
     const h = harness();
     h.send(speedRows(10, 100));
-    const source = new LiveRingSource(h.store, { xMode: 'time' });
+    const source = new LiveRingSource(h.store, { xMode: 'time', dataKind: 'lmu' });
     const w = source.read({ min: 10.2, max: 10.5 }, [ch.SPEED]);
     expect(w.xs).toBe(w.ts);
     expect(w.monotonicX).toBe(true);
@@ -65,7 +65,7 @@ describe('LiveRingSource on the time axis', () => {
   it('reuses its buffers between reads of the same size', () => {
     const h = harness();
     h.send(speedRows(10, 100));
-    const source = new LiveRingSource(h.store, { xMode: 'time' });
+    const source = new LiveRingSource(h.store, { xMode: 'time', dataKind: 'lmu' });
     const a = source.read({ min: 10, max: 10.5 }, [ch.SPEED]);
     const ts = a.ts;
     const column = a.column(ch.SPEED);
@@ -77,7 +77,7 @@ describe('LiveRingSource on the time axis', () => {
   it('grows its buffers when a window needs more rows', () => {
     const h = harness();
     h.send(speedRows(0, 3000));
-    const source = new LiveRingSource(h.store, { xMode: 'time' });
+    const source = new LiveRingSource(h.store, { xMode: 'time', dataKind: 'lmu' });
     const w = source.read({ min: 0, max: 30 }, [ch.SPEED]);
     expect(w.count).toBe(3000);
     expect(w.column(ch.SPEED)?.[2999]).toBe(2999);
@@ -86,7 +86,7 @@ describe('LiveRingSource on the time axis', () => {
   it('gives no column for channels that are not in the ring and still returns the times', () => {
     const h = harness();
     h.send(speedRows(10, 10));
-    const source = new LiveRingSource(h.store, { xMode: 'time' });
+    const source = new LiveRingSource(h.store, { xMode: 'time', dataKind: 'lmu' });
     const w = source.read({ min: 10, max: 11 }, [ch.TRACK_LENGTH]);
     expect(w.column(ch.TRACK_LENGTH)).toBeNull();
     expect(w.column(ch.SPEED)).toBeNull();
@@ -101,27 +101,27 @@ describe('LiveRingSource on the time axis', () => {
       [1.01, [rec.quality(ch.SPEED, 3)]],
       [1.02, [rec.f32(ch.SPEED, 12)]],
     ]);
-    const source = new LiveRingSource(h.store, { xMode: 'time' });
+    const source = new LiveRingSource(h.store, { xMode: 'time', dataKind: 'lmu' });
     const speed = source.read({ min: 0, max: 2 }, [ch.SPEED]).column(ch.SPEED);
     expect(Array.from(speed?.subarray(0, 3) ?? [])).toEqual([10, Number.NaN, 12]);
   });
 
   it('reports the extent and the current position, stale once the feed stops', () => {
     const h = harness();
-    const source = new LiveRingSource(h.store, { xMode: 'time' });
+    const source = new LiveRingSource(h.store, { xMode: 'time', dataKind: 'lmu' });
     expect(source.extent()).toBeNull();
     expect(source.current()).toBeNull();
     h.send(speedRows(10, 50));
     expect(source.extent()?.min).toBe(10);
     expect(source.extent()?.max).toBeCloseTo(10.49, 9);
-    expect(source.current()).toEqual({ x: source.extent()?.max, stale: false, degraded: false });
+    expect(source.current()).toEqual({ x: source.extent()?.max, t: source.extent()?.max, stale: false, degraded: false });
     h.clock.advance(5_000);
     expect(source.current()?.stale).toBe(true);
   });
 
   it('notifies subscribers when the ring changes and stops after unsubscribe', () => {
     const h = harness();
-    const source = new LiveRingSource(h.store, { xMode: 'time' });
+    const source = new LiveRingSource(h.store, { xMode: 'time', dataKind: 'lmu' });
     const listener = vi.fn();
     const off = source.subscribe(listener);
     h.send(speedRows(10, 5));
@@ -149,7 +149,7 @@ describe('LiveRingSource on a lap distance axis', () => {
       t += ROW_DT;
     }
     h.send(blocks);
-    const source = new LiveRingSource(h.store, { xMode: 'lapDistance', xChannel: ch.LAP_DISTANCE });
+    const source = new LiveRingSource(h.store, { xMode: 'lapDistance', dataKind: 'lmu', xChannel: ch.LAP_DISTANCE });
     expect(source.extent()).toEqual({ min: 0, max: 300 });
     const w = source.read({ min: 0, max: 5000 }, [ch.SPEED]);
     expect(w.count).toBe(31);
@@ -158,7 +158,7 @@ describe('LiveRingSource on a lap distance axis', () => {
     expect(w.xs[30]).toBe(300);
     expect(w.monotonicX).toBe(true);
     expect(w.column(ch.SPEED)?.[0]).toBeCloseTo(61, 5);
-    expect(source.current()).toEqual({ x: 300, stale: false, degraded: false });
+    expect(source.current()).toMatchObject({ x: 300, stale: false, degraded: false });
   });
 });
 
@@ -168,7 +168,7 @@ function lapRows(t0: number, xs: readonly number[]): [number, FixtureRecord[]][]
 }
 
 function lapSource(h: Harness): LiveRingSource {
-  return new LiveRingSource(h.store, { xMode: 'lapDistance', xChannel: ch.LAP_DISTANCE });
+  return new LiveRingSource(h.store, { xMode: 'lapDistance', dataKind: 'lmu', xChannel: ch.LAP_DISTANCE });
 }
 
 /** 0, step, 2·step, … (n values). */
@@ -285,3 +285,26 @@ describe('advanceLapScan', () => {
     expect(scan([Number.NaN, 5, 6])).toMatchObject({ firstT: 1, min: 5, max: 6 });
   });
 });
+
+describe('LiveRingSource data kind (silent-failure H2)', () => {
+  it('requires an explicit data kind and rejects anything else', () => {
+    const h = harness();
+    expect(new LiveRingSource(h.store, { xMode: 'time', dataKind: 'synthetic' }).dataKind).toBe('synthetic');
+    expect(() => new LiveRingSource(h.store, { xMode: 'time' } as unknown as LiveRingSourceOptions)).toThrow(TypeError);
+  });
+});
+
+describe('LiveRingSource x channel (silent-failure M3)', () => {
+  it('refuses a lap axis without an x channel or with one whose unit does not fit, instead of NO DATA forever', () => {
+    const h = harness();
+    const missing = { xMode: 'lapDistance', dataKind: 'lmu' } as unknown as LiveRingSourceOptions;
+    expect(() => new LiveRingSource(h.store, missing)).toThrow(/needs an xChannel/);
+    expect(() => new LiveRingSource(h.store, { xMode: 'lapDistance', xChannel: ch.LAP_TIME, dataKind: 'lmu' })).toThrow(
+      /does not fit the 'lapDistance' axis/,
+    );
+    expect(() => new LiveRingSource(h.store, { xMode: 'lapTime', xChannel: 0x7fff, dataKind: 'lmu' })).toThrow(/not a known channel/);
+    expect(() => new LiveRingSource(h.store, { xMode: 'lapFraction', xChannel: ch.LAP_PROGRESS, dataKind: 'lmu' })).not.toThrow();
+    expect(() => new LiveRingSource(h.store, { xMode: 'lapTime', xChannel: ch.LAP_TIME, dataKind: 'lmu' })).not.toThrow();
+  });
+});
+

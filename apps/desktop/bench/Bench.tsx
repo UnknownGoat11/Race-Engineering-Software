@@ -108,7 +108,7 @@ function Graphs({ session }: { session: Session }): JSX.Element {
       BENCH_GRAPHS.map((channels) => ({
         series: channels.map((channelId) => ({ channelId })),
         // Generated data: the graphs label it "Synthetic Test Data", never as LMU telemetry.
-        source: new LiveRingSource(session.store, { xMode: 'time', synthetic: true }),
+        source: new LiveRingSource(session.store, { xMode: 'time', dataKind: 'synthetic' }),
       })),
     [session],
   );

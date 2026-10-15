@@ -1,9 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { tracePolyline } from './decimate';
 import type { RenderFrame, RenderSeries, SeriesRenderer } from './renderer';
 import { linearAffine } from './scale';
 import type { GraphWindow } from './types';
-import { FLOATS_PER_VERTEX, StripBuilder, WebGLRenderer, type Rgba } from './webglRenderer';
+import {
+  FLOATS_PER_VERTEX,
+  StripBuilder,
+  WebGLRenderer,
+  browserColorParser,
+  canvasAcceptsColor,
+  type Rgba,
+} from './webglRenderer';
 
 interface GlCall {
   readonly op: string;
@@ -25,15 +32,21 @@ const GL_CONSTANTS = {
   DYNAMIC_DRAW: 12,
   LINE_STRIP: 13,
   POINTS: 14,
+  OUT_OF_MEMORY: 15,
 } as const satisfies Record<string, number>;
 const GL_CONSTANT_BY_NAME: Readonly<Record<string, number>> = GL_CONSTANTS;
 
 /** A recording WebGL context: every method call is logged; queries answer "success". */
-function fakeGl(options: { multiDraw?: boolean } = {}): { gl: WebGLRenderingContext; calls: GlCall[] } {
+function fakeGl(options: { multiDraw?: boolean; compileFails?: boolean; outOfMemory?: boolean } = {}): {
+  gl: WebGLRenderingContext;
+  calls: GlCall[];
+} {
   const calls: GlCall[] = [];
   const answers: Record<string, (...args: unknown[]) => unknown> = {
-    getShaderParameter: () => true,
+    getShaderParameter: () => options.compileFails !== true,
+    getShaderInfoLog: () => 'ERROR: 0:3: syntax error',
     getProgramParameter: () => true,
+    getError: () => (options.outOfMemory === true ? GL_CONSTANTS.OUT_OF_MEMORY : 0),
     getAttribLocation: () => 0,
     getUniformLocation: (_program, name) => ({ name }),
     getExtension: (name) => {
@@ -251,7 +264,8 @@ describe('WebGLRenderer', () => {
     expect(ops(calls, 'bufferData')).toHaveLength(0);
   });
 
-  it('resolves each colour once and draws an unparseable one opaque white', () => {
+  it('resolves each colour once and draws an unparseable one opaque white, logged once (H5)', () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const seen: string[] = [];
     const { gl, calls } = fakeGl();
     const renderer = new WebGLRenderer({
@@ -269,9 +283,13 @@ describe('WebGLRenderer', () => {
     renderer.render(f);
     expect(seen).toEqual(['nonsense']);
     expect(ops(calls, 'uniform4f')[0]?.args.slice(1)).toEqual([1, 1, 1, 1]);
+    expect(errors).toHaveBeenCalledTimes(1);
+    expect(errors.mock.calls[0]?.[1]).toEqual({ color: 'nonsense' });
+    errors.mockRestore();
   });
 
   it('falls back to the Canvas2D renderer when no WebGL context is available', () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const fallback = fallbackStub();
     const renderer = new WebGLRenderer({ context: () => null, fallback: () => fallback.renderer });
     const host = document.createElement('div');
@@ -283,10 +301,16 @@ describe('WebGLRenderer', () => {
     expect(host.querySelector('canvas')).toBeNull();
     expect(fallback.log).toEqual(['mount', 'setSize 0x0@1', 'setSize 40x20@2', 'render']);
     expect(fallback.frames[0]).toBe(f);
+    expect(renderer.status()).toEqual({ activeKind: 'canvas2d', state: 'degraded', reason: 'WebGL context unavailable' });
+    vi.restoreAllMocks();
   });
 
-  it('switches to the fallback on context loss and redraws the last frame there (never blank)', () => {
+  it('on context loss switches to the fallback, reports and logs why, and never replays an old frame (M1)', () => {
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const { renderer, host, fallback } = mounted({ dpr: 1.25 });
+    const changes = vi.fn();
+    renderer.onStatusChange(changes);
+    expect(renderer.status()).toEqual({ activeKind: 'webgl', state: 'ok', reason: null });
     const f = frame([series(windowOf([0, 3]), [0, 2])]);
     renderer.render(f);
     const canvas = host.querySelector('canvas');
@@ -296,10 +320,55 @@ describe('WebGLRenderer', () => {
     expect(lost.defaultPrevented).toBe(true);
     expect(renderer.usingWebGL).toBe(false);
     expect(host.querySelector('canvas')).toBeNull();
-    expect(fallback.log).toEqual(['mount', 'setSize 40x20@1.25', 'render']);
-    expect(fallback.frames[0]).toBe(f);
+    // The window arrays of the last frame may have been reused since: the engine redraws from a fresh read.
+    expect(fallback.log).toEqual(['mount', 'setSize 40x20@1.25']);
+    expect(changes).toHaveBeenCalledTimes(1);
+    expect(renderer.status()).toEqual({ activeKind: 'canvas2d', state: 'degraded', reason: 'WebGL context lost' });
+    expect(warnings).toHaveBeenCalledWith('[graph] WebGL renderer fell back to Canvas2D', { reason: 'WebGL context lost' });
     renderer.render(f);
     expect(fallback.log.at(-1)).toBe('render');
+    warnings.mockRestore();
+  });
+
+  it('falls back with the shader log when a shader does not compile, releasing the partial GL objects (M1)', () => {
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { gl, calls } = fakeGl({ compileFails: true });
+    const fallback = fallbackStub();
+    const renderer = new WebGLRenderer({ context: () => gl, parseColor, fallback: () => fallback.renderer });
+    renderer.mount(document.createElement('div'));
+    expect(renderer.usingWebGL).toBe(false);
+    expect(renderer.status().state).toBe('degraded');
+    expect(renderer.status().reason).toContain('vertex shader did not compile: ERROR: 0:3: syntax error');
+    expect(ops(calls, 'deleteProgram')).toHaveLength(1);
+    expect(ops(calls, 'deleteBuffer')).toHaveLength(1);
+    expect(ops(calls, 'loseContext')).toHaveLength(1);
+    expect(warnings).toHaveBeenCalled();
+    warnings.mockRestore();
+  });
+
+  it('checks a growing vertex upload for GL_OUT_OF_MEMORY and draws that frame with the fallback (M1)', () => {
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { gl, calls } = fakeGl({ outOfMemory: true });
+    const fallback = fallbackStub();
+    const renderer = new WebGLRenderer({ context: () => gl, parseColor, fallback: () => fallback.renderer });
+    renderer.mount(document.createElement('div'));
+    renderer.setSize(40, 20, 1);
+    const f = frame([series(windowOf([0, 1, 2, 3]), [0, 2, 1, 1])]);
+    renderer.render(f);
+    expect(ops(calls, 'getError')).toHaveLength(1);
+    expect(renderer.status().reason).toMatch(/^GL_OUT_OF_MEMORY/);
+    expect(fallback.frames).toEqual([f]);
+    warnings.mockRestore();
+  });
+
+  it('checks for upload errors only when the upload grows (getError is a synchronous GPU round trip)', () => {
+    const { renderer, calls } = mounted();
+    const f = frame([series(windowOf([0, 1, 2, 3]), [0, 2, 1, 1])]);
+    renderer.render(f);
+    renderer.render(f);
+    renderer.render(f);
+    expect(ops(calls, 'getError')).toHaveLength(1);
+    expect(renderer.status().state).toBe('ok');
   });
 
   it('releases its context and layer on destroy', () => {
@@ -309,5 +378,33 @@ describe('WebGLRenderer', () => {
     expect(ops(calls, 'deleteBuffer')).toHaveLength(1);
     expect(ops(calls, 'loseContext')).toHaveLength(1);
     expect(renderer.usingWebGL).toBe(false);
+  });
+});
+
+describe('canvasAcceptsColor (silent-failure H5)', () => {
+  /** A context that ignores invalid colours, as a real canvas does. */
+  function ctx(valid: (css: string) => boolean): { fillStyle: string } {
+    let value = '#000000';
+    return {
+      get fillStyle() {
+        return value;
+      },
+      set fillStyle(css: string) {
+        if (valid(css)) value = css;
+      },
+    };
+  }
+
+  it('tells an ignored (invalid or empty) colour from an accepted one, including the sentinels themselves', () => {
+    const c = ctx((css) => css.startsWith('#'));
+    expect(canvasAcceptsColor(c, '#ff0000')).toBe(true);
+    expect(canvasAcceptsColor(c, '#010203')).toBe(true);
+    expect(canvasAcceptsColor(c, '#030201')).toBe(true);
+    expect(canvasAcceptsColor(c, '')).toBe(false);
+    expect(canvasAcceptsColor(c, 'not-a-colour')).toBe(false);
+  });
+
+  it('never parses an invalid colour as opaque black', () => {
+    expect(browserColorParser('')).toBeNull();
   });
 });

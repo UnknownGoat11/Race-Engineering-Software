@@ -26,6 +26,20 @@ export interface GraphColors {
   readonly currentCarStale: string;
   readonly gapFill: string;
   readonly gapText: string;
+  /** Text of the error state (a graph that cannot show current data). */
+  readonly errorText: string;
+}
+
+/** A series whose channel is STALE while the feed as a whole is not (named on the plot). */
+export interface StaleSeriesTag {
+  readonly label: string;
+  readonly color: string;
+}
+
+/** Value breaks of one series (see `findValueBreaks`). */
+export interface SeriesBreaks {
+  readonly color: string;
+  readonly ranges: readonly XRange[];
 }
 
 /** Cursor position and its x label. */
@@ -45,9 +59,13 @@ export interface OverlayScene {
   readonly yAxes: readonly YAxisModel[];
   /** X intervals of significant time gaps. */
   readonly gaps: readonly XRange[];
+  /** Per series: x intervals where it has no value between valid rows (drawn as ticks in its colour). */
+  readonly valueBreaks: readonly SeriesBreaks[];
   readonly markers: readonly PlacedMarker[];
   /** Current car position (live sources only). */
   readonly current: CurrentPosition | null;
+  /** Series drawn dashed because their channel is STALE (spec §126; the feed itself may be live). */
+  readonly staleSeries: readonly StaleSeriesTag[];
   readonly cursor: CursorMark | null;
   /** Zoom box being dragged, CSS px within the drawing area. */
   readonly zoomBox: { readonly x0: number; readonly x1: number } | null;
@@ -68,10 +86,24 @@ export const MARKER_LABEL_GAP_CSS = 3;
 export const CURRENT_LABEL = 'CURRENT';
 export const CURRENT_STALE_LABEL = 'CURRENT · STALE';
 export const CURRENT_DEGRADED_LABEL = 'CURRENT · DEGRADED';
+/** Prefix of the tag naming a STALE series. */
+export const STALE_SERIES_PREFIX = 'STALE · ';
 /** Label of a significant data gap (spec §219). */
 export const GAP_LABEL = 'GAP';
 /** Suffix of the title of an axis with a fixed scale. */
 export const FIXED_SCALE_SUFFIX = ' · FIXED';
+/** Added to the title of a fixed axis whose visible data is clipped (silent-failure M7). */
+export const OFF_SCALE_SUFFIX = ' · OFF-SCALE';
+/** Size of the off-scale marker drawn at the clipped end of an axis, CSS px. */
+export const OFF_SCALE_MARK_CSS = { width: 8, height: 4 } as const;
+
+/**
+ * Least drawn width of a gap band or a value-break tick, CSS px: a break inside one pixel column would otherwise be
+ * invisible and the trace would look continuous (silent-failure M2).
+ */
+export const MIN_BREAK_WIDTH_CSS = 2;
+/** Height of a value-break tick at the bottom of the plot, CSS px. */
+export const BREAK_TICK_HEIGHT_CSS = 5;
 
 /** Tick mark length, CSS px. */
 const TICK_CSS = 4;
@@ -114,6 +146,17 @@ function visibleSpan(scene: OverlayScene, x: Affine, gap: XRange): readonly [num
   return x1 > x0 ? [x0, x1] : null;
 }
 
+/** Like `visibleSpan`, widened around its centre to at least `MIN_BREAK_WIDTH_CSS` (a zero-width break too). */
+function breakSpan(scene: OverlayScene, x: Affine, gap: XRange): readonly [number, number] | null {
+  const { plot } = scene.layout;
+  const a = applyAffine(x, gap.min);
+  const b = applyAffine(x, gap.max);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < plot.left || a > plot.left + plot.width) return null;
+  const centre = (Math.max(plot.left, a) + Math.min(plot.left + plot.width, b)) / 2;
+  const half = Math.max(MIN_BREAK_WIDTH_CSS, Math.min(b, plot.left + plot.width) - Math.max(a, plot.left)) / 2;
+  return [centre - half, centre + half];
+}
+
 /** Grid lines and gap bands, drawn under the series. */
 export function drawUnderlay(ctx: Canvas2DLike, scene: OverlayScene): void {
   const { plot } = scene.layout;
@@ -126,7 +169,7 @@ export function drawUnderlay(ctx: Canvas2DLike, scene: OverlayScene): void {
   if (x !== null) {
     ctx.fillStyle = scene.colors.gapFill;
     for (const gap of scene.gaps) {
-      const span = visibleSpan(scene, x, gap);
+      const span = breakSpan(scene, x, gap);
       if (span !== null) ctx.fillRect(span[0], plot.top, span[1] - span[0], plot.height);
     }
   }
@@ -174,9 +217,11 @@ export function drawOverlay(ctx: Canvas2DLike, scene: OverlayScene): void {
   ctx.clip();
   if (x !== null) {
     drawGapLabels(ctx, scene, x);
+    drawValueBreaks(ctx, scene, x);
     drawMarkers(ctx, scene);
     drawCurrent(ctx, scene, x);
   }
+  drawStaleSeries(ctx, scene);
   ctx.restore();
 
   if (x !== null && scene.cursor !== null) drawCursor(ctx, scene, x, scene.cursor);
@@ -231,7 +276,16 @@ function drawYAxis(ctx: Canvas2DLike, scene: OverlayScene, axis: YAxisModel): vo
   vLine(ctx, lineX, plot.top, bottom);
   ctx.textAlign = left ? 'right' : 'left';
   ctx.textBaseline = 'bottom';
-  ctx.fillText(axis.setting.mode === 'fixed' ? `${axis.title}${FIXED_SCALE_SUFFIX}` : axis.title, textX, plot.top - 2);
+  const title =
+    axis.setting.mode === 'fixed' ? `${axis.title}${FIXED_SCALE_SUFFIX}${axis.offScale === null ? '' : OFF_SCALE_SUFFIX}` : axis.title;
+  ctx.fillText(title, textX, plot.top - 2);
+  if (axis.offScale !== null) {
+    // A solid bar on the clipped end(s) of the axis line, in the axis colour.
+    const { width, height } = OFF_SCALE_MARK_CSS;
+    const barLeft = left ? lineX - width : lineX;
+    if (axis.offScale !== 'below') ctx.fillRect(barLeft, plot.top, width, height);
+    if (axis.offScale !== 'above') ctx.fillRect(barLeft, bottom - height, width, height);
+  }
   if (axis.range !== null) {
     const f = axis.display.factor;
     const y = linearAffine(axis.range.min * f, axis.range.max * f, bottom, plot.top);
@@ -257,6 +311,19 @@ function drawGapLabels(ctx: Canvas2DLike, scene: OverlayScene, x: Affine): void 
     const span = visibleSpan(scene, x, gap);
     if (span === null || span[1] - span[0] < labelWidth) continue;
     ctx.fillText(GAP_LABEL, (span[0] + span[1]) / 2, plot.top + plot.height - TEXT_PAD_CSS);
+  }
+}
+
+/** A tick in the series' colour at the bottom of the plot for each value break (at least 2 px wide). */
+function drawValueBreaks(ctx: Canvas2DLike, scene: OverlayScene, x: Affine): void {
+  const { plot } = scene.layout;
+  const top = plot.top + plot.height - BREAK_TICK_HEIGHT_CSS;
+  for (const series of scene.valueBreaks) {
+    ctx.fillStyle = series.color;
+    for (const range of series.ranges) {
+      const span = breakSpan(scene, x, range);
+      if (span !== null) ctx.fillRect(span[0], top, span[1] - span[0], BREAK_TICK_HEIGHT_CSS);
+    }
   }
 }
 
@@ -304,6 +371,19 @@ function drawCurrent(ctx: Canvas2DLike, scene: OverlayScene, x: Affine): void {
   ctx.textBaseline = 'top';
   // Below the marker label rows, so it never covers a lap or sector label.
   ctx.fillText(label, labelX, plot.top + MARKER_ROWS * MARKER_ROW_HEIGHT_CSS + 1);
+}
+
+/** Names each STALE series at the plot's right edge, below the current-car label row, in the stale colour. */
+function drawStaleSeries(ctx: Canvas2DLike, scene: OverlayScene): void {
+  if (scene.staleSeries.length === 0) return;
+  const { plot } = scene.layout;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = scene.colors.currentCarStale;
+  scene.staleSeries.forEach((s, i) => {
+    const row = MARKER_ROWS + 1 + i;
+    ctx.fillText(`${STALE_SERIES_PREFIX}${s.label}`, plot.left + plot.width - TEXT_PAD_CSS, plot.top + row * MARKER_ROW_HEIGHT_CSS + 1);
+  });
 }
 
 function drawCursor(ctx: Canvas2DLike, scene: OverlayScene, x: Affine, cursor: CursorMark): void {

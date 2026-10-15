@@ -111,6 +111,17 @@ export function sampleAt(
   return v0 + (v1 - v0) * fraction;
 }
 
+/**
+ * Session time (s) at `x`: the time of the row at or before `x` (the same row `sampleAt` reads), or null when `x`
+ * is outside the window or that row has no time. Used to tell a cursor on the newest data from one in history.
+ */
+export function rowTimeAt(window: GraphWindow, x: number): number | null {
+  const i = bracket(window, x);
+  if (i < 0) return null;
+  const t = window.ts[i] ?? Number.NaN;
+  return Number.isFinite(t) ? t : null;
+}
+
 /** X of the row nearest to `x` (the earlier row on ties; the newest occurrence on non-monotonic axes), or null. */
 export function nearestRowX(window: GraphWindow, x: number): number | null {
   const { xs, count } = window;

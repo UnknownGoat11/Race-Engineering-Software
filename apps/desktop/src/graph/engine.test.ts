@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { Unit, ch } from '../generated/channels';
 import { unitAxisDisplay } from '../lib/units';
 import { FakeClock, FakeFrames } from '../test/fakeScheduler';
@@ -7,11 +7,11 @@ import { encodeTlvBlock, encodeUiBatch, rec, type FixtureRecord } from '../test/
 import { SPEC_DEGRADED_AFTER_MS } from '../telemetry/freshness';
 import { TelemetryStore } from '../telemetry/store';
 import { UI_BATCH_FLAG_RESET } from '../telemetry/uiBatch';
-import { GraphEngine, NO_DATA_TEXT, referenceKey, seriesColorSlot, seriesKey, type GraphEngineOptions } from './engine';
+import { DEFAULT_MAX_GAP_S, GRAPH_ERROR_TEXT, GraphEngine, NO_DATA_TEXT, THEME_FALLBACK, referenceKey, seriesColorSlot, seriesKey, type GraphEngineOptions } from './engine';
 import { axisKey } from './layout';
 import { LiveRingSource } from './liveSource';
-import { CURRENT_DEGRADED_LABEL, CURRENT_LABEL, CURRENT_STALE_LABEL } from './overlay';
-import type { RenderFrame, SeriesRenderer } from './renderer';
+import { CURRENT_DEGRADED_LABEL, CURRENT_LABEL, CURRENT_STALE_LABEL, STALE_SERIES_PREFIX } from './overlay';
+import type { RenderFrame, RendererStatus, SeriesRenderer } from './renderer';
 import { StaticSource } from './staticSource';
 import { GraphSyncGroup } from './syncBus';
 import type { GraphDataSource } from './types';
@@ -85,7 +85,7 @@ function harness(): Harness {
       const renderer = new FakeRenderer();
       const own: RecordingContext[] = [];
       const engine = new GraphEngine({
-        source: new LiveRingSource(store, { xMode: 'time' }),
+        source: new LiveRingSource(store, { xMode: 'time', dataKind: 'lmu' }),
         xMode: 'time',
         renderer: () => renderer,
         scheduleFrame: frames.schedule,
@@ -207,14 +207,15 @@ describe('GraphEngine readouts', () => {
     engine.setCursor(100.2);
     engine.flush();
     let r = engine.getSnapshot().readouts;
-    expect(r[seriesKey(ch.SPEED)]).toMatchObject({ state: 'live', value: 20 });
-    expect(r[seriesKey(ch.GEAR)]).toMatchObject({ state: 'live', value: 3 });
-    expect(r[seriesKey(ch.TRACK_LENGTH)]).toMatchObject({ state: 'unavailable', value: null });
-    expect(r[seriesKey(ch.TC_INTERVENTION)]).toMatchObject({ state: 'notSupported', value: null });
+    // An older row at the cursor is history, never presented as the current value (silent-failure H3).
+    expect(r[seriesKey(ch.SPEED)]).toMatchObject({ kind: 'history', sample: { state: 'live', value: 20 } });
+    expect(r[seriesKey(ch.GEAR)]).toMatchObject({ kind: 'history', sample: { state: 'live', value: 3 } });
+    expect(r[seriesKey(ch.TRACK_LENGTH)]?.sample).toMatchObject({ state: 'unavailable', value: null });
+    expect(r[seriesKey(ch.TC_INTERVENTION)]?.sample).toMatchObject({ state: 'notSupported', value: null });
     engine.setCursor(100.5);
     engine.flush();
     r = engine.getSnapshot().readouts;
-    expect(r[seriesKey(ch.SPEED)]).toMatchObject({ state: 'noData', value: null });
+    expect(r[seriesKey(ch.SPEED)]?.sample).toMatchObject({ state: 'noData', value: null });
   });
 
   it('reads the current sample without a cursor, DEGRADED when late and STALE when the feed stops', () => {
@@ -222,22 +223,22 @@ describe('GraphEngine readouts', () => {
     h.send(rows(100, 100));
     const { engine, over } = h.engine({ series: [{ channelId: ch.SPEED }] });
     engine.flush();
-    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]).toMatchObject({ state: 'live', value: 99 });
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]).toMatchObject({ kind: 'current', sample: { state: 'live', value: 99 } });
     expect(over().texts()).toContain(CURRENT_LABEL);
     h.clock.advance(SPEC_DEGRADED_AFTER_MS + 1);
     h.pump();
     engine.flush();
-    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]).toMatchObject({ state: 'degraded', value: 99 });
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]?.sample).toMatchObject({ state: 'degraded', value: 99 });
     expect(over().texts()).toContain(CURRENT_DEGRADED_LABEL);
-    // History at a cursor is shown as it was recorded.
+    // History at a cursor is shown as it was recorded, marked as history.
     engine.setCursor(100.5);
     engine.flush();
-    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]).toMatchObject({ state: 'live', value: 50 });
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]).toMatchObject({ kind: 'history', sample: { state: 'live', value: 50 } });
     engine.setCursor(null);
     h.clock.advance(5_000);
     h.pump();
     engine.flush();
-    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]).toMatchObject({ state: 'stale', value: null });
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]?.sample).toMatchObject({ state: 'stale', value: null });
     expect(over().texts()).toContain(CURRENT_STALE_LABEL);
   });
 
@@ -288,7 +289,7 @@ describe('GraphEngine axes and series', () => {
   it('overlays a reference series dashed, from its own source', () => {
     const h = harness();
     h.send(rows(100, 100));
-    const reference = new StaticSource({ xs: [100, 100.5, 101], columns: new Map([[ch.SPEED, [10, 20, 30]]]) });
+    const reference = new StaticSource({ dataKind: 'lmu', xs: [100, 100.5, 101], columns: new Map([[ch.SPEED, [10, 20, 30]]]) });
     const { engine, renderer } = h.engine({
       series: [{ channelId: ch.SPEED }],
       references: [{ key: 'best', label: 'Best lap', channelId: ch.SPEED, source: reference }],
@@ -299,7 +300,8 @@ describe('GraphEngine axes and series', () => {
     expect(ref?.window).not.toBe(renderer.last?.series[0]?.window);
     engine.setCursor(100.5);
     engine.flush();
-    expect(engine.getSnapshot().readouts[referenceKey('best')]).toMatchObject({ state: 'live', value: 20 });
+    // A reference is a recording: marked as such, never given the live feed's freshness (silent-failure L3).
+    expect(engine.getSnapshot().readouts[referenceKey('best')]).toMatchObject({ kind: 'recorded', sample: { state: 'live', value: 20 } });
   });
 
   it('draws markers with their labels', () => {
@@ -376,12 +378,14 @@ describe('GraphEngine lifecycle', () => {
     const h = harness();
     h.send(rows(100, 100));
     let listeners = 0;
-    const inner = new LiveRingSource(h.store, { xMode: 'time' });
+    const inner = new LiveRingSource(h.store, { xMode: 'time', dataKind: 'lmu' });
     const source: GraphDataSource = {
       origin: 'live',
+      dataKind: 'lmu',
       extent: () => inner.extent(),
       read: (range, ids) => inner.read(range, ids),
       current: () => inner.current(),
+      latest: (id) => inner.latest(id),
       subscribe: (listener) => {
         listeners += 1;
         const off = inner.subscribe(listener);
@@ -416,3 +420,350 @@ describe('GraphEngine lifecycle', () => {
     expect(listeners).toBe(0);
   });
 });
+
+describe('GraphEngine frame errors (silent-failure C1)', () => {
+  it('shows a throwing frame as GRAPH ERROR with no readout values, logs it with context, and recovers', () => {
+    const h = harness();
+    h.send(rows(100, 100));
+    const inner = new LiveRingSource(h.store, { xMode: 'time', dataKind: 'lmu' });
+    let fail = false;
+    const source: GraphDataSource = {
+      origin: 'live',
+      dataKind: 'lmu',
+      extent: () => inner.extent(),
+      read: (range, ids) => {
+        if (fail) throw new Error('ring contract violated');
+        return inner.read(range, ids);
+      },
+      current: () => inner.current(),
+      latest: (id) => inner.latest(id),
+      subscribe: (listener) => inner.subscribe(listener),
+    };
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { engine, renderer, over } = h.engine({ source, series: [{ channelId: ch.SPEED }], id: 'g1' });
+    engine.flush();
+    expect(engine.getSnapshot()).toMatchObject({ health: 'ok', problem: null });
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]?.sample).toMatchObject({ state: 'live', value: 99 });
+    const drawn = renderer.frames.length;
+
+    fail = true;
+    engine.retry();
+    engine.flush();
+    const snap = engine.getSnapshot();
+    expect(snap.health).toBe('error');
+    expect(snap.problem).toContain('ring contract violated');
+    // The last live value is never kept on screen.
+    expect(snap.readouts[seriesKey(ch.SPEED)]?.sample).toMatchObject({ state: 'unavailable', value: null });
+    // The series are cleared and the plot says why.
+    expect(renderer.frames).toHaveLength(drawn + 1);
+    expect(renderer.last?.series).toEqual([]);
+    expect(over().texts()).toContain(GRAPH_ERROR_TEXT);
+    expect(errors).toHaveBeenCalledWith(
+      '[graph] frame failed',
+      expect.objectContaining({ id: 'g1', renderer: 'canvas2d', xMode: 'time', origin: 'live' }),
+      expect.any(Error),
+    );
+    expect(engine.frameFailures).toBe(1);
+    // Repeated failures of the same error are not logged every frame.
+    engine.retry();
+    engine.flush();
+    expect(errors).toHaveBeenCalledTimes(1);
+
+    fail = false;
+    h.send(rows(101, 1));
+    h.pump();
+    engine.flush();
+    expect(engine.getSnapshot()).toMatchObject({ health: 'ok', problem: null });
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]?.sample).toMatchObject({ state: 'live', value: 0 });
+    expect(renderer.last?.series.map((s) => s.key)).toEqual([seriesKey(ch.SPEED)]);
+    expect(warnings).toHaveBeenCalledWith('[graph] frame recovered', expect.objectContaining({ id: 'g1', failedFrames: 2 }));
+    errors.mockRestore();
+    warnings.mockRestore();
+  });
+});
+
+describe('GraphEngine per-channel freshness (silent-failure C2, H3, L2)', () => {
+  /** Physics rows plus a scoring channel whose LMU source age (5 s) makes the Scoring class STALE. */
+  function staleScoringRows(t0: number, n: number): [number, FixtureRecord[]][] {
+    return rows(t0, n, () => [rec.f64(ch.LAST_LAP_TIME, 90.5), rec.f32(ch.SRC_SCORING_AGE, 5)]);
+  }
+
+  it('reads, draws and names a STALE slow-class channel as stale while the physics feed is live', () => {
+    const h = harness();
+    h.send(staleScoringRows(100, 100));
+    const { engine, renderer, over } = h.engine({ series: [{ channelId: ch.SPEED }, { channelId: ch.LAST_LAP_TIME }] });
+    engine.flush();
+    expect(h.store.getStreamState('Physics')).toBe('live');
+    expect(h.store.getSample(ch.LAST_LAP_TIME).state).toBe('stale');
+    const r = engine.getSnapshot().readouts;
+    expect(r[seriesKey(ch.SPEED)]).toMatchObject({ kind: 'current', sample: { state: 'live', value: 99 } });
+    // Same state as ValueReadout (store.getSample): STALE, no value.
+    expect(r[seriesKey(ch.LAST_LAP_TIME)]).toMatchObject({ kind: 'current', sample: { state: 'stale', value: null } });
+    const drawn = renderer.last?.series ?? [];
+    expect(drawn.find((s) => s.key === seriesKey(ch.LAST_LAP_TIME))?.dashed).toBe(true);
+    expect(drawn.find((s) => s.key === seriesKey(ch.SPEED))?.dashed).toBe(false);
+    expect(over().texts()).toContain(`${STALE_SERIES_PREFIX}Last lap time`);
+    // A cursor on the newest rows carries the channel's current state; an older row is history.
+    engine.setCursor(100.98);
+    engine.flush();
+    expect(engine.getSnapshot().readouts[seriesKey(ch.LAST_LAP_TIME)]).toMatchObject({ kind: 'current', sample: { state: 'stale', value: null } });
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]).toMatchObject({ kind: 'current', sample: { state: 'live', value: 98 } });
+    engine.setCursor(100.2);
+    engine.flush();
+    expect(engine.getSnapshot().readouts[seriesKey(ch.LAST_LAP_TIME)]).toMatchObject({ kind: 'history', sample: { state: 'live', value: 90.5 } });
+  });
+
+  it('a cursor on the newest row of a STALE feed reads STALE, not the last value', () => {
+    const h = harness();
+    h.send(rows(100, 100));
+    const { engine } = h.engine({ series: [{ channelId: ch.SPEED }] });
+    engine.flush();
+    h.clock.advance(5_000);
+    h.pump();
+    engine.setCursor(100.99);
+    engine.flush();
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]).toMatchObject({ kind: 'current', sample: { state: 'stale', value: null } });
+  });
+
+  it('drops a cursor that scrolled out of a following live view', () => {
+    const h = harness();
+    h.send(rows(100, 1000));
+    const { engine } = h.engine({ series: [{ channelId: ch.SPEED }] });
+    engine.flush();
+    engine.setCursor(100.5);
+    engine.flush();
+    expect(engine.cursorX).toBeCloseTo(100.5, 9);
+    h.send(rows(110, 100));
+    h.pump();
+    engine.flush();
+    expect(engine.cursorX).toBeNull();
+    expect(engine.getSnapshot().cursorLabel).toBeNull();
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]?.kind).toBe('current');
+  });
+
+  it('a paused view without a cursor still reads the newest sample, not NO DATA (L2)', () => {
+    const h = harness();
+    h.send(rows(100, 3000));
+    const { engine } = h.engine({ series: [{ channelId: ch.SPEED }] });
+    engine.flush();
+    engine.dispatch({ type: 'pan', dx: -10 });
+    engine.flush();
+    expect(engine.getSnapshot().follow).toBe(false);
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]).toMatchObject({ kind: 'current', sample: { state: 'live', value: 2999 } });
+  });
+});
+
+describe('GraphEngine theme, renderer and canvas failures (silent-failure H5, M1, M4)', () => {
+  it('replaces an invalid or missing colour token by its documented fallback and logs it (H5)', () => {
+    const h = harness();
+    h.send(rows(100, 100));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const container = document.createElement('div');
+    for (const [name, value] of Object.entries(THEME_FALLBACK)) container.style.setProperty(name, value);
+    container.style.setProperty('--graph-series-1', '#111111');
+    container.style.setProperty('--graph-series-2', 'not-a-colour');
+    container.style.removeProperty('--graph-current-car-stale');
+    document.body.append(container);
+    const renderer = new FakeRenderer();
+    const engine = new GraphEngine({
+      source: new LiveRingSource(h.store, { xMode: 'time', dataKind: 'lmu' }),
+      xMode: 'time',
+      series: [{ channelId: ch.SPEED }, { channelId: ch.THROTTLE }],
+      renderer: () => renderer,
+      scheduleFrame: h.frames.schedule,
+      context: () => new RecordingContext(),
+    });
+    engine.attach(container);
+    engine.resize(WIDTH, HEIGHT);
+    engine.flush();
+    const colors = renderer.last?.series.map((s) => s.color);
+    // Never the previous series' colour, never black: the slot's own documented fallback.
+    expect(colors).toEqual(['#111111', THEME_FALLBACK['--graph-series-2']]);
+    expect(errors).toHaveBeenCalledWith(
+      '[graph] invalid or missing colour tokens; using the documented fallbacks',
+      expect.objectContaining({ tokens: ['--graph-current-car-stale', '--graph-series-2: not-a-colour'] }),
+    );
+    errors.mockRestore();
+    container.remove();
+  });
+
+  it('keeps distinct, non-black fallbacks for every series slot', () => {
+    const series = Object.entries(THEME_FALLBACK).filter(([k]) => k.startsWith('--graph-series-')).map(([, v]) => v);
+    expect(new Set(series).size).toBe(8);
+    expect(series).not.toContain('#000000');
+    expect(THEME_FALLBACK['--graph-current-car-stale']).not.toBe(THEME_FALLBACK['--graph-current-car']);
+  });
+
+  it('shows a renderer fallback, redraws from a fresh read, and turns a failed renderer into GRAPH ERROR (M1)', () => {
+    const h = harness();
+    h.send(rows(100, 100));
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let status: RendererStatus = { activeKind: 'webgl', state: 'ok', reason: null };
+    let notify = (): void => undefined;
+    class StatusRenderer extends FakeRenderer {
+      status(): RendererStatus {
+        return status;
+      }
+      onStatusChange(listener: () => void): () => void {
+        notify = listener;
+        return () => undefined;
+      }
+    }
+    const renderer = new StatusRenderer();
+    const { engine } = h.engine({ series: [{ channelId: ch.SPEED }], renderer: () => renderer, id: 'r1' });
+    engine.flush();
+    expect(engine.getSnapshot()).toMatchObject({ renderer: 'webgl', rendererNote: null, health: 'ok' });
+    const drawn = renderer.frames.length;
+
+    status = { activeKind: 'canvas2d', state: 'degraded', reason: 'WebGL context lost' };
+    notify();
+    engine.flush();
+    expect(renderer.frames.length).toBe(drawn + 1);
+    expect(engine.activeRenderer).toBe('canvas2d');
+    expect(engine.getSnapshot()).toMatchObject({ renderer: 'canvas2d', rendererNote: 'CANVAS2D fallback: WebGL context lost', health: 'ok' });
+    expect(warnings).toHaveBeenCalledWith('[graph] series renderer degraded', expect.objectContaining({ id: 'r1', renderer: 'canvas2d' }), status);
+
+    status = { activeKind: 'canvas2d', state: 'failed', reason: 'no 2D canvas context for the series' };
+    notify();
+    engine.flush();
+    expect(engine.getSnapshot()).toMatchObject({ health: 'error', problem: 'series renderer failed: no 2D canvas context for the series' });
+    expect(errors).toHaveBeenCalledWith('[graph] series renderer failed', expect.objectContaining({ id: 'r1' }), status);
+    warnings.mockRestore();
+    errors.mockRestore();
+  });
+
+  it('shows a graph without a 2D context for its axes and markers as unavailable, not as a bare plot (M4)', () => {
+    const h = harness();
+    h.send(rows(100, 100));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { engine } = h.engine({ series: [{ channelId: ch.SPEED }], context: () => null });
+    engine.flush();
+    expect(engine.getSnapshot().health).toBe('error');
+    expect(engine.getSnapshot().problem).toContain('no 2D canvas context');
+    expect(errors).toHaveBeenCalledWith('[graph] chrome canvas unavailable', expect.any(Object));
+    errors.mockRestore();
+  });
+});
+
+describe('GraphEngine gap visibility (silent-failure M2)', () => {
+  it('shows a short stream drop as a gap although the store split it with a midpoint gap row', () => {
+    const h = harness();
+    h.send(rows(100, 100));
+    // batch_seq jumps (a dropped batch): the store inserts an all-NaN row midway, 100.99 -> 101.145 -> 101.3.
+    const blocks = rows(101.3, 50).map(([t, r]) => encodeTlvBlock({ sourceEtS: t }, r));
+    const result = h.store.applyBatch(encodeUiBatch(0, 40, blocks));
+    expect(result.ok && result.value.gapBefore).toBe(true);
+    const { engine } = h.engine({ series: [{ channelId: ch.SPEED }] });
+    engine.flush();
+    const under = h.contexts.at(-2);
+    const bands = under?.ops('fillRect').filter((c) => c.style === THEME_FALLBACK['--graph-gap-fill']) ?? [];
+    expect(bands).toHaveLength(1);
+  });
+});
+
+describe('GraphEngine sync group checks (silent-failure M6)', () => {
+  it('runs a graph with other x semantics standalone and says so, never sharing its cursor', () => {
+    const h = harness();
+    h.send(rows(100, 1000, () => [rec.f64(ch.LAP_DISTANCE, 1)]));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const group = new GraphSyncGroup();
+    const time = h.engine({ series: [{ channelId: ch.SPEED }], syncGroup: group, id: 't' });
+    const lap = h.engine({
+      source: new LiveRingSource(h.store, { xMode: 'lapDistance', xChannel: ch.LAP_DISTANCE, dataKind: 'lmu' }),
+      xMode: 'lapDistance',
+      series: [{ channelId: ch.SPEED }],
+      syncGroup: group,
+      id: 'l',
+    });
+    time.engine.flush();
+    lap.engine.flush();
+    expect(group.size).toBe(1);
+    expect(lap.engine.getSnapshot()).toMatchObject({ health: 'error' });
+    expect(lap.engine.getSnapshot().problem).toMatch(/^not synchronized: sync group shares x as 'time\|live'/);
+    expect(errors).toHaveBeenCalledWith('[graph] sync group refused this graph', expect.objectContaining({ id: 'l' }), expect.any(Error));
+    time.engine.setCursor(104);
+    expect(lap.engine.cursorX).toBeNull();
+    errors.mockRestore();
+  });
+});
+
+describe('GraphEngine fixed scales (silent-failure M7)', () => {
+  it('reports a fixed axis that clips visible data', () => {
+    const h = harness();
+    h.send(rows(100, 100));
+    const { engine } = h.engine({ series: [{ channelId: ch.SPEED }] });
+    const speedDisplay = unitAxisDisplay(Unit.MetrePerSecond);
+    engine.update({ yScales: { [axisKey(speedDisplay)]: { mode: 'fixed', min: 0, max: 100 } } });
+    engine.flush();
+    // Speed reaches 99 m/s = 356 km/h, above the fixed 0…100 km/h.
+    expect(engine.getSnapshot().axes[0]).toMatchObject({ setting: { mode: 'fixed' }, offScale: true });
+    engine.update({ yScales: { [axisKey(speedDisplay)]: { mode: 'fixed', min: 0, max: 400 } } });
+    engine.flush();
+    expect(engine.getSnapshot().axes[0]?.offScale).toBe(false);
+  });
+});
+
+describe('GraphEngine configuration and input checks (silent-failure L1, L6)', () => {
+  it('replaces an invalid maxGapS by the default and logs it, at construction and on update', () => {
+    const h = harness();
+    h.send(rows(100, 100));
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { engine } = h.engine({ series: [{ channelId: ch.SPEED }], maxGapS: Number.NaN });
+    expect(engine.config.maxGapS).toBe(DEFAULT_MAX_GAP_S);
+    engine.update({ maxGapS: -1 });
+    expect(engine.config.maxGapS).toBe(DEFAULT_MAX_GAP_S);
+    engine.update({ maxGapS: 0.5 });
+    expect(engine.config.maxGapS).toBe(0.5);
+    expect(errors).toHaveBeenCalledTimes(2);
+    expect(errors).toHaveBeenCalledWith('[graph] invalid maxGapS; using the default', expect.objectContaining({ maxGapS: -1 }));
+    engine.flush();
+    // Readouts still work (NaN would have made every one NO DATA).
+    expect(engine.getSnapshot().readouts[seriesKey(ch.SPEED)]?.sample).toMatchObject({ state: 'live', value: 99 });
+    errors.mockRestore();
+  });
+
+  it('ignores only DOM pointer-capture failures; any other error is not swallowed', () => {
+    let fail: () => never = () => {
+      throw new DOMException('no active pointer', 'NotFoundError');
+    };
+    const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+    const methods = {
+      setPointerCapture: () => fail(),
+      hasPointerCapture: () => false,
+      releasePointerCapture: () => undefined,
+    };
+    for (const [name, fn] of Object.entries(methods)) Object.defineProperty(proto, name, { value: fn, configurable: true, writable: true });
+    try {
+      const h = harness();
+      h.send(rows(100, 1000));
+      const { engine, container } = h.engine({ series: [{ channelId: ch.SPEED }] });
+      engine.flush();
+      const canvas = container.querySelector('canvas.telemetry-graph__input');
+      if (!(canvas instanceof HTMLCanvasElement)) throw new Error('no input canvas');
+      canvas.dispatchEvent(pointer('pointerdown', { clientX: 200, button: 0 }));
+      canvas.dispatchEvent(pointer('pointerup', { clientX: 300 }));
+      engine.flush();
+      expect(engine.view.follow).toBe(false);
+
+      const reported: unknown[] = [];
+      const onError = (e: ErrorEvent): void => {
+        reported.push(e.error);
+        e.preventDefault();
+      };
+      window.addEventListener('error', onError);
+      const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      fail = () => {
+        throw new TypeError('capture bug');
+      };
+      canvas.dispatchEvent(pointer('pointerdown', { clientX: 200, button: 0 }));
+      window.removeEventListener('error', onError);
+      quiet.mockRestore();
+      expect(reported).toEqual([expect.objectContaining({ message: 'capture bug' })]);
+    } finally {
+      for (const name of Object.keys(methods)) Reflect.deleteProperty(proto, name);
+    }
+  });
+});
+
