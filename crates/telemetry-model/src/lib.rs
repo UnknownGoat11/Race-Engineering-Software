@@ -8,7 +8,8 @@
 //! - [`ring`]: fixed-capacity time-series storage for graphs;
 //! - [`scoring`]: typed session/standings state, session identity and capability maps;
 //! - [`events`]: session events (laps, pits, flags, network, recording, alerts);
-//! - [`enums`]: decoded LMU enumerations that never coerce unknown raw values.
+//! - [`enums`]: decoded LMU enumerations that never coerce unknown raw values;
+//! - [`uibatch`]: the `UiBatch` v1 envelope that carries TLV blocks to the desktop UI (D-023).
 
 pub mod channel;
 pub mod codec;
@@ -18,6 +19,7 @@ pub mod frame;
 pub mod registry;
 pub mod ring;
 pub mod scoring;
+pub mod uibatch;
 pub mod units;
 pub mod validate;
 pub mod value;

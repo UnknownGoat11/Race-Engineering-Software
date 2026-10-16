@@ -2,8 +2,8 @@
 //!
 //! - `golden/tlv/*.bin`: TLV blocks produced by `telemetry_model::codec::TlvEncoder`, plus hand-made
 //!   malformed blocks for every decode error;
-//! - `golden/uibatch/*.bin`: UiBatch v1 envelopes written by [`crate::uibatch::encode`], plus malformed
-//!   envelopes for every structural error; a batch over the 4 MiB limit is described in the manifest by its
+//! - `golden/uibatch/*.bin`: UiBatch v1 envelopes written by [`crate::uibatch::encode_vector`]
+//!   (`telemetry_model::uibatch::encode`), plus malformed envelopes for every structural error; a batch over the 4 MiB limit is described in the manifest by its
 //!   length and fill byte instead of being committed (`uiBatchSynthetic`);
 //! - `golden/manifest.json`: for every file, the result Rust produces — `codec::decode` for TLV blocks, the
 //!   reference envelope parser for batches, and `TelemetryFrame::apply_tlv` for what applying a batch must
@@ -1182,111 +1182,111 @@ fn ui_batch_vectors(g: &mut Golden) {
     g.batch(
         "single_block",
         "One block, no flags, batch_seq 1.",
-        uibatch::encode(0, 1, &[&a]),
+        uibatch::encode_vector(0, 1, &[&a]),
         Intended::Ok,
     );
     g.batch(
         "multi_block",
         "Three blocks, oldest first (ET 100.00, 100.01, 100.02).",
-        uibatch::encode(0, 2, &[&a, &b, &c]),
+        uibatch::encode_vector(0, 2, &[&a, &b, &c]),
         Intended::Ok,
     );
     g.batch(
         "empty_batch",
         "No blocks (valid; nothing to apply).",
-        uibatch::encode(0, 3, &[]),
+        uibatch::encode_vector(0, 3, &[]),
         Intended::Ok,
     );
     g.batch(
         "reset",
         "RESET: discard cached values and ring contents, then apply.",
-        uibatch::encode(FLAG_RESET, 0, &[&a]),
+        uibatch::encode_vector(FLAG_RESET, 0, &[&a]),
         Intended::Ok,
     );
     g.batch(
         "reset_backfill",
         "RESET | BACKFILL: first batch of a subscription, historical blocks oldest first.",
-        uibatch::encode(FLAG_RESET | FLAG_BACKFILL, 0, &[&a, &b]),
+        uibatch::encode_vector(FLAG_RESET | FLAG_BACKFILL, 0, &[&a, &b]),
         Intended::Ok,
     );
     g.batch(
         "backfill_continuation",
         "BACKFILL without RESET: a later part of a split backfill.",
-        uibatch::encode(FLAG_BACKFILL, 1, &[&c]),
+        uibatch::encode_vector(FLAG_BACKFILL, 1, &[&c]),
         Intended::Ok,
     );
     g.batch(
         "gap_before",
         "GAP_BEFORE: the bridge dropped blocks before this batch.",
-        uibatch::encode(FLAG_GAP_BEFORE, 4, &[&c]),
+        uibatch::encode_vector(FLAG_GAP_BEFORE, 4, &[&c]),
         Intended::Ok,
     );
     g.batch(
         "all_flags",
         "RESET | BACKFILL | GAP_BEFORE.",
-        uibatch::encode(FLAG_RESET | FLAG_BACKFILL | FLAG_GAP_BEFORE, 0, &[&a]),
+        uibatch::encode_vector(FLAG_RESET | FLAG_BACKFILL | FLAG_GAP_BEFORE, 0, &[&a]),
         Intended::Ok,
     );
     g.batch(
         "qualities",
         "A block of values followed by a block of INVALID / STALE / UNAVAILABLE / NOT_SUPPORTED records.",
-        uibatch::encode(0, 5, &[&a, &qualities]),
+        uibatch::encode_vector(0, 5, &[&a, &qualities]),
         Intended::Ok,
     );
     g.batch(
         "registry_contradictions",
         "Records that contradict the registry (wrong type, VALID NaN, VALID without value) become INVALID; \
          an unknown id is skipped; a correct record is applied.",
-        uibatch::encode(0, 6, &[&contradictions]),
+        uibatch::encode_vector(0, 6, &[&contradictions]),
         Intended::Ok,
     );
     g.batch(
         "et_not_finite",
         "A block without a finite source ET updates current values but never enters the ring.",
-        uibatch::encode(0, 7, &[&no_et]),
+        uibatch::encode_vector(0, 7, &[&no_et]),
         Intended::Ok,
     );
     g.batch(
         "rejected_schema_mismatch",
         "Structurally valid, but block 1 announces schema 2: the whole batch is refused (block 0 is not \
          applied either).",
-        uibatch::encode(0, 8, &[&a, &schema2]),
+        uibatch::encode_vector(0, 8, &[&a, &schema2]),
         Intended::Ok,
     );
     g.batch(
         "rejected_block_codec_error",
         "Structurally valid envelope whose block 1 is a truncated TLV block: the whole batch is refused.",
-        uibatch::encode(0, 9, &[&a, &truncated]),
+        uibatch::encode_vector(0, 9, &[&a, &truncated]),
         Intended::Ok,
     );
     g.batch(
         "seq_jump_first",
         "batch_seq 41.",
-        uibatch::encode(0, 41, &[&a]),
+        uibatch::encode_vector(0, 41, &[&a]),
         Intended::Ok,
     );
     g.batch(
         "seq_jump_second",
         "batch_seq 43 (42 is missing).",
-        uibatch::encode(0, 43, &[&b]),
+        uibatch::encode_vector(0, 43, &[&b]),
         Intended::Ok,
     );
     g.batch(
         "seq_wrap_first",
         "batch_seq u32::MAX.",
-        uibatch::encode(0, u32::MAX, &[&a]),
+        uibatch::encode_vector(0, u32::MAX, &[&a]),
         Intended::Ok,
     );
     g.batch(
         "seq_wrap_second",
         "batch_seq 0 after u32::MAX (wrap-around, not a jump).",
-        uibatch::encode(0, 0, &[&b]),
+        uibatch::encode_vector(0, 0, &[&b]),
         Intended::Ok,
     );
 
     // ----- structural errors -----
-    let valid_one = uibatch::encode(0, 1, &[&a]);
-    let header_only = uibatch::encode(0, 1, &[]);
+    let valid_one = uibatch::encode_vector(0, 1, &[&a]);
+    let header_only = uibatch::encode_vector(0, 1, &[]);
     let patched = |offset: usize, bytes: &[u8]| {
         let mut v = valid_one.clone();
         v[offset..offset + bytes.len()].copy_from_slice(bytes);
@@ -1348,7 +1348,7 @@ fn ui_batch_vectors(g: &mut Golden) {
         flags_and_reserved,
         Intended::Err("UnknownFlags"),
     );
-    let mut length_cut = uibatch::encode(0, 1, &[]);
+    let mut length_cut = uibatch::encode_vector(0, 1, &[]);
     length_cut[12..14].copy_from_slice(&1u16.to_le_bytes());
     length_cut.extend_from_slice(&[7, 0]);
     g.batch(
@@ -1357,7 +1357,7 @@ fn ui_batch_vectors(g: &mut Golden) {
         length_cut,
         Intended::Err("Truncated"),
     );
-    let mut body_cut = uibatch::encode(0, 1, &[]);
+    let mut body_cut = uibatch::encode_vector(0, 1, &[]);
     body_cut[12..14].copy_from_slice(&1u16.to_le_bytes());
     body_cut.extend_from_slice(&40u32.to_le_bytes());
     body_cut.extend_from_slice(&[0; 10]);
