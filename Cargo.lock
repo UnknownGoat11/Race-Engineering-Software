@@ -112,6 +112,7 @@ dependencies = [
  "crossbeam-channel",
  "lmu-normalizer",
  "lmu-reader",
+ "lmu-relay",
  "parking_lot",
  "postcard",
  "protocol",

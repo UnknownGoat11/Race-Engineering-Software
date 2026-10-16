@@ -61,6 +61,8 @@ pub struct NetworkSettings {
     pub relay_url: Option<String>,
     /// Connection timeout in milliseconds. Default: 5,000 ms.
     pub connect_timeout_ms: u32,
+    /// Optional extra trusted CA certificate bytes (PEM) for development/testing (D-016).
+    pub extra_ca_pem: Option<Vec<u8>>,
 }
 
 impl Default for NetworkSettings {
@@ -68,6 +70,7 @@ impl Default for NetworkSettings {
         Self {
             relay_url: None,
             connect_timeout_ms: 5000,
+            extra_ca_pem: None,
         }
     }
 }

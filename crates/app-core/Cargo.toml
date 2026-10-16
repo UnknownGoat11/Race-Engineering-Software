@@ -34,5 +34,9 @@ postcard.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows.workspace = true
 
+[dev-dependencies]
+lmu-relay = { path = "../relay" }
+synthetic = { workspace = true }
+
 [lints]
 workspace = true

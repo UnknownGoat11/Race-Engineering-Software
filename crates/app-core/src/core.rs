@@ -25,7 +25,9 @@ use tracing::info;
 
 use transport::auth::AuthManager;
 use transport::credentials::CredentialStore;
-use transport::endpoint::{Environment, RelayEndpoint};
+use transport::driver::DriverClient;
+use transport::endpoint::{Environment, ExtraCa, RelayEndpoint};
+use transport::engineer::EngineerClient;
 
 use crate::bridge::hub::UiHub;
 use crate::bridge::pacer::{PacerConfig, UiBridgePacer};
@@ -93,6 +95,7 @@ struct DriverRun {
     pipeline_thread: Option<JoinHandle<PipelineSummary>>,
     cmd_tx: Sender<PipelineCommand>,
     stop_flag: Arc<AtomicBool>,
+    client: Option<Arc<DriverClient>>,
 }
 
 /// Active demo runtime components (display-only, feature `demo`).
@@ -107,6 +110,7 @@ struct EngineerRun {
     core: Arc<Mutex<crate::engineer::core::EngineerCore>>,
     consumer_abort: Option<tokio::task::AbortHandle>,
     tick_abort: Option<tokio::task::AbortHandle>,
+    client: Arc<Mutex<Option<Arc<EngineerClient>>>>,
 }
 
 /// The central headless orchestration facade.
@@ -114,6 +118,7 @@ pub struct AppCore {
     runtime: tokio::runtime::Runtime,
     clock: AppClock,
     settings: RwLock<CoreSettings>,
+    endpoint: RelayEndpoint,
     sink: Arc<dyn UiSink>,
     credential_store: Arc<dyn CredentialStore>,
     auth_manager: Arc<AuthManager>,
@@ -145,12 +150,17 @@ impl AppCore {
             .build()
             .map_err(|e| CoreError::Runtime(e.to_string()))?;
 
-        let endpoint = match &settings.network.relay_url {
+        let mut endpoint = match &settings.network.relay_url {
             Some(url) => RelayEndpoint::parse(url, "Configured", Environment::Development)
                 .map_err(|e| CoreError::Settings(SettingsError::InvalidEndpoint(e.to_string())))?,
             None => RelayEndpoint::new("127.0.0.1", 443, "Local", Environment::Development)
                 .map_err(|e| CoreError::Settings(SettingsError::InvalidEndpoint(e.to_string())))?,
         };
+        if let Some(ref pem) = settings.network.extra_ca_pem {
+            endpoint = endpoint
+                .with_extra_ca(ExtraCa::Pem(pem.clone()))
+                .map_err(|e| CoreError::Settings(SettingsError::InvalidEndpoint(e.to_string())))?;
+        }
 
         let auth_manager = Arc::new(AuthManager::new(Arc::clone(&credential_store), &endpoint));
         let clock = AppClock::new();
@@ -168,6 +178,7 @@ impl AppCore {
             runtime,
             clock,
             settings: RwLock::new(settings),
+            endpoint,
             sink,
             credential_store,
             auth_manager,
@@ -188,6 +199,20 @@ impl AppCore {
         );
 
         Ok(core)
+    }
+
+    /// Executes an async operation on the core's Tokio runtime without blocking or nesting runtimes on the current thread.
+    fn block_on_runtime<F, T>(&self, fut: F) -> Result<T, CoreError>
+    where
+        F: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        self.runtime.spawn(async move {
+            let res = fut.await;
+            let _ = tx.send(res);
+        });
+        rx.recv().map_err(|e| CoreError::Runtime(e.to_string()))
     }
 
     /// Returns the currently active operating mode.
@@ -213,6 +238,11 @@ impl AppCore {
     /// Returns a reference to the credential store.
     pub fn credential_store(&self) -> &Arc<dyn CredentialStore> {
         &self.credential_store
+    }
+
+    /// Returns a reference to the configured relay endpoint.
+    pub fn endpoint(&self) -> &RelayEndpoint {
+        &self.endpoint
     }
 
     /// Returns a handle to the active engineer core, if running.
@@ -296,6 +326,15 @@ impl AppCore {
         &self,
         source: S,
     ) -> Result<(), CoreError> {
+        self.start_driver_with_source_and_net(source, None)
+    }
+
+    /// Starts driver mode using a user-supplied snapshot source and optional network publisher.
+    pub fn start_driver_with_source_and_net<S: SnapshotSource + Send + 'static>(
+        &self,
+        source: S,
+        net: Option<crate::driver::net::NetPublisher>,
+    ) -> Result<(), CoreError> {
         if self.is_shutdown.load(Ordering::Relaxed) {
             return Err(CoreError::ShutDown);
         }
@@ -329,7 +368,7 @@ impl AppCore {
             session_settings,
             EngineHubConfig::default(),
             recorder,
-            None,
+            net,
             Arc::clone(&self.ui_hub),
             Some(Arc::clone(&self.sink)),
         )?;
@@ -348,6 +387,7 @@ impl AppCore {
             pipeline_thread: Some(pipeline_thread),
             cmd_tx,
             stop_flag,
+            client: None,
         });
 
         info!(component = COMPONENT, "driver mode started");
@@ -377,6 +417,13 @@ impl AppCore {
         // 4. Join pipeline thread
         if let Some(pipeline_thread) = run.pipeline_thread.take() {
             let _ = pipeline_thread.join();
+        }
+
+        // 5. Stop driver client
+        if let Some(client) = run.client.take() {
+            let _ = self.block_on_runtime(async move {
+                let _ = client.stop().await;
+            });
         }
 
         info!(component = COMPONENT, "driver pipeline stopped");
@@ -515,6 +562,7 @@ impl AppCore {
             core: engineer_core,
             consumer_abort: Some(consumer_task.abort_handle()),
             tick_abort: Some(tick_task.abort_handle()),
+            client: Arc::new(Mutex::new(None)),
         });
 
         // Drop sender unused in local stub until joined
@@ -534,6 +582,11 @@ impl AppCore {
             }
             if let Some(handle) = run.tick_abort.take() {
                 handle.abort();
+            }
+            if let Some(client) = run.client.lock().take() {
+                let _ = self.block_on_runtime(async move {
+                    let _ = client.disconnect().await;
+                });
             }
         }
         Ok(())
@@ -592,6 +645,193 @@ impl AppCore {
     /// Requests an immediate full snapshot over UI and network streams.
     pub fn driver_request_snapshot(&self) -> Result<(), CoreError> {
         self.send_driver_command(PipelineCommand::SnapshotNeeded)
+    }
+
+    /// Connects the driver transport client to the relay and binds the session.
+    pub fn spawn_driver_client(&self) -> Result<Arc<DriverClient>, CoreError> {
+        if *self.active_mode.read() != AppMode::Driver {
+            return Err(CoreError::InvalidMode(*self.active_mode.read()));
+        }
+        if self.driver_run.lock().is_none() {
+            return Err(CoreError::DriverNotRunning);
+        }
+
+        let _guard = self.runtime.enter();
+
+        let config = transport::ClientConfig::new(
+            self.endpoint.clone(),
+            env!("CARGO_PKG_VERSION"),
+            "app-core-driver",
+            self.clock.epoch(),
+        );
+        let transport = transport::TcpTlsTelemetryTransport::new();
+        let (client, mut events_rx) =
+            DriverClient::spawn(config, transport, Arc::clone(&self.auth_manager))
+                .map_err(|e| CoreError::Runtime(e.to_string()))?;
+        let client = Arc::new(client);
+
+        let session_create = protocol::messages::SessionCreate {
+            identity: telemetry_model::scoring::SessionIdentity::default(),
+            lmu_version: None,
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            schema_version: telemetry_model::TELEMETRY_SCHEMA_VERSION,
+            capabilities: telemetry_model::scoring::VehicleCapabilities::default(),
+        };
+
+        let start_client = Arc::clone(&client);
+        self.block_on_runtime(async move { start_client.start(session_create).await })?
+            .map_err(|e| CoreError::Runtime(format!("{e:?}")))?;
+
+        let mut driver_guard = self.driver_run.lock();
+        if let Some(ref mut run) = *driver_guard {
+            let cmd_tx = run.cmd_tx.clone();
+            self.runtime.spawn(async move {
+                while let Some(event) = events_rx.recv().await {
+                    match event {
+                        transport::driver::DriverEvent::SnapshotNeeded { trigger: _ } => {
+                            let _ = cmd_tx.send(PipelineCommand::SnapshotNeeded);
+                        }
+                        transport::driver::DriverEvent::SessionReady { .. } => {
+                            let _ = cmd_tx.send(PipelineCommand::SnapshotNeeded);
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            run.client = Some(Arc::clone(&client));
+        }
+
+        Ok(client)
+    }
+
+    /// Returns the active DriverClient if spawned.
+    pub fn driver_client(&self) -> Option<Arc<DriverClient>> {
+        self.driver_run
+            .lock()
+            .as_ref()
+            .and_then(|r| r.client.clone())
+    }
+
+    /// Returns the active engineer connection code, if published by the relay.
+    pub fn driver_connect_code(&self) -> Option<protocol::messages::ConnectCode> {
+        let guard = self.driver_run.lock();
+        guard
+            .as_ref()
+            .and_then(|r| r.client.as_ref())
+            .and_then(|c| c.connect_code().borrow().clone())
+    }
+
+    /// Returns the currently connected engineers.
+    pub fn driver_engineers(&self) -> Vec<protocol::messages::EngineerEntry> {
+        let guard = self.driver_run.lock();
+        guard
+            .as_ref()
+            .and_then(|r| r.client.as_ref())
+            .map(|c| c.engineers().borrow().clone())
+            .unwrap_or_default()
+    }
+
+    /// Requests a new connection code from the relay.
+    pub fn driver_request_connect_code(&self) -> Result<(), CoreError> {
+        let client = self.driver_client().ok_or(CoreError::DriverNotRunning)?;
+        client
+            .request_connect_code()
+            .map_err(|e| CoreError::Runtime(format!("{e:?}")))
+    }
+
+    /// Kicks an engineer from the active driver session.
+    pub fn driver_kick_engineer(&self, connection_id: u64) -> Result<(), CoreError> {
+        let client = self.driver_client().ok_or(CoreError::DriverNotRunning)?;
+        client
+            .kick_engineer(connection_id)
+            .map_err(|e| CoreError::Runtime(format!("{e:?}")))
+    }
+
+    /// Joins a driver session using a one-time connection code.
+    pub fn engineer_join(
+        &self,
+        code: &str,
+    ) -> Result<transport::engineer::IdentityCard, CoreError> {
+        if *self.active_mode.read() != AppMode::Engineer {
+            return Err(CoreError::InvalidMode(*self.active_mode.read()));
+        }
+        let (core_consumer, client_slot) = {
+            let guard = self.engineer_run.lock();
+            let run = guard.as_ref().ok_or(CoreError::EngineerNotRunning)?;
+            (Arc::clone(&run.core), Arc::clone(&run.client))
+        };
+
+        let _guard = self.runtime.enter();
+
+        let config = transport::ClientConfig::new(
+            self.endpoint.clone(),
+            env!("CARGO_PKG_VERSION"),
+            "app-core-engineer",
+            self.clock.epoch(),
+        );
+        let transport = transport::TcpTlsTelemetryTransport::new();
+        let (client, mut events_rx) =
+            EngineerClient::spawn(config, transport, Arc::clone(&self.auth_manager))
+                .map_err(|e| CoreError::Runtime(e.to_string()))?;
+        let client = Arc::new(client);
+
+        // Attempt join:
+        let join_client = Arc::clone(&client);
+        let code_str = code.to_string();
+        let card = self
+            .block_on_runtime(async move { join_client.join(&code_str).await })?
+            .map_err(|e| CoreError::Runtime(format!("{e:?}")))?;
+
+        // Confirm stream delivery:
+        let confirm_client = Arc::clone(&client);
+        self.block_on_runtime(async move { confirm_client.confirm().await })?
+            .map_err(|e| CoreError::Runtime(format!("{e:?}")))?;
+
+        // Spawn background consumer piping events into EngineerCore:
+        let clock = self.clock;
+        self.runtime.spawn(async move {
+            while let Some(event) = events_rx.recv().await {
+                let now_mono_ns = clock.now_ns();
+                core_consumer.lock().handle_event(event, now_mono_ns);
+            }
+        });
+
+        *client_slot.lock() = Some(client);
+        Ok(card)
+    }
+
+    /// Disconnects the active engineer client from the driver session.
+    pub fn engineer_disconnect(&self) -> Result<(), CoreError> {
+        let client_opt = {
+            let guard = self.engineer_run.lock();
+            guard.as_ref().and_then(|r| r.client.lock().take())
+        };
+
+        if let Some(client) = client_opt {
+            let _ = self.block_on_runtime(async move {
+                let _ = client.disconnect().await;
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns the active EngineerClient if joined.
+    pub fn engineer_client(&self) -> Option<Arc<EngineerClient>> {
+        let guard = self.engineer_run.lock();
+        guard.as_ref().and_then(|r| r.client.lock().clone())
+    }
+
+    /// Requests an immediate snapshot from the driver over the network.
+    pub fn engineer_request_snapshot(&self) -> Result<(), CoreError> {
+        let client = self
+            .engineer_client()
+            .ok_or(CoreError::EngineerNotRunning)?;
+        self.block_on_runtime(async move {
+            client
+                .request_snapshot(protocol::messages::SnapshotReason::Manual)
+                .await
+        })?
+        .map_err(|e| CoreError::Runtime(format!("{e:?}")))
     }
 
     /// Returns a composite snapshot of the core status.
