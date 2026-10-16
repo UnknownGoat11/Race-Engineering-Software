@@ -233,6 +233,11 @@ pub fn all_messages() -> Vec<Message> {
             ],
         }),
         Message::EngineerKick(EngineerKick { connection_id: 2 }),
+        Message::DriverPresence(DriverPresence::away(
+            SESSION,
+            1_700_000_000_000_000_000,
+            1_700_000_600_000_000_000,
+        )),
         Message::SchemaNegotiate(SchemaNegotiate {
             schema_version: 1,
             capabilities: caps,

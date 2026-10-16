@@ -111,6 +111,7 @@ copied with `Frame::detach` / `TelemetryPayload::detach`, otherwise it pins the 
 | 0x16 | CONNECT_CODE       | R→D            | postcard `ConnectCode`   | current code + expiry (or none), engineers connected / max |
 | 0x17 | ENGINEER_LIST      | R→D            | postcard `EngineerList`  | engineers holding a slot: name, username, since, link state |
 | 0x18 | ENGINEER_KICK      | D→R            | postcard `EngineerKick`  | disconnect one engineer (its ticket dies, slot freed) |
+| 0x19 | DRIVER_PRESENCE    | R→E            | postcard `DriverPresence` | driver unexpectedly disconnected (away) or reconnected (minor 1.1) |
 | 0x20 | SCHEMA_NEGOTIATE   | D→R→E          | postcard `SchemaNegotiate` | schema version + capability map (channel availability, source, native rate) |
 | 0x21 | TELEMETRY_DELTA    | D→R→E          | TLV (§4)         | changed/high-rate channels |
 | 0x22 | TELEMETRY_SNAPSHOT | D→R→E          | TLV (§4) full    | every channel incl. unavailable markers |
@@ -373,6 +374,14 @@ Stream lifecycle:
   to the resume's SESSION_INFO as "events may be missing" (it knows both instants locally). A bounded relay
   event cache replayed on resume is a candidate for a later minor (appended REPLAYED SESSION_EVENTs need no
   wire change, only receiver de-duplication by event content).
+* Driver presence (minor 1.1, 0x19): when a driver disconnects unexpectedly while engineers are connected, the
+  session enters its grace period and the relay sends `DRIVER_PRESENCE { session_id, away: true, .. }` to every
+  connected engineer. The engineer UI displays driver away / degraded status instead of showing stale data as
+  live. When the driver reconnects within grace, the relay broadcasts `DRIVER_PRESENCE { session_id, away: false, .. }`.
+  While the driver is away, any forwarded SNAPSHOT_REQUEST from an engineer receives a non-fatal
+  `ERROR(SessionNotFound, "driver away")`.
+* Sequence desynchronization: if a driver sends stream frames with non-increasing sequence numbers, the relay
+  drops the frame and sends a rate-limited non-fatal `ERROR(Malformed, "non-increasing sequence")` to the driver.
 
 Environment separation: `ServerHello.env` ∈ {development, staging, production}. A client built/configured for
 production refuses a relay that announces a different environment.
@@ -507,6 +516,9 @@ struct EngineerEntry { connection_id: u64, username: String, display_name: Strin
                        connected_since_ns: u64 /*Unix ns*/, link: EngineerLink }
 enum EngineerLink { Healthy, Degraded, Reconnecting }
 struct EngineerKick { connection_id: u64 }
+// 0x19 (minor 1.1)
+struct DriverPresence { session_id: u64, away: bool, disconnected_at_unix_s: Option<u64>,
+                        grace_remaining_ns: Option<u64> }
 // 0x20–0x28 (0x21/0x22/0x24 are TLV, §4)
 struct SchemaNegotiate { schema_version: u16, capabilities: telemetry_model::scoring::CapabilityMap,
                          vehicle_capabilities: VehicleCapabilities }

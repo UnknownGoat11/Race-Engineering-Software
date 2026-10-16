@@ -159,6 +159,8 @@ struct AuthState {
     /// Incremented by every logout. AUTH results of an older generation are discarded, so an AUTH
     /// that completes after a logout cannot log the user back in.
     generation: u64,
+    last_persist_error: Option<String>,
+    pending_persist: Option<(CredentialKind, Secret)>,
 }
 
 /// Process-wide authentication state for one relay endpoint.
@@ -403,12 +405,11 @@ impl AuthManager {
         if (rotated || move_token)
             && let Some(token) = state.tokens[slot].refresh.clone()
         {
-            match self.store.store(
-                &self.namespace,
-                CredentialKind::refresh_token(ok.role),
-                &token,
-            ) {
+            let kind = CredentialKind::refresh_token(ok.role);
+            match self.store.store(&self.namespace, kind, &token) {
                 Ok(()) => {
+                    state.pending_persist = None;
+                    state.last_persist_error = None;
                     // Delete the old copy only once the new one is stored.
                     let old = if legacy {
                         Some(CredentialKind::RefreshToken)
@@ -423,11 +424,15 @@ impl AuthManager {
                         tracing::warn!(component = "transport", error = %e, "could not delete the moved refresh token");
                     }
                 }
-                Err(e) => tracing::error!(
-                    component = "transport",
-                    error = %e,
-                    "could not persist the refresh token; the login lasts until the app exits"
-                ),
+                Err(e) => {
+                    tracing::error!(
+                        component = "transport",
+                        error = %e,
+                        "could not persist the refresh token; the login lasts until the app exits"
+                    );
+                    state.last_persist_error = Some(e.to_string());
+                    state.pending_persist = Some((kind, token));
+                }
             }
         }
         drop(state);
@@ -471,10 +476,13 @@ impl AuthManager {
     pub(crate) fn load_driver_session(
         &self,
     ) -> Result<Option<StoredDriverSession>, CredentialError> {
-        self.store
+        match self
+            .store
             .load(&self.namespace, CredentialKind::DriverSession)?
-            .map(|s| StoredDriverSession::decode(&s))
-            .transpose()
+        {
+            Some(s) => StoredDriverSession::decode(&s),
+            None => Ok(None),
+        }
     }
 
     /// Persists the driver's session (driver role only).
@@ -489,10 +497,45 @@ impl AuthManager {
         )
     }
 
+    /// Persists an "ended" tombstone when deleting the session failed (M11).
+    pub(crate) fn store_driver_session_tombstone(&self) -> Result<(), CredentialError> {
+        self.store.store(
+            &self.namespace,
+            CredentialKind::DriverSession,
+            &Secret::new("v1:ended".to_owned()),
+        )
+    }
+
     /// Forgets the driver's stored session.
     pub(crate) fn clear_driver_session(&self) -> Result<(), CredentialError> {
         self.store
             .delete(&self.namespace, CredentialKind::DriverSession)
+    }
+
+    /// The last credential store error, if any (H4).
+    pub fn last_persist_error(&self) -> Option<String> {
+        self.state.lock().last_persist_error.clone()
+    }
+
+    /// Retries storing any pending credential that previously failed (H4).
+    pub fn retry_pending_persists(&self) -> Result<(), CredentialError> {
+        let pending = self.state.lock().pending_persist.clone();
+        if let Some((kind, token)) = pending {
+            match self.store.store(&self.namespace, kind, &token) {
+                Ok(()) => {
+                    let mut state = self.state.lock();
+                    state.pending_persist = None;
+                    state.last_persist_error = None;
+                    Ok(())
+                }
+                Err(e) => {
+                    self.state.lock().last_persist_error = Some(e.to_string());
+                    Err(e)
+                }
+            }
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -512,7 +555,7 @@ pub enum LoginError {
         requested: ClientRole,
         granted: ClientRole,
     },
-    #[error("login failed")]
+    #[error("login failed: {0}")]
     Handshake(#[from] HandshakeError),
 }
 
@@ -531,6 +574,7 @@ fn login_error(e: HandshakeError) -> LoginError {
             code: ErrorCode::AuthFailed,
             ..
         } => LoginError::InvalidCredentials,
+        HandshakeError::Refused { code, message, .. } => LoginError::Refused { code, message },
         HandshakeError::RoleMismatch { requested, granted } => {
             LoginError::RoleMismatch { requested, granted }
         }

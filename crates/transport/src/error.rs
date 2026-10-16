@@ -129,6 +129,14 @@ impl ConnectError {
     pub const fn is_retryable(&self) -> bool {
         !matches!(self, ConnectError::TlsConfig(_))
     }
+
+    /// Whether the error is a security-relevant TLS issue (untrusted certificate or ALPN mismatch, M1).
+    pub const fn is_security_issue(&self) -> bool {
+        matches!(
+            self,
+            ConnectError::UntrustedCertificate { .. } | ConnectError::Alpn
+        )
+    }
 }
 
 /// An established frame stream failed.

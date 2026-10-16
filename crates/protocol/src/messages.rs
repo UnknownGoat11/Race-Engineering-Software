@@ -367,6 +367,47 @@ pub struct EngineerKick {
     pub connection_id: u64,
 }
 
+/// DRIVER_PRESENCE (relay → engineer, control class, added in protocol 1.1): whether the
+/// driver's connection is attached to the session. Sent when the driver's connection drops (the
+/// session enters its grace period), when the driver resumes, and to every engineer that joins or
+/// resumes, right after its SESSION_INFO and replay. While the driver is away nothing new is
+/// forwarded, so the engineer app must not show the last values as live (§6 "Driver presence").
+/// A 1.0 engineer skips the unknown control type (§1 header rules).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DriverPresence {
+    pub session_id: u64,
+    /// The driver's connection is attached.
+    pub present: bool,
+    /// While away: since when, relay wall clock ns since the Unix epoch (0 while present). After
+    /// a relay restart the absence before the restart is included.
+    pub away_since_ns: u64,
+    /// While away: when the relay ends the session unless the driver resumes, relay wall clock
+    /// ns since the Unix epoch (0 while present).
+    pub grace_expires_at_ns: u64,
+}
+
+impl DriverPresence {
+    /// The driver is attached.
+    pub const fn present(session_id: u64) -> Self {
+        Self {
+            session_id,
+            present: true,
+            away_since_ns: 0,
+            grace_expires_at_ns: 0,
+        }
+    }
+
+    /// The driver is away since `away_since_ns`; the session ends at `grace_expires_at_ns`.
+    pub const fn away(session_id: u64, away_since_ns: u64, grace_expires_at_ns: u64) -> Self {
+        Self {
+            session_id,
+            present: false,
+            away_since_ns,
+            grace_expires_at_ns,
+        }
+    }
+}
+
 /// Characters in a connection code: 8 Crockford base32 characters = 40 random bits (D-022).
 pub const CONNECT_CODE_LEN: usize = 8;
 /// Crockford base32 alphabet of connection codes (no I, L, O, U).
@@ -682,6 +723,7 @@ pub enum Message {
     ConnectCode(ConnectCode),
     EngineerList(EngineerList),
     EngineerKick(EngineerKick),
+    DriverPresence(DriverPresence),
     SchemaNegotiate(SchemaNegotiate),
     TelemetryDelta(TelemetryPayload),
     TelemetrySnapshot(TelemetryPayload),
@@ -783,6 +825,7 @@ impl Message {
             Message::ConnectCode(_) => MsgType::ConnectCode,
             Message::EngineerList(_) => MsgType::EngineerList,
             Message::EngineerKick(_) => MsgType::EngineerKick,
+            Message::DriverPresence(_) => MsgType::DriverPresence,
             Message::SchemaNegotiate(_) => MsgType::SchemaNegotiate,
             Message::TelemetryDelta(_) => MsgType::TelemetryDelta,
             Message::TelemetrySnapshot(_) => MsgType::TelemetrySnapshot,
@@ -827,6 +870,7 @@ impl Message {
             Message::ConnectCode(m) => put(t, m, buf),
             Message::EngineerList(m) => put(t, m, buf),
             Message::EngineerKick(m) => put(t, m, buf),
+            Message::DriverPresence(m) => put(t, m, buf),
             Message::SchemaNegotiate(m) => put(t, m, buf),
             Message::TelemetryDelta(p)
             | Message::TelemetrySnapshot(p)
@@ -872,9 +916,10 @@ impl Message {
     /// * `sender_minor == PROTOCOL_MINOR`: strict, trailing bytes are [`MessageError::TrailingBytes`];
     /// * `sender_minor > PROTOCOL_MINOR`: a newer minor may only append bytes at the end of a payload,
     ///   so bytes after the fields this build knows are ignored;
-    /// * `sender_minor < PROTOCOL_MINOR`: decoded with that minor's layout. 1.0 is the first minor,
-    ///   so no older layout exists yet; every minor that appends fields must add its per-minor path
-    ///   here.
+    /// * `sender_minor < PROTOCOL_MINOR`: decoded with that minor's layout. No minor so far appended
+    ///   fields to an existing payload (1.1 only added DRIVER_PRESENCE, which a 1.0 sender never
+    ///   sends), so every layout is the 1.0 one; a minor that appends fields must add its per-minor
+    ///   path here.
     ///
     /// TLV payloads are only checked for a complete TLV header here (zero-copy); decode them with
     /// [`TelemetryPayload::decode`].
@@ -907,6 +952,7 @@ impl Message {
             MsgType::ConnectCode => Message::ConnectCode(take(t, p, tail)?),
             MsgType::EngineerList => Message::EngineerList(take(t, p, tail)?),
             MsgType::EngineerKick => Message::EngineerKick(take(t, p, tail)?),
+            MsgType::DriverPresence => Message::DriverPresence(take(t, p, tail)?),
             MsgType::SchemaNegotiate => Message::SchemaNegotiate(take(t, p, tail)?),
             MsgType::TelemetryDelta => Message::TelemetryDelta(TelemetryPayload::new(payload)?),
             MsgType::TelemetrySnapshot => {

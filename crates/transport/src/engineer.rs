@@ -58,7 +58,10 @@ use crate::session::{
     ClientCore, CloseAction, ConnectionEnd, Ctx, EstablishError, Established, Flow, RoleLogic,
     disconnect, error_chain, establish, run_connection,
 };
-use crate::state::{ConnectionStatus, EngineerEndReason, FailureReason, ReloginCause};
+use crate::state::{
+    ConnectionState, ConnectionStatus, DegradedReason, EngineerEndReason, FailureReason,
+    ReloginCause,
+};
 use crate::transport::TelemetryTransport;
 
 const COMPONENT: &str = "transport.engineer";
@@ -228,6 +231,13 @@ pub enum EngineerEvent {
     Ended(EngineerEndReason),
     /// A non-fatal error reported by the relay.
     RelayError { code: ErrorCode, message: String },
+    /// The driver disconnected; the relay holds the session for the grace period (H1).
+    DriverAway {
+        since_ns: u64,
+        grace_expires_at_ns: u64,
+    },
+    /// The driver reconnected to the session (H1).
+    DriverBack,
 }
 
 /// The interval of a network drop, in nanoseconds of the client's monotonic clock (the epoch of
@@ -255,7 +265,10 @@ enum EngineerCommand {
     },
     Cancel,
     Disconnect,
-    RequestSnapshot(SnapshotReason),
+    RequestSnapshot {
+        reason: SnapshotReason,
+        reply: oneshot::Sender<Result<(), EngineerError>>,
+    },
     Shutdown,
 }
 
@@ -267,7 +280,7 @@ impl std::fmt::Debug for EngineerCommand {
             EngineerCommand::Confirm { .. } => "Confirm",
             EngineerCommand::Cancel => "Cancel",
             EngineerCommand::Disconnect => "Disconnect",
-            EngineerCommand::RequestSnapshot(_) => "RequestSnapshot",
+            EngineerCommand::RequestSnapshot { .. } => "RequestSnapshot",
             EngineerCommand::Shutdown => "Shutdown",
         })
     }
@@ -300,15 +313,42 @@ impl EngineerClient {
         let (commands_tx, commands) = mpsc::channel(DEFAULT_COMMAND_CAPACITY);
         let (events, events_rx) = mpsc::channel(event_capacity);
         let (phase_tx, phase) = watch::channel(EngineerPhase::Idle);
+        let status_pub = core.status.clone();
+        let phase_watcher = Arc::new(phase_tx);
         let supervisor = Supervisor {
             core,
             transport,
             commands,
             events,
-            phase: Arc::new(phase_tx),
+            phase: Arc::clone(&phase_watcher),
             pending_capacity,
         };
-        let task = tokio::spawn(supervisor.run());
+        let supervisor_task = tokio::spawn(supervisor.run());
+        let task = tokio::spawn(async move {
+            struct AbortGuard(Option<tokio::task::JoinHandle<()>>);
+            impl Drop for AbortGuard {
+                fn drop(&mut self) {
+                    if let Some(h) = self.0.take() {
+                        h.abort();
+                    }
+                }
+            }
+            let mut guard = AbortGuard(Some(supervisor_task));
+            if let Some(h) = guard.0.as_mut() {
+                let res = h.await;
+                guard.0 = None;
+                if let Err(e) = res
+                    && e.is_panic()
+                {
+                    tracing::error!(component = COMPONENT, "engineer supervisor panicked");
+                    status_pub.fail(FailureReason::Configuration {
+                        detail: "internal error: supervisor panicked".to_owned(),
+                    });
+                    phase_watcher
+                        .send_replace(EngineerPhase::Ended(EngineerEndReason::Configuration));
+                }
+            }
+        });
         Ok((
             EngineerClient {
                 commands: commands_tx,
@@ -356,8 +396,13 @@ impl EngineerClient {
     }
 
     /// Asks the driver for a fresh snapshot.
-    pub async fn request_snapshot(&self, reason: SnapshotReason) -> Result<(), ClientClosed> {
-        self.command(EngineerCommand::RequestSnapshot(reason)).await
+    pub async fn request_snapshot(&self, reason: SnapshotReason) -> Result<(), EngineerError> {
+        let (reply, rx) = oneshot::channel();
+        self.commands
+            .send(EngineerCommand::RequestSnapshot { reason, reply })
+            .await
+            .map_err(|_| EngineerError::ClientClosed)?;
+        rx.await.map_err(|_| EngineerError::ClientClosed)?
     }
 
     /// Disconnects and ends the client task (the ticket dies with it).
@@ -459,6 +504,15 @@ enum BindFailure {
     },
 }
 
+impl BindFailure {
+    fn is_security_issue(&self) -> bool {
+        match self {
+            Self::Establish(e) => e.is_security_issue(),
+            _ => false,
+        }
+    }
+}
+
 struct Supervisor<T> {
     core: ClientCore,
     transport: T,
@@ -488,7 +542,9 @@ impl<T: TelemetryTransport> Supervisor<T> {
                 }
                 // Acknowledges FAILED / Ended.
                 EngineerCommand::Cancel | EngineerCommand::Disconnect => self.idle(),
-                EngineerCommand::RequestSnapshot(_) => {}
+                EngineerCommand::RequestSnapshot { reply, .. } => {
+                    let _ = reply.send(Err(EngineerError::NotConnected));
+                }
                 EngineerCommand::Shutdown => break,
             }
         }
@@ -505,12 +561,13 @@ impl<T: TelemetryTransport> Supervisor<T> {
         self.phase.send_replace(EngineerPhase::Idle);
     }
 
-    async fn event(&self, event: EngineerEvent) {
+    async fn event(&mut self, event: EngineerEvent) {
         if !matches!(
             timeout(EVENT_TIMEOUT, self.events.send(event)).await,
             Ok(Ok(()))
         ) && !self.events.is_closed()
         {
+            self.core.metrics.event_dropped();
             tracing::warn!(
                 component = COMPONENT,
                 "engineer event dropped: event channel full"
@@ -614,6 +671,7 @@ impl<T: TelemetryTransport> Supervisor<T> {
                 exit: None,
                 new_ticket: None,
                 pending_arrival: None,
+                stale_after: self.core.config.timing.liveness.stale_after,
             };
             let end = run_connection(
                 &mut self.core,
@@ -635,7 +693,13 @@ impl<T: TelemetryTransport> Supervisor<T> {
             // counters in the cumulative totals.
             self.core.metrics.sequence_reset(&logic.receiver.stats());
             match end {
-                ConnectionEnd::Closed { .. } => {
+                ConnectionEnd::Closed { flushed, .. } => {
+                    if !flushed {
+                        tracing::warn!(
+                            component = COMPONENT,
+                            "engineer disconnect was not flushed; slot may stay held up to ticket TTL"
+                        );
+                    }
                     // Cancel, disconnect or shutdown: the ticket dies with `joined`.
                     self.idle();
                     return match logic.exit {
@@ -686,11 +750,19 @@ impl<T: TelemetryTransport> Supervisor<T> {
         let mut error = first_error;
         loop {
             if dropped_at.elapsed() >= ttl {
-                let reason = EngineerEndReason::TicketExpired;
-                return Resumed::Exit(
-                    self.ended(reason, FailureReason::SessionEnded(reason))
-                        .await,
-                );
+                let (reason, failure) = if self.core.status.status().security_issue {
+                    (
+                        EngineerEndReason::Configuration,
+                        FailureReason::Configuration {
+                            detail: "resume aborted due to untrusted relay TLS certificate"
+                                .to_owned(),
+                        },
+                    )
+                } else {
+                    let reason = EngineerEndReason::TicketExpired;
+                    (reason, FailureReason::SessionEnded(reason))
+                };
+                return Resumed::Exit(self.ended(reason, failure).await);
             }
             let Some(delay) = self.core.after_failure(Disposition::Retry, error) else {
                 return Resumed::Exit(Exit::Idle);
@@ -709,7 +781,9 @@ impl<T: TelemetryTransport> Supervisor<T> {
                         Some(EngineerCommand::Join { reply, .. }) => {
                             let _ = reply.send(Err(JoinError::Busy));
                         }
-                        Some(EngineerCommand::RequestSnapshot(_)) => {}
+                        Some(EngineerCommand::RequestSnapshot { reply, .. }) => {
+                            let _ = reply.send(Err(EngineerError::NotConnected));
+                        }
                         Some(EngineerCommand::Cancel | EngineerCommand::Disconnect) => {
                             self.idle();
                             return Resumed::Exit(Exit::Idle);
@@ -800,6 +874,9 @@ impl<T: TelemetryTransport> Supervisor<T> {
                     other => error = format!("the relay refused the resume: {other:?} ({message})"),
                 },
                 Connected::Failed(failure) => {
+                    if failure.is_security_issue() {
+                        self.core.status.security_issue();
+                    }
                     let (disposition, text) = failure_disposition(&failure);
                     match disposition {
                         Disposition::Retry => error = text,
@@ -926,7 +1003,9 @@ async fn serve_while<F: std::future::Future>(
                     };
                     let _ = reply.send(result);
                 }
-                Some(EngineerCommand::RequestSnapshot(_)) => {}
+                Some(EngineerCommand::RequestSnapshot { reply, .. }) => {
+                    let _ = reply.send(Err(EngineerError::NotConnected));
+                }
                 Some(EngineerCommand::Cancel | EngineerCommand::Disconnect) => {
                     return Err(Interrupt::Cancel);
                 }
@@ -942,7 +1021,10 @@ fn end_reason_of(reason: &FailureReason) -> EngineerEndReason {
         FailureReason::SessionEnded(r) => *r,
         FailureReason::ReloginRequired(_) => EngineerEndReason::ReloginRequired,
         FailureReason::Incompatible { .. } => EngineerEndReason::Incompatible,
-        _ => EngineerEndReason::TicketExpired,
+        FailureReason::Configuration { .. } => EngineerEndReason::Configuration,
+        FailureReason::EnvironmentMismatch { .. } => EngineerEndReason::EnvironmentMismatch,
+        FailureReason::RoleMismatch { .. } => EngineerEndReason::NotAnEngineer,
+        FailureReason::Replaced => EngineerEndReason::Replaced,
     }
 }
 
@@ -1154,6 +1236,7 @@ struct EngineerLogic {
     /// merged into the next delivered frame's [`InboundFrame::arrival`] so the application still
     /// learns of the loss or restart.
     pending_arrival: Option<Arrival>,
+    stale_after: Duration,
 }
 
 impl EngineerLogic {
@@ -1227,6 +1310,13 @@ impl EngineerLogic {
         }
         if !replayed {
             ctx.metrics.stream_arrival(ctx.now_ns, header.source_ts_ns);
+        }
+        ctx.metrics.stream_frame_in(ctx.now);
+        if !ctx.status.status().driver_away
+            && ctx.status.status().degraded == Some(DegradedReason::NoStreamData)
+        {
+            ctx.status
+                .transition(ConnectionState::Connected, |s| s.degraded = None);
         }
         // Kept beyond this dispatch: copy out of the read buffer (§1).
         let frame = frame.detach();
@@ -1317,6 +1407,24 @@ impl RoleLogic for EngineerLogic {
                 }
                 Flow::Continue
             }
+            Message::DriverPresence(presence) => {
+                if presence.present {
+                    ctx.status.driver_away(false);
+                    ctx.status
+                        .transition(ConnectionState::Connected, |s| s.degraded = None);
+                    ctx.emit(EngineerEvent::DriverBack);
+                } else {
+                    ctx.status.driver_away(true);
+                    ctx.status.transition(ConnectionState::Degraded, |s| {
+                        s.degraded = Some(DegradedReason::DriverAway);
+                    });
+                    ctx.emit(EngineerEvent::DriverAway {
+                        since_ns: presence.away_since_ns,
+                        grace_expires_at_ns: presence.grace_expires_at_ns,
+                    });
+                }
+                Flow::Continue
+            }
             Message::SessionClose(close) => match close.reason {
                 SessionCloseReason::RemovedByDriver => self.end(EngineerEndReason::Kicked),
                 SessionCloseReason::DriverStopped => {
@@ -1340,6 +1448,16 @@ impl RoleLogic for EngineerLogic {
                 Flow::Close(CloseAction::Fail(FailureReason::Incompatible {
                     detail: e.message,
                 }))
+            }
+            Message::Error(e) if e.fatal && e.code == ErrorCode::AuthFailed => {
+                Flow::Close(CloseAction::Fail(FailureReason::ReloginRequired(
+                    ReloginCause::RefreshTokenRejected,
+                )))
+            }
+            Message::Error(e) if e.fatal && e.code == ErrorCode::TokenExpired => {
+                Flow::Close(CloseAction::Fail(FailureReason::ReloginRequired(
+                    ReloginCause::RefreshTokenExpired,
+                )))
             }
             Message::Error(e) if e.fatal => Flow::Close(CloseAction::Reconnect(format!(
                 "the relay reported a fatal error: {:?} ({})",
@@ -1381,10 +1499,15 @@ impl RoleLogic for EngineerLogic {
                 let _ = reply.send(Err(JoinError::Busy));
                 Flow::Continue
             }
-            EngineerCommand::RequestSnapshot(reason) => {
-                if let Err(e) = ctx.queue.try_push_reliable(snapshot_request(reason)) {
+            EngineerCommand::RequestSnapshot { reason, reply } => {
+                let res = ctx
+                    .queue
+                    .try_push_reliable(snapshot_request(reason))
+                    .map_err(EngineerError::Queue);
+                if let Err(ref e) = res {
                     tracing::warn!(component = COMPONENT, error = %e, "snapshot request not queued");
                 }
+                let _ = reply.send(res);
                 Flow::Continue
             }
             EngineerCommand::Cancel | EngineerCommand::Disconnect => {
@@ -1398,7 +1521,16 @@ impl RoleLogic for EngineerLogic {
         }
     }
 
-    fn on_tick(&mut self, _ctx: &mut Ctx<'_, EngineerEvent>) -> Flow {
+    fn on_tick(&mut self, ctx: &mut Ctx<'_, EngineerEvent>) -> Flow {
+        if self.confirmed
+            && !ctx.status.status().driver_away
+            && let Some(age) = ctx.metrics.last_stream_frame_age(ctx.now)
+            && age >= self.stale_after
+        {
+            ctx.status.transition(ConnectionState::Degraded, |s| {
+                s.degraded = Some(DegradedReason::NoStreamData);
+            });
+        }
         Flow::Continue
     }
 

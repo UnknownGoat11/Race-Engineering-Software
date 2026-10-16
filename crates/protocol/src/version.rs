@@ -20,7 +20,10 @@ use crate::messages::{ErrorCode, ErrorMsg};
 /// Protocol major version implemented by this crate. Breaking changes bump it.
 pub const PROTOCOL_MAJOR: u8 = 1;
 /// Protocol minor version implemented by this crate. Compatible additions bump it.
-pub const PROTOCOL_MINOR: u8 = 0;
+///
+/// * 1.0: the first release.
+/// * 1.1 (2026-10-16): DRIVER_PRESENCE (0x19, relay → engineer, PROTOCOL.md §6 "Driver presence").
+pub const PROTOCOL_MINOR: u8 = 1;
 
 /// A protocol version (`major.minor`) as carried in HELLO messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

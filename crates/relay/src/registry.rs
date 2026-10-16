@@ -40,8 +40,8 @@ use chrono::{DateTime, Utc};
 use parking_lot::{Mutex, RwLock};
 use protocol::frame::{Frame, FrameHeader, FrameMeta, FramePriority, MsgType};
 use protocol::messages::{
-    ConnectCode, Disconnect, DisconnectReason, EngineerEntry, EngineerLink, EngineerList,
-    ErrorCode, ErrorMsg, IssuedCode, Message, ResumeCredential, Secret, SessionClose,
+    ConnectCode, Disconnect, DisconnectReason, DriverPresence, EngineerEntry, EngineerLink,
+    EngineerList, ErrorCode, ErrorMsg, IssuedCode, Message, ResumeCredential, Secret, SessionClose,
     SessionCloseReason, SessionInfo, SnapshotReason, SnapshotRequest, normalize_connect_code,
 };
 use protocol::sequence::SnapshotRequestLimiter;
@@ -375,6 +375,16 @@ impl SessionCell {
     pub fn take_slot_writes(&self) -> Vec<SlotWrite> {
         std::mem::take(&mut self.inner.lock().pending_writes)
     }
+
+    /// Restores unpersisted slot writes to the front of the queue after a store write failure (H3).
+    pub fn prepend_slot_writes(&self, mut writes: Vec<SlotWrite>) {
+        if writes.is_empty() {
+            return;
+        }
+        let mut inner = self.inner.lock();
+        writes.append(&mut inner.pending_writes);
+        inner.pending_writes = writes;
+    }
 }
 
 #[derive(Debug)]
@@ -679,6 +689,34 @@ impl Session {
         }
     }
 
+    /// DRIVER_PRESENCE as of `now` (PROTOCOL.md §6 "Driver presence"): while the driver is away,
+    /// since when (wall clock, absence carried over a relay restart included) and when its grace
+    /// ends.
+    fn presence(&self, ctx: &Ctx<'_>, now: Instant) -> DriverPresence {
+        match self.driver_link {
+            DriverLink::Attached(_) => DriverPresence::present(self.id),
+            DriverLink::Away { since, carried } => {
+                let away_for = elapsed_since(since, carried, now);
+                let since_ns = unix_now_ns().saturating_sub(duration_ns(away_for));
+                DriverPresence::away(
+                    self.id,
+                    since_ns,
+                    since_ns.saturating_add(duration_ns(ctx.cfg.driver_grace)),
+                )
+            }
+        }
+    }
+
+    /// Sends the driver's presence to every connected engineer.
+    fn announce_presence(&self, ctx: &Ctx<'_>, now: Instant) {
+        let message = Message::DriverPresence(self.presence(ctx, now));
+        for slot in &self.engineers {
+            if let Some(conn) = slot.conn() {
+                conn.send(&message, self.id);
+            }
+        }
+    }
+
     fn info(&self, resume: ResumeCredential) -> SessionInfo {
         SessionInfo {
             session_id: self.id,
@@ -857,12 +895,31 @@ impl Session {
     /// Queues a store write for a slot change (see [`SlotWrite`]).
     fn queue_write(&mut self, write: SlotWrite) {
         if self.pending_writes.len() >= MAX_PENDING_SLOT_WRITES {
-            self.pending_writes.remove(0);
-            tracing::error!(
-                component = COMPONENT,
-                session_id = self.id,
-                "engineer slot writes are not reaching the store; the oldest was dropped"
-            );
+            if let Some(pos) = self
+                .pending_writes
+                .iter()
+                .position(|w| matches!(w, SlotWrite::Put(_)))
+            {
+                self.pending_writes.remove(pos);
+                tracing::error!(
+                    component = COMPONENT,
+                    session_id = self.id,
+                    "engineer slot write backlog exceeded; dropped oldest Put write"
+                );
+            } else if matches!(write, SlotWrite::Put(_)) {
+                tracing::error!(
+                    component = COMPONENT,
+                    session_id = self.id,
+                    "engineer slot write backlog full of Deletes; dropping new Put write"
+                );
+                return;
+            } else {
+                tracing::warn!(
+                    component = COMPONENT,
+                    session_id = self.id,
+                    "engineer slot write backlog exceeded; retaining Delete write"
+                );
+            }
         }
         self.pending_writes.push(write);
     }
@@ -911,7 +968,9 @@ impl Session {
         if let Some(slot) = self.engineers.get_mut(index) {
             slot.install_ticket(digest, handover, ctx.cfg.previous_ticket_grace, now);
         }
-        conn.send(&Message::SessionInfo(info), self.id);
+        if !conn.send(&Message::SessionInfo(info), self.id) && conn.outbox.stats().overflowed {
+            ctx.metrics.slow_consumer_disconnects.inc();
+        }
         for frame in replay {
             if conn
                 .outbox
@@ -923,8 +982,15 @@ impl Session {
             {
                 ctx.metrics.slow_consumer_disconnects.inc();
                 conn.abort();
-                break;
+                return Ok(());
             }
+        }
+        // The engineer must know at once whether the stream can flow: a join or resume while the
+        // driver is away shows "driver away", never a frozen stream that looks live (H1).
+        if !conn.send(&Message::DriverPresence(self.presence(ctx, now)), self.id)
+            && conn.outbox.stats().overflowed
+        {
+            ctx.metrics.slow_consumer_disconnects.inc();
         }
         Ok(())
     }
@@ -1444,7 +1510,13 @@ impl Registry {
             );
             old.close();
         }
+        let was_away = matches!(s.driver_link, DriverLink::Away { .. });
         s.driver_link = DriverLink::Attached(Arc::clone(conn));
+        // A new sequence space welcomes every connected engineer again (SESSION_INFO, replay,
+        // presence); otherwise the engineers are only told that the driver is back.
+        if was_away && !new_sequence_space {
+            s.announce_presence(ctx, now);
+        }
         if new_sequence_space {
             s.driver_seq = 0;
             s.cache.clear();
@@ -1486,6 +1558,9 @@ impl Registry {
             since: now,
             carried: Duration::ZERO,
         };
+        // Nothing new reaches the engineers until the driver resumes: they must not keep showing
+        // the last values as a live stream (H1).
+        s.announce_presence(&self.ctx(), now);
         tracing::info!(
             component = COMPONENT,
             session_id = s.id,
@@ -3064,6 +3139,85 @@ mod tests {
         }
     }
 
+    /// H1 (silent-failure review): engineers are told when the driver's connection drops, when it
+    /// comes back, and on a join or resume while it is away; a stream that stopped never looks live.
+    #[test]
+    fn engineers_learn_when_the_driver_is_away_and_when_it_is_back() {
+        let mut w = World::new();
+        let now = w.epoch;
+        let (cell, driver, token, code) = w.session(now);
+        let erin = w.conn();
+        w.registry
+            .join(&code, World::identity("erin"), &erin, now)
+            .expect("joined");
+        let joined = drain(&erin);
+        assert!(
+            matches!(
+                joined.last(),
+                Some(Message::DriverPresence(p)) if p.present && p.session_id == 7
+            ),
+            "a join while the driver is attached says so: {joined:?}"
+        );
+        let next_code = last_code(&drain(&driver)).expect("a fresh code for the second slot");
+        // The driver's PC goes offline: the session enters its grace period.
+        let away_at = now + Duration::from_secs(5);
+        assert!(w.registry.driver_detached(&cell, driver.id, away_at));
+        let grace_ns = duration_ns(w.registry.config().driver_grace);
+        match drain(&erin).as_slice() {
+            [Message::DriverPresence(p)] => {
+                assert!(!p.present);
+                assert_eq!(p.session_id, 7);
+                assert!(p.away_since_ns > 0);
+                assert_eq!(p.grace_expires_at_ns, p.away_since_ns + grace_ns);
+            }
+            other => panic!("driver away not announced: {other:?}"),
+        }
+        // A second engineer redeems the code the driver shared before it went away: the join
+        // works (the code is consumed), and it is told at once that the driver is away.
+        let fay = w.conn();
+        w.registry
+            .join(
+                &next_code,
+                World::identity("fay"),
+                &fay,
+                away_at + Duration::from_secs(60),
+            )
+            .expect("a code is valid while the driver is away");
+        let fay_msgs = drain(&fay);
+        assert!(matches!(fay_msgs.first(), Some(Message::SessionInfo(_))));
+        match fay_msgs.last() {
+            Some(Message::DriverPresence(p)) => {
+                assert!(!p.present);
+                // Away for 60 s already (wall clock, so allow scheduling slack).
+                let away_for = unix_now_ns().saturating_sub(p.away_since_ns);
+                assert!(away_for >= 59_000_000_000, "away for {away_for} ns");
+            }
+            other => panic!("join while away not announced: {other:?}"),
+        }
+        // The driver resumes within its grace (same sequence space): both engineers learn it.
+        let account = cell.inner.lock().driver.account;
+        let back = w.conn();
+        w.registry
+            .resume_driver(
+                7,
+                account,
+                &token,
+                false,
+                &back,
+                away_at + Duration::from_secs(90),
+            )
+            .expect("resumed");
+        for engineer in [&erin, &fay] {
+            assert!(matches!(
+                drain(engineer).as_slice(),
+                [Message::DriverPresence(DriverPresence {
+                    present: true,
+                    ..
+                })]
+            ));
+        }
+    }
+
     #[test]
     fn driver_restart_keeps_engineers_and_resets_their_stream() {
         let mut w = World::new();
@@ -3077,6 +3231,13 @@ mod tests {
         drain(&erin);
         let account = cell.inner.lock().driver.account;
         assert!(w.registry.driver_detached(&cell, driver.id, now));
+        assert!(matches!(
+            drain(&erin).as_slice(),
+            [Message::DriverPresence(DriverPresence {
+                present: false,
+                ..
+            })]
+        ));
         let restarted = w.conn();
         w.registry
             .resume_driver(7, account, &token, true, &restarted, now)
@@ -3085,6 +3246,16 @@ mod tests {
         assert!(
             matches!(msgs.first(), Some(Message::SessionInfo(_))),
             "engineer reset first"
+        );
+        assert!(
+            matches!(
+                msgs.last(),
+                Some(Message::DriverPresence(DriverPresence {
+                    present: true,
+                    ..
+                }))
+            ),
+            "then told the driver is back: {msgs:?}"
         );
         assert!(!erin.outbox.is_closing(), "engineer stays connected");
         let driver_msgs = drain(&restarted);
@@ -3570,6 +3741,65 @@ mod tests {
             .expect("joined");
         assert!(w.registry.close_by_driver(&cell, driver.id, t0));
         assert!(cell.take_slot_writes().is_empty());
+    }
+
+    #[test]
+    fn slot_write_backlog_drops_put_before_delete_and_prepend_restores_order() {
+        let mut w = World::new();
+        let t0 = w.epoch;
+        let (cell, _, _, code) = w.session(t0);
+        let erin = w.conn();
+        w.registry
+            .join(&code, World::identity("erin"), &erin, t0)
+            .expect("joined");
+        let base_writes = cell.take_slot_writes();
+        let base_put = match base_writes.first().expect("base put") {
+            SlotWrite::Put(p) => p.clone(),
+            _ => panic!("expected put"),
+        };
+
+        let del = SlotWrite::Delete {
+            session_id: 7,
+            account: Uuid::new_v4(),
+            connection_id: 999,
+        };
+        {
+            let mut s = cell.inner.lock();
+            for i in 0..(MAX_PENDING_SLOT_WRITES - 1) {
+                let mut slot = base_put.clone();
+                slot.connection_id = i as u64;
+                s.queue_write(SlotWrite::Put(slot));
+            }
+            s.queue_write(del.clone());
+            assert_eq!(s.pending_writes.len(), MAX_PENDING_SLOT_WRITES);
+
+            // Adding another Put must drop an older Put, NOT the Delete (H3)
+            let mut extra_put = base_put.clone();
+            extra_put.connection_id = 1000;
+            s.queue_write(SlotWrite::Put(extra_put));
+            assert_eq!(s.pending_writes.len(), MAX_PENDING_SLOT_WRITES);
+            assert!(
+                s.pending_writes.iter().any(|w| matches!(
+                    w,
+                    SlotWrite::Delete {
+                        connection_id: 999,
+                        ..
+                    }
+                )),
+                "Delete write was retained"
+            );
+        }
+
+        // Prepending restored writes puts them back at the front
+        let writes = cell.take_slot_writes();
+        assert_eq!(writes.len(), MAX_PENDING_SLOT_WRITES);
+        assert!(cell.take_slot_writes().is_empty());
+
+        let (_head, tail) = writes.split_at(2);
+        cell.prepend_slot_writes(tail.to_vec());
+        let restored = cell.take_slot_writes();
+        assert_eq!(restored.len(), MAX_PENDING_SLOT_WRITES - 2);
+        assert_eq!(restored[0], tail[0]);
     }
 
     #[test]

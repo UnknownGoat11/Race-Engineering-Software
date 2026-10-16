@@ -30,6 +30,7 @@
 //! computed from sample age, not from this socket state (spec §248).
 
 use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use protocol::messages::ClientRole;
@@ -153,6 +154,14 @@ pub enum DegradedReason {
     HighRtt,
     /// Sequence loss above the threshold (engineer stream).
     PacketLoss,
+    /// The driver's connection dropped and the session is in grace (H1).
+    DriverAway,
+    /// No telemetry stream frame received for longer than the stale threshold while connected (H1).
+    NoStreamData,
+    /// Stream frames are held awaiting SCHEMA_NEGOTIATE (H2).
+    AwaitingSchema,
+    /// The relay reported non-increasing stream sequence numbers (M8).
+    SequenceDesync,
 }
 
 /// Why the user has to log in again. Shown as a clear re-login state, never as a crash or a silent
@@ -188,6 +197,12 @@ pub enum EngineerEndReason {
     /// The relay refused this client's protocol version (`ERROR(INCOMPATIBLE)`): an update is
     /// required; retrying cannot succeed.
     Incompatible,
+    /// Local configuration error (e.g. TLS configuration cannot be built).
+    Configuration,
+    /// The relay environment does not match this client.
+    EnvironmentMismatch,
+    /// The account is not authorized as an engineer.
+    NotAnEngineer,
 }
 
 impl EngineerEndReason {
@@ -208,6 +223,13 @@ impl EngineerEndReason {
             EngineerEndReason::Incompatible => {
                 "This app version is not compatible with the relay. Update the app, then enter a new code from the driver."
             }
+            EngineerEndReason::Configuration => {
+                "Configuration error. Please check your network and TLS settings."
+            }
+            EngineerEndReason::EnvironmentMismatch => {
+                "The relay environment does not match this app version."
+            }
+            EngineerEndReason::NotAnEngineer => "This account is not authorized as an engineer.",
         }
     }
 }
@@ -284,6 +306,12 @@ pub struct ConnectionStatus {
     pub failure: Option<FailureReason>,
     /// Set in DEGRADED.
     pub degraded: Option<DegradedReason>,
+    /// Whether the driver's connection is detached/away from the session (H1).
+    pub driver_away: bool,
+    /// Set when a credential or session token failed to be persisted (H4).
+    pub persist_error: Option<String>,
+    /// Whether a security issue (e.g. untrusted TLS certificate or ALPN failure) was encountered (M1).
+    pub security_issue: bool,
     /// The most recent transient error (shown while RECONNECTING), never containing secrets.
     pub last_error: Option<String>,
     /// Reconnect attempts since the connection was last healthy.
@@ -298,9 +326,9 @@ pub struct ConnectionStatus {
 
 /// Owner side of the published status. Enforces the transition table: an invalid transition is a
 /// bug, logged and refused.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct StatePublisher {
-    tx: watch::Sender<ConnectionStatus>,
+    tx: Arc<watch::Sender<ConnectionStatus>>,
     component: &'static str,
 }
 
@@ -308,7 +336,13 @@ impl StatePublisher {
     /// New publisher in DISCONNECTED and its first receiver.
     pub fn new(component: &'static str) -> (Self, watch::Receiver<ConnectionStatus>) {
         let (tx, rx) = watch::channel(ConnectionStatus::default());
-        (Self { tx, component }, rx)
+        (
+            Self {
+                tx: Arc::new(tx),
+                component,
+            },
+            rx,
+        )
     }
 
     /// Another receiver.
@@ -406,6 +440,8 @@ impl StatePublisher {
         self.transition(ConnectionState::Disconnected, |s| {
             s.session_id = None;
             s.reconnect_attempt = 0;
+            s.driver_away = false;
+            s.security_issue = false;
         });
     }
 
@@ -416,6 +452,21 @@ impl StatePublisher {
         if self.state() == ConnectionState::Failed {
             self.disconnected();
         }
+    }
+
+    /// Updates whether the driver is detached/away (H1).
+    pub fn driver_away(&self, away: bool) {
+        self.update(|s| s.driver_away = away);
+    }
+
+    /// Sets whether a security issue occurred (M1).
+    pub fn security_issue(&self) {
+        self.update(|s| s.security_issue = true);
+    }
+
+    /// Sets or clears a credential/token persist error (H4).
+    pub fn persist_error(&self, error: Option<String>) {
+        self.update(|s| s.persist_error = error);
     }
 }
 
@@ -436,6 +487,9 @@ mod tests {
             E::UserDisconnected,
             E::ReloginRequired,
             E::Incompatible,
+            E::Configuration,
+            E::EnvironmentMismatch,
+            E::NotAnEngineer,
         ] {
             let text = reason.message();
             assert!(!text.contains("  "), "{reason:?}: {text:?}");

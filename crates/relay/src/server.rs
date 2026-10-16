@@ -169,11 +169,54 @@ impl RelayBuilder {
             Arc::clone(&tls),
             tracker.clone(),
         ));
-        tracker.spawn(housekeeping_loop(Arc::clone(&state)));
-        tracker.spawn(Arc::clone(&tls).watch(
-            state.config.timeouts.tls_reload_interval,
-            state.shutdown.clone(),
-        ));
+        let state_hk = Arc::clone(&state);
+        tracker.spawn(async move {
+            while !state_hk.shutdown.is_cancelled() {
+                let s = Arc::clone(&state_hk);
+                let handle = tokio::spawn(housekeeping_loop(s));
+                match handle.await {
+                    Ok(()) => break,
+                    Err(e) if e.is_panic() => {
+                        tracing::error!(
+                            component = COMPONENT,
+                            error = %e,
+                            "housekeeping task panicked; restarting after backoff"
+                        );
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                            _ = state_hk.shutdown.cancelled() => break,
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let state_tls = Arc::clone(&state);
+        let tls_watch = Arc::clone(&tls);
+        tracker.spawn(async move {
+            while !state_tls.shutdown.is_cancelled() {
+                let t = Arc::clone(&tls_watch);
+                let interval = state_tls.config.timeouts.tls_reload_interval;
+                let shutdown = state_tls.shutdown.clone();
+                let metrics = Arc::clone(&state_tls.metrics);
+                let handle = tokio::spawn(t.watch(interval, shutdown, metrics));
+                match handle.await {
+                    Ok(()) => break,
+                    Err(e) if e.is_panic() => {
+                        tracing::error!(
+                            component = COMPONENT,
+                            error = %e,
+                            "tls watch task panicked; restarting after backoff"
+                        );
+                        tokio::select! {
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {},
+                            _ = state_tls.shutdown.cancelled() => break,
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
         if let Some(listener) = admin_listener {
             tracker.spawn(admin::serve(Arc::clone(&state), listener));
         }
@@ -412,8 +455,24 @@ async fn store_pass(state: Arc<RelayState>, work: StoreWork) {
             .close_session(id, CLOSE_REASON_EXPIRED, now_utc())
             .await
         {
-            tracing::warn!(component = COMPONENT, session_id = id, error = %e, "expired session not closed in the store");
+            state.metrics.owed_close_failures.inc();
+            state.queue_owed_close(id, CLOSE_REASON_EXPIRED);
+            tracing::warn!(component = COMPONENT, session_id = id, error = %e, "expired session not closed in the store; queued for retry");
         }
+    }
+    let owed = state.take_owed_closes();
+    let mut still_owed = Vec::new();
+    for (id, reason) in owed {
+        if let Err(e) = state.store.close_session(id, reason, now_utc()).await {
+            state.metrics.owed_close_failures.inc();
+            tracing::warn!(component = COMPONENT, session_id = id, reason, error = %e, "owed session close not stored; will retry");
+            still_owed.push((id, reason));
+        }
+    }
+    if !still_owed.is_empty() {
+        let mut list = state.owed_closes.lock();
+        still_owed.append(&mut *list);
+        *list = still_owed;
     }
     if work.touch {
         let ids = state.registry.attached_session_ids();
@@ -440,6 +499,7 @@ async fn end_revoked_logins(state: &RelayState) {
         let inactive = match state.store.inactive_families(batch).await {
             Ok(inactive) => inactive,
             Err(e) => {
+                state.metrics.revocation_check_failures.inc();
                 tracing::warn!(component = COMPONENT, error = %e, "revoked logins not checked");
                 return;
             }

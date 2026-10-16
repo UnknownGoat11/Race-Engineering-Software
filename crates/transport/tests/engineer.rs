@@ -22,8 +22,8 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use transport::{
     ClientConfig, ConnectionState, CredentialKind, CredentialStore, DriverClient, DriverEvent,
-    EngineerClient, EngineerEndReason, EngineerEvent, EngineerPhase, FailureReason, IdentityCard,
-    InboundFrame, JoinError, MemoryCredentialStore, ReloginCause, SessionEndOutcome,
+    EngineerClient, EngineerEndReason, EngineerError, EngineerEvent, EngineerPhase, FailureReason,
+    IdentityCard, InboundFrame, JoinError, MemoryCredentialStore, ReloginCause, SessionEndOutcome,
     SnapshotTrigger, display_connect_code, login,
 };
 
@@ -1376,6 +1376,77 @@ async fn an_unknown_stream_type_of_a_newer_minor_consumes_its_sequence_number() 
         ],
         "the gap seen on the unknown frame is reported once, on the next delivered frame"
     );
+    e.client.shutdown().await;
+    driver.client.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn driver_presence_updates_status_and_emits_events() {
+    let relay = FakeRelay::new(Environment::Development);
+    let config = dev_config(&relay);
+    let driver = streaming_driver(&relay, &config).await;
+    let mut e = joined_engineer(&relay, &config, &driver, ENGINEER).await;
+    drain_events(&mut e.events);
+
+    // Relay notifies engineer that driver is away
+    let away_frame = Message::DriverPresence(protocol::messages::DriverPresence::away(
+        driver.session_id,
+        1_700_000_000,
+        600_000_000_000,
+    ))
+    .to_frame(&protocol::frame::FrameMeta::control(
+        driver.session_id,
+        1_000_000,
+    ))
+    .expect("away frame");
+    relay.send_to_engineers(&away_frame);
+    advance(Duration::from_millis(50)).await;
+
+    assert!(e.client.status().borrow().driver_away);
+    assert_eq!(
+        e.client.status().borrow().degraded,
+        Some(transport::DegradedReason::DriverAway)
+    );
+    let event = next_event(&mut e.events).await;
+    assert!(matches!(event, EngineerEvent::DriverAway { .. }));
+
+    // Relay notifies engineer that driver is back
+    let present_frame = Message::DriverPresence(protocol::messages::DriverPresence::present(
+        driver.session_id,
+    ))
+    .to_frame(&protocol::frame::FrameMeta::control(
+        driver.session_id,
+        2_000_000,
+    ))
+    .expect("present frame");
+    relay.send_to_engineers(&present_frame);
+    advance(Duration::from_millis(50)).await;
+
+    assert!(!e.client.status().borrow().driver_away);
+    assert_eq!(e.client.status().borrow().degraded, None);
+    let event = next_event(&mut e.events).await;
+    assert!(matches!(event, EngineerEvent::DriverBack));
+
+    e.client.shutdown().await;
+    driver.client.shutdown().await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn request_snapshot_returns_result_and_handles_error() {
+    let relay = FakeRelay::new(Environment::Development);
+    let config = dev_config(&relay);
+    let driver = streaming_driver(&relay, &config).await;
+    let e = joined_engineer(&relay, &config, &driver, ENGINEER).await;
+
+    // While connected, requesting snapshot succeeds
+    let res = e.client.request_snapshot(SnapshotReason::Manual).await;
+    assert!(res.is_ok());
+
+    // Disconnect client so it returns to Idle; requesting snapshot fails with NotConnected
+    e.client.disconnect().await.expect("disconnect");
+    let res = e.client.request_snapshot(SnapshotReason::Manual).await;
+    assert_eq!(res, Err(EngineerError::NotConnected));
+
     e.client.shutdown().await;
     driver.client.shutdown().await;
 }

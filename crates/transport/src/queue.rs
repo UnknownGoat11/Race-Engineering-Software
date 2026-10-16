@@ -36,6 +36,7 @@
 //! Producers must enqueue live frames in capture order (one producer task does).
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use protocol::frame::{Delivery, FramePriority, MAX_PAYLOAD_BYTES, MsgType};
@@ -44,6 +45,7 @@ use protocol::sequence::SnapshotRequestLimiter;
 use thiserror::Error;
 use tokio::sync::Notify;
 use tokio::sync::futures::Notified;
+use tokio::time::Instant;
 
 /// Default capacity of the reliable queue.
 pub const DEFAULT_RELIABLE_CAPACITY: usize = 256;
@@ -158,6 +160,8 @@ struct Inner {
     /// frames and reliable stream messages other than SCHEMA_NEGOTIATE are held (§5: the schema is
     /// the first stream frame of a space). See [`OutboundQueue::hold_until_schema`].
     awaiting_schema: bool,
+    /// When `awaiting_schema` was enabled (H2).
+    awaiting_schema_since: Option<Instant>,
     /// The pending SCHEMA_NEGOTIATE: a latest-wins slot outside the reliable FIFO and its
     /// capacity, written before any other reliable message. A schema held in the FIFO behind
     /// messages that are themselves held until the schema is written could never get in while the
@@ -257,6 +261,7 @@ impl OutboundQueue {
                 pending_snapshot_request: None,
                 streaming: true,
                 awaiting_schema: false,
+                awaiting_schema_since: None,
                 schema: None,
                 schema_ahead: 0,
                 schema_resend_needed: false,
@@ -293,18 +298,39 @@ impl OutboundQueue {
     pub fn hold_until_schema(&self) {
         let mut inner = self.inner.lock();
         inner.awaiting_schema = true;
+        inner.awaiting_schema_since = Some(Instant::now());
         inner.schema_resend_needed = false;
     }
 
     /// A SCHEMA_NEGOTIATE was written: held stream traffic flows again.
     pub fn schema_written(&self) {
-        self.inner.lock().awaiting_schema = false;
+        let mut inner = self.inner.lock();
+        inner.awaiting_schema = false;
+        inner.awaiting_schema_since = None;
+        drop(inner);
         self.data.notify_one();
     }
 
     /// Whether stream traffic is held until a SCHEMA_NEGOTIATE is written.
     pub fn awaiting_schema(&self) -> bool {
         self.inner.lock().awaiting_schema
+    }
+
+    /// How long stream traffic has been held awaiting SCHEMA_NEGOTIATE at `now` (H2).
+    /// Returns `None` if not awaiting schema or if no stream traffic is currently held/dropped.
+    pub fn awaiting_schema_duration(&self, now: Instant) -> Option<Duration> {
+        let inner = self.inner.lock();
+        if inner.awaiting_schema
+            && (inner.occupied > 0
+                || inner.dropped_obsolete > 0
+                || inner.reliable.iter().any(|item| !inner.may_write(item)))
+        {
+            inner
+                .awaiting_schema_since
+                .map(|since| now.saturating_duration_since(since))
+        } else {
+            None
+        }
     }
 
     /// The writer dropped a SCHEMA_NEGOTIATE (oversize for the current relay, or unencodable).
@@ -585,6 +611,8 @@ impl OutboundQueue {
         inner.schema = None;
         inner.schema_ahead = 0;
         inner.schema_resend_needed = false;
+        inner.awaiting_schema = false;
+        inner.awaiting_schema_since = None;
         inner.pending_snapshot_request = None;
         inner.reliable_discarded = inner
             .reliable_discarded

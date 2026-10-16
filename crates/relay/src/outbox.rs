@@ -389,6 +389,7 @@ pub struct ConnHandle {
     cancel: CancellationToken,
     epoch: Instant,
     last_inbound_ms: AtomicU64,
+    writer_end: parking_lot::Mutex<Option<String>>,
 }
 
 impl ConnHandle {
@@ -407,7 +408,21 @@ impl ConnHandle {
             cancel: CancellationToken::new(),
             epoch,
             last_inbound_ms: AtomicU64::new(duration_ms(epoch.elapsed())),
+            writer_end: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Sets the reason why the connection's writer ended (L7).
+    pub fn set_writer_end(&self, reason: impl Into<String>) {
+        let mut guard = self.writer_end.lock();
+        if guard.is_none() {
+            *guard = Some(reason.into());
+        }
+    }
+
+    /// The reason why the connection's writer ended, if any.
+    pub fn writer_end(&self) -> Option<String> {
+        self.writer_end.lock().clone()
     }
 
     /// Records inbound bytes at `now`.

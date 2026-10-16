@@ -196,11 +196,13 @@ pub(crate) async fn serve_connection(
         );
     }
     conn.abort();
+    let writer_cause = conn.writer_end();
+    let reason_str = writer_cause.as_deref().unwrap_or_else(|| end.as_str());
     tracing::info!(
         component = COMPONENT,
         conn = id,
         %peer,
-        reason = end.as_str(),
+        reason = reason_str,
         duration_ms = duration_ms(opened.elapsed()),
         "connection closed"
     );
@@ -262,7 +264,9 @@ impl Connection {
     }
 
     fn send(&self, message: &Message) {
-        self.conn.send(message, self.bound_id());
+        if !self.conn.send(message, self.bound_id()) && self.conn.outbox.stats().overflowed {
+            self.state.metrics.slow_consumer_disconnects.inc();
+        }
     }
 
     fn reply_error(&self, code: ErrorCode, message: impl Into<String>) -> Flow {
@@ -332,6 +336,10 @@ impl Connection {
                         // slow, shutting down) and only flushes what is queued: nothing the client
                         // still sends is acted on, e.g. a SESSION_JOIN after a revocation.
                         if self.conn.outbox.is_closing() {
+                            if self.conn.outbox.stats().overflowed {
+                                self.state.metrics.slow_consumer_disconnects.inc();
+                                return End::SlowConsumer;
+                            }
                             return End::Closed;
                         }
                         if let Flow::Close(end) = self.on_frame(frame).await {
@@ -359,7 +367,13 @@ impl Connection {
             let deadline = self.read_deadline();
             let read = tokio::select! {
                 biased;
-                _ = self.conn.cancelled() => return End::Closed,
+                _ = self.conn.cancelled() => {
+                    if self.conn.outbox.stats().overflowed {
+                        self.state.metrics.slow_consumer_disconnects.inc();
+                        return End::SlowConsumer;
+                    }
+                    return End::Closed;
+                }
                 _ = self.state.shutdown.cancelled() => return self.on_shutdown(),
                 r = tokio::time::timeout_at(deadline.into(), rd.read_buf(&mut buf)) => r,
             };
@@ -895,7 +909,9 @@ impl Connection {
                         .close_session(id, CLOSE_REASON_REPLACED, now_utc())
                         .await
                     {
-                        tracing::warn!(component = COMPONENT, session_id = id, error = %e, "replaced session not closed in the store");
+                        self.state.metrics.owed_close_failures.inc();
+                        self.state.queue_owed_close(id, CLOSE_REASON_REPLACED);
+                        tracing::warn!(component = COMPONENT, session_id = id, error = %e, "replaced session not closed in the store; queued for retry");
                     }
                 }
                 Flow::Continue
@@ -907,7 +923,10 @@ impl Connection {
                     .close_session(record.id, CLOSE_REASON_RELAY_FULL, now_utc())
                     .await
                 {
-                    tracing::warn!(component = COMPONENT, session_id = record.id, error = %se, "refused session not closed in the store");
+                    self.state.metrics.owed_close_failures.inc();
+                    self.state
+                        .queue_owed_close(record.id, CLOSE_REASON_RELAY_FULL);
+                    tracing::warn!(component = COMPONENT, session_id = record.id, error = %se, "refused session not closed in the store; queued for retry");
                 }
                 match e {
                     RegistryError::Full => {
@@ -1313,7 +1332,10 @@ impl Connection {
                     .close_session(cell.id(), CLOSE_REASON_DRIVER_STOPPED, now_utc())
                     .await
             {
-                tracing::warn!(component = COMPONENT, session_id = cell.id(), error = %e, "closed session not stored");
+                self.state.metrics.owed_close_failures.inc();
+                self.state
+                    .queue_owed_close(cell.id(), CLOSE_REASON_DRIVER_STOPPED);
+                tracing::warn!(component = COMPONENT, session_id = cell.id(), error = %e, "closed session not stored; queued for retry");
             }
         }
         self.binding = None;
@@ -1431,7 +1453,23 @@ impl Connection {
                         self.state.metrics.rate_limited.inc();
                         Flow::Continue
                     }
-                    Ok(_) => Flow::Continue,
+                    Ok(SnapshotRequestOutcome::Forwarded) => Flow::Continue,
+                    Ok(SnapshotRequestOutcome::DriverAway) => {
+                        self.state.metrics.snapshot_forward_failures.inc();
+                        self.conn.send(
+                            &Message::Error(ErrorMsg {
+                                code: ErrorCode::SessionNotFound,
+                                message: "driver away".into(),
+                                fatal: false,
+                            }),
+                            cell.id(),
+                        );
+                        Flow::Continue
+                    }
+                    Ok(SnapshotRequestOutcome::NotEncoded) => {
+                        self.state.metrics.snapshot_forward_failures.inc();
+                        Flow::Continue
+                    }
                     Err(reject) => self.forward_rejected(reject, now),
                 }
             }
@@ -1457,6 +1495,7 @@ impl Connection {
             }
             ForwardReject::StaleSequence { last, got } => {
                 self.state.metrics.packet_validation_failures.inc();
+                self.state.metrics.stale_sequence_frames.inc();
                 if !self.stale_warned {
                     self.stale_warned = true;
                     tracing::warn!(
@@ -1468,7 +1507,12 @@ impl Connection {
                         "stream frame with a non-increasing sequence dropped"
                     );
                 }
-                self.violation(now, "stale sequence", None)
+                let reply = ErrorMsg {
+                    code: ErrorCode::Malformed,
+                    message: "non-increasing sequence".into(),
+                    fatal: false,
+                };
+                self.violation(now, "stale sequence", Some(reply))
             }
         }
     }
@@ -1513,8 +1557,11 @@ impl Connection {
 /// later relay restart could restore that slot inaccurately.
 pub(crate) async fn flush_slot_writes(state: &RelayState, cell: &SessionCell) {
     let _order = cell.store_order().await;
-    for write in cell.take_slot_writes() {
-        let result = match &write {
+    let mut writes = cell.take_slot_writes();
+    let mut idx = 0;
+    while idx < writes.len() {
+        let write = &writes[idx];
+        let result = match write {
             SlotWrite::Put(slot) => state.store.put_engineer_slot(slot).await,
             SlotWrite::Delete {
                 session_id,
@@ -1528,13 +1575,18 @@ pub(crate) async fn flush_slot_writes(state: &RelayState, cell: &SessionCell) {
             }
         };
         if let Err(e) = result {
+            state.metrics.slot_writes_failed.inc();
             tracing::error!(
                 component = COMPONENT,
                 session_id = cell.id(),
                 error = %e,
-                "engineer slot change not stored; a relay restart may restore this slot inaccurately"
+                "engineer slot change not stored; writes will be retried"
             );
+            let remaining = writes.split_off(idx);
+            cell.prepend_slot_writes(remaining);
+            break;
         }
+        idx += 1;
     }
 }
 
@@ -1616,10 +1668,12 @@ pub(crate) async fn writer_loop<W: AsyncWrite + Unpin>(
         match write {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
+                conn.set_writer_end(format!("write_io: {e}"));
                 tracing::debug!(component = COMPONENT, conn = conn.id, error = %e, "write failed");
                 break;
             }
             Err(_) => {
+                conn.set_writer_end("write_stall");
                 state.metrics.slow_consumer_disconnects.inc();
                 tracing::warn!(component = COMPONENT, conn = conn.id, peer = %conn.peer, "socket accepted no data within the write-stall limit; disconnecting");
                 break;

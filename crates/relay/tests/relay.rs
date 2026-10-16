@@ -721,6 +721,15 @@ async fn driver_reconnect_and_restart_keep_engineers_connected() {
             .is_some_and(|d| !d.driver_attached)
     })
     .await;
+    // The engineer is told at once that the driver is away (H1): no frozen stream looks live.
+    match erin.recv().await {
+        Message::DriverPresence(p) => {
+            assert!(!p.present, "driver away announced");
+            assert_eq!(p.session_id, sid);
+            assert!(p.grace_expires_at_ns > p.away_since_ns);
+        }
+        other => panic!("DRIVER_PRESENCE expected, got {other:?}"),
+    }
     assert!(erin.quiet(QUIET).await, "no SESSION_CLOSE for the engineer");
     wait_store_status(relay.handle.store(), sid, SessionStatus::Grace).await;
 
@@ -753,6 +762,11 @@ async fn driver_reconnect_and_restart_keep_engineers_connected() {
     );
     let list = driver2.engineer_list().await;
     assert_eq!(list.engineers[0].username, ENGINEER);
+    // The engineer learns that the driver is back.
+    assert!(matches!(
+        erin.recv().await,
+        Message::DriverPresence(p) if p.present
+    ));
     driver2.continue_seq(seq1);
     driver2
         .send_stream(
@@ -794,7 +808,12 @@ async fn driver_reconnect_and_restart_keep_engineers_connected() {
         .send_stream(MsgType::TelemetryDelta, FramePriority::P0, b"new-space")
         .await;
     assert_eq!(restarted_seq, 1);
-    // The engineer's next messages: SESSION_INFO (stream reset, new ticket), then the new frame.
+    // The engineer's next messages: driver away (the restart), SESSION_INFO (stream reset, new
+    // ticket), driver back, then the new frame.
+    assert!(matches!(
+        erin.recv().await,
+        Message::DriverPresence(p) if !p.present
+    ));
     let first = erin.frame().await.expect("open");
     match Message::from_frame(&first).expect("decodes") {
         Message::SessionInfo(reset) => {
@@ -803,6 +822,10 @@ async fn driver_reconnect_and_restart_keep_engineers_connected() {
         }
         other => panic!("SESSION_INFO expected before the new space, got {other:?}"),
     }
+    assert!(matches!(
+        erin.recv().await,
+        Message::DriverPresence(p) if p.present
+    ));
     let frame = erin.stream_of(MsgType::TelemetryDelta).await;
     assert_eq!(frame.header().sequence, 1);
     assert_eq!(frame.payload(), b"new-space");
@@ -1953,5 +1976,43 @@ async fn forwarding_benchmark() {
         metrics.relay_forward_latency.quantile_upper_bound_us(0.99),
         metrics.relay_forward_latency.count()
     );
+    relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn driver_stale_sequence_receives_malformed_error() {
+    let relay = TestRelay::start(|_| {}).await;
+    let (mut driver, _info, _cc) = relay.driver_session(DRIVER).await;
+    let frame = driver.stream_frame(MsgType::TelemetryDelta, FramePriority::P0, b"delta1");
+    driver.send_frame(&frame).await;
+    // Send same frame again (non-increasing sequence)
+    driver.send_frame(&frame).await;
+    let err = driver.error().await;
+    assert_eq!(err.code, ErrorCode::Malformed);
+    assert!(err.message.contains("non-increasing sequence"));
+    assert!(!err.fatal);
+    assert_eq!(relay.handle.metrics().stale_sequence_frames.get(), 1);
+    relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn engineer_snapshot_request_when_driver_away_gets_driver_away_error() {
+    let relay = TestRelay::start(|_| {}).await;
+    let (driver, _info, cc) = relay.driver_session(DRIVER).await;
+    let (mut erin, _) = relay.engineer_joined(ENGINEER, &code_of(&cc)).await;
+    // Drop driver connection so driver is Away
+    drop(driver);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Drain DriverPresence notification
+    let _ = erin.frame().await;
+
+    // Send snapshot request while driver is away
+    erin.send_snapshot_request(SnapshotReason::Manual).await;
+    let err = erin.error().await;
+    assert_eq!(err.code, ErrorCode::SessionNotFound);
+    assert_eq!(err.message, "driver away");
+    assert!(!err.fatal);
+    assert_eq!(relay.handle.metrics().snapshot_forward_failures.get(), 1);
     relay.shutdown().await;
 }

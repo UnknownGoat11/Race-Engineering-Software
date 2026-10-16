@@ -25,6 +25,8 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+use crate::metrics::Metrics;
+
 /// Log component of this module.
 const COMPONENT: &str = "relay.tls";
 /// File name of the development CA certificate.
@@ -157,21 +159,24 @@ impl ReloadingTls {
     pub fn reload_if_changed(&self) -> Result<bool, TlsError> {
         let now = (stamp(&self.cert), stamp(&self.key));
         {
-            let mut seen = self.stamps.lock();
+            let seen = self.stamps.lock();
             if *seen == now {
                 return Ok(false);
             }
-            // Remember the attempt so a broken pair is not re-parsed every poll; the next real
-            // change is picked up again.
-            *seen = now;
         }
         let config = load_server_config(&self.cert, &self.key)?;
+        *self.stamps.lock() = now;
         self.current.store(config);
         Ok(true)
     }
 
     /// Polls the files every `interval` until `shutdown` is cancelled.
-    pub async fn watch(self: Arc<Self>, interval: Duration, shutdown: CancellationToken) {
+    pub async fn watch(
+        self: Arc<Self>,
+        interval: Duration,
+        shutdown: CancellationToken,
+        metrics: Arc<Metrics>,
+    ) {
         let mut ticker = tokio::time::interval(interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ticker.tick().await;
@@ -189,14 +194,18 @@ impl ReloadingTls {
                     "TLS certificate reloaded"
                 ),
                 Ok(Ok(false)) => {}
-                Ok(Err(e)) => tracing::error!(
-                    component = COMPONENT,
-                    cert = %self.cert.display(),
-                    error = %e,
-                    "TLS certificate changed but cannot be loaded; keeping the previous one"
-                ),
+                Ok(Err(e)) => {
+                    metrics.tls_reload_failures.inc();
+                    tracing::error!(
+                        component = COMPONENT,
+                        cert = %self.cert.display(),
+                        error = %e,
+                        "TLS certificate changed but cannot be loaded; keeping the previous one"
+                    );
+                }
                 Err(e) => {
-                    tracing::error!(component = COMPONENT, error = %e, "TLS reload task failed")
+                    metrics.tls_reload_failures.inc();
+                    tracing::error!(component = COMPONENT, error = %e, "TLS reload task failed");
                 }
             }
         }

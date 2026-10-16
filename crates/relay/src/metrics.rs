@@ -139,6 +139,18 @@ pub struct Metrics {
     pub slow_consumer_disconnects: Counter,
     /// Connections closed because their login was revoked (or its account deleted / disabled).
     pub revoked_disconnects: Counter,
+    /// Engineer slot mutations that failed against the store (H3).
+    pub slot_writes_failed: Counter,
+    /// Store errors during revocation checks (M5).
+    pub revocation_check_failures: Counter,
+    /// Failed TLS certificate or private key reloads (M7).
+    pub tls_reload_failures: Counter,
+    /// Stream frames dropped due to non-increasing sequence numbers (M8).
+    pub stale_sequence_frames: Counter,
+    /// Snapshot requests dropped or rejected because the driver is away or unencodable (M9).
+    pub snapshot_forward_failures: Counter,
+    /// Deferred session close writes that failed against the store (L8).
+    pub owed_close_failures: Counter,
     /// Relay receive → socket hand-off latency of forwarded telemetry frames.
     pub relay_forward_latency: LatencyHistogram,
 }
@@ -179,7 +191,7 @@ impl Metrics {
             "Open client connections.",
             self.active_connections.get(),
         );
-        let counters: [(&str, &str, &Counter); 13] = [
+        let counters: [(&str, &str, &Counter); 19] = [
             (
                 "lmu_relay_telemetry_packets_received_total",
                 "Telemetry-class frames received.",
@@ -244,6 +256,36 @@ impl Metrics {
                 "lmu_relay_revoked_disconnects_total",
                 "Connections closed because their login was revoked or its account disabled.",
                 &self.revoked_disconnects,
+            ),
+            (
+                "lmu_relay_slot_writes_failed_total",
+                "Failed engineer slot mutations to the persistent store.",
+                &self.slot_writes_failed,
+            ),
+            (
+                "lmu_relay_revocation_check_failures_total",
+                "Failed revocation checks against the persistent store.",
+                &self.revocation_check_failures,
+            ),
+            (
+                "lmu_relay_tls_reload_failures_total",
+                "Failed TLS certificate or private key reloads.",
+                &self.tls_reload_failures,
+            ),
+            (
+                "lmu_relay_stale_sequence_frames_total",
+                "Stream frames dropped due to non-increasing sequence numbers.",
+                &self.stale_sequence_frames,
+            ),
+            (
+                "lmu_relay_snapshot_forward_failures_total",
+                "Snapshot requests dropped or rejected because the driver is away or unencodable.",
+                &self.snapshot_forward_failures,
+            ),
+            (
+                "lmu_relay_owed_close_failures_total",
+                "Deferred session close writes that failed against the store.",
+                &self.owed_close_failures,
             ),
         ];
         for (name, help, counter) in counters {

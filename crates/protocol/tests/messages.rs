@@ -446,3 +446,31 @@ fn stream_messages_refuse_control_metadata() {
         Err(MessageError::Frame(protocol::FrameError::HeaderRule(_)))
     ));
 }
+
+#[test]
+fn driver_presence_has_a_stable_wire_form_and_reaches_engineers_only() {
+    // 1.1 addition (PROTOCOL.md §6 "Driver presence"): field order is the wire format.
+    let present = Message::DriverPresence(DriverPresence::present(5));
+    let mut buf = Vec::new();
+    present.encode_payload(&mut buf).expect("encode");
+    assert_eq!(buf, vec![0x05, 0x01, 0x00, 0x00]);
+    let away = DriverPresence::away(5, 300, 1_000);
+    assert!(!away.present);
+    let mut buf = Vec::new();
+    Message::DriverPresence(away)
+        .encode_payload(&mut buf)
+        .expect("encode");
+    assert_eq!(buf, vec![0x05, 0x00, 0xAC, 0x02, 0xE8, 0x07]);
+    assert_eq!(
+        Message::decode(MsgType::DriverPresence, Bytes::from(buf)).expect("decode"),
+        Message::DriverPresence(away)
+    );
+    assert_eq!(MsgType::DriverPresence.id(), 0x19);
+    assert!(MsgType::DriverPresence.may_send(Endpoint::Relay, Endpoint::Engineer));
+    assert!(!present.driver_accepts(), "drivers never process it");
+    assert_eq!(
+        protocol::PROTOCOL_MINOR,
+        1,
+        "DRIVER_PRESENCE is a 1.1 addition"
+    );
+}

@@ -366,11 +366,29 @@ where
                     rtts.push(Duration::from_nanos(t3.saturating_sub(t0)));
                     break;
                 }
+                Ok((_, Message::Error(e))) => {
+                    return Err(format!(
+                        "relay reported error during RTT test: {:?} ({})",
+                        e.code, e.message
+                    ));
+                }
+                Ok((_, Message::Disconnect(d))) => {
+                    return Err(format!(
+                        "relay disconnected during RTT test: {:?}",
+                        d.reason
+                    ));
+                }
                 Ok(_) => continue,
                 Err(e) if rtts.is_empty() => return Err(error_chain(&e)),
                 Err(_) => break 'probes,
             }
         }
+    }
+    if rtts.len() < RTT_PROBES as usize {
+        return Err(format!(
+            "only {} of {RTT_PROBES} RTT probes succeeded before connection failed",
+            rtts.len()
+        ));
     }
     let (Some(min), Some(max)) = (rtts.iter().min().copied(), rtts.iter().max().copied()) else {
         return Err("no PONG received".to_owned());

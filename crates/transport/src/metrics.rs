@@ -105,6 +105,10 @@ pub struct LinkMetrics {
     pub snapshot_requests_coalesced: u64,
     /// How long the current session connection has been up.
     pub connected_for: Option<Duration>,
+    /// How long since the latest live telemetry stream frame arrived (engineer only; H1).
+    pub last_stream_frame_age: Option<Duration>,
+    /// Whether the writer is holding stream frames until SCHEMA_NEGOTIATE is written (H2).
+    pub awaiting_schema: bool,
 }
 
 /// Counters shared with the writer task.
@@ -210,6 +214,7 @@ pub struct MetricsState {
     rtt_jitter: Jitter,
     interarrival_jitter: Jitter,
     last_arrival: Option<(u64, u64)>,
+    last_stream_frame_at: Option<Instant>,
     sequence_base: SequenceTotals,
 }
 
@@ -240,6 +245,10 @@ impl MetricsState {
         self.bytes_out_rate = RateMeter::default();
         self.frames_in_rate = RateMeter::default();
         self.frames_out_rate = RateMeter::default();
+        // L1: clear RTT and jitter of the lost connection so stale values don't look current.
+        self.m.rtt = None;
+        self.m.rtt_smoothed = None;
+        self.m.rtt_jitter = None;
     }
 
     /// Counts a reconnect.
@@ -274,6 +283,17 @@ impl MetricsState {
             self.m.interarrival_jitter = self.interarrival_jitter.value();
         }
         self.last_arrival = Some((received_ns, source_ns));
+    }
+
+    /// Records the arrival of a live telemetry stream frame at `now` (H1).
+    pub fn stream_frame_in(&mut self, now: Instant) {
+        self.last_stream_frame_at = Some(now);
+    }
+
+    /// How long since the latest live telemetry stream frame arrived at `now` (H1).
+    pub fn last_stream_frame_age(&self, now: Instant) -> Option<Duration> {
+        self.last_stream_frame_at
+            .map(|at| now.saturating_duration_since(at))
     }
 
     /// The inbound stream was reset (SESSION_INFO): folds its counters into the totals.
@@ -358,6 +378,10 @@ impl MetricsState {
         self.m.connected_for = self
             .connection_since
             .map(|since| now.saturating_duration_since(since));
+        self.m.last_stream_frame_age = self
+            .last_stream_frame_at
+            .map(|at| now.saturating_duration_since(at));
+        self.m.awaiting_schema = inputs.awaiting_schema;
         self.m.clone()
     }
 }
@@ -373,6 +397,7 @@ pub struct MetricsInputs {
     pub send_queue_depth: usize,
     pub clock: Option<ClockEstimate>,
     pub sequence: Option<SequenceStats>,
+    pub awaiting_schema: bool,
 }
 
 #[cfg(test)]
@@ -405,16 +430,24 @@ mod tests {
         for _ in 0..60 {
             m.frame_in();
         }
+        m.rtt(Duration::from_millis(25), Some(Duration::from_millis(25)));
+        m.stream_frame_in(t0);
         let live = m.snapshot(t0 + Duration::from_secs(1), &MetricsInputs::default());
         assert_eq!(live.frames_in_per_s, Some(60.0));
+        assert_eq!(live.rtt, Some(Duration::from_millis(25)));
+        assert_eq!(live.last_stream_frame_age, Some(Duration::from_secs(1)));
         // The link drops: the snapshot published at the end (and kept during the backoff) shows
-        // no rate instead of the last measured one.
+        // no rate instead of the last measured one, and clears RTT (L1).
         m.connection_ended();
         let lost = m.snapshot(t0 + Duration::from_secs(2), &MetricsInputs::default());
         assert_eq!(lost.frames_in_per_s, None);
         assert_eq!(lost.bytes_out_per_s, None);
         assert_eq!(lost.connected_for, None);
+        assert_eq!(lost.rtt, None);
+        assert_eq!(lost.rtt_smoothed, None);
+        assert_eq!(lost.rtt_jitter, None);
         assert_eq!(lost.frames_in_total, 60, "totals are kept");
+        assert_eq!(lost.last_stream_frame_age, Some(Duration::from_secs(2)));
         // Later snapshots during the outage (each backoff publishes one) stay unmeasured.
         let later = m.snapshot(t0 + Duration::from_secs(10), &MetricsInputs::default());
         assert_eq!(later.frames_in_per_s, None);

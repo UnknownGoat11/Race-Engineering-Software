@@ -98,6 +98,16 @@ pub enum CredentialError {
     Other { detail: String },
 }
 
+impl CredentialError {
+    /// Whether the error indicates malformed or corrupted stored credential data (M10).
+    pub fn is_malformed(&self) -> bool {
+        matches!(
+            self,
+            CredentialError::BadEncoding | CredentialError::MalformedDriverSession
+        )
+    }
+}
+
 /// Persistent storage of secrets.
 pub trait CredentialStore: Send + Sync + 'static {
     /// Loads a credential, `Ok(None)` if there is none.
@@ -272,14 +282,17 @@ impl StoredDriverSession {
         ))
     }
 
-    /// Parses the storage form.
-    pub fn decode(stored: &Secret) -> Result<Self, CredentialError> {
+    /// Parses the storage form. Returns `Ok(None)` for an ended tombstone (`v1:ended`).
+    pub fn decode(stored: &Secret) -> Result<Option<Self>, CredentialError> {
         let raw = stored.expose();
         let (format, rest) = raw
             .split_once(FIELD_SEPARATOR)
             .ok_or(CredentialError::MalformedDriverSession)?;
         if format != DRIVER_SESSION_FORMAT {
             return Err(CredentialError::MalformedDriverSession);
+        }
+        if rest == "ended" {
+            return Ok(None);
         }
         let (id, token) = rest
             .split_once(FIELD_SEPARATOR)
@@ -290,10 +303,10 @@ impl StoredDriverSession {
         if session_id == protocol::frame::NO_SESSION || token.is_empty() {
             return Err(CredentialError::MalformedDriverSession);
         }
-        Ok(Self {
+        Ok(Some(Self {
             session_id,
             resume_token: Secret::new(token),
-        })
+        }))
     }
 }
 
@@ -332,7 +345,14 @@ mod tests {
             session_id: 42,
             resume_token: Secret::new("abc:def/+="),
         };
-        assert_eq!(StoredDriverSession::decode(&s.encode()).expect("decode"), s);
+        assert_eq!(
+            StoredDriverSession::decode(&s.encode()).expect("decode"),
+            Some(s)
+        );
+        assert_eq!(
+            StoredDriverSession::decode(&Secret::new("v1:ended")).expect("tombstone"),
+            None
+        );
         for bad in ["", "v1", "v1:x:tok", "v2:1:tok", "v1:0:tok", "v1:5:"] {
             assert!(
                 StoredDriverSession::decode(&Secret::new(bad)).is_err(),

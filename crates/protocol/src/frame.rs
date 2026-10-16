@@ -122,6 +122,8 @@ pub enum MsgType {
     ConnectCode = 0x16,
     EngineerList = 0x17,
     EngineerKick = 0x18,
+    /// Added in 1.1 (control class): the driver's presence, relay → engineer.
+    DriverPresence = 0x19,
     SchemaNegotiate = 0x20,
     TelemetryDelta = 0x21,
     TelemetrySnapshot = 0x22,
@@ -139,7 +141,7 @@ pub enum MsgType {
 
 impl MsgType {
     /// Every defined message type, in id order.
-    pub const ALL: [MsgType; 26] = [
+    pub const ALL: [MsgType; 27] = [
         MsgType::Hello,
         MsgType::Auth,
         MsgType::AuthOk,
@@ -153,6 +155,7 @@ impl MsgType {
         MsgType::ConnectCode,
         MsgType::EngineerList,
         MsgType::EngineerKick,
+        MsgType::DriverPresence,
         MsgType::SchemaNegotiate,
         MsgType::TelemetryDelta,
         MsgType::TelemetrySnapshot,
@@ -190,6 +193,7 @@ impl MsgType {
             0x16 => MsgType::ConnectCode,
             0x17 => MsgType::EngineerList,
             0x18 => MsgType::EngineerKick,
+            0x19 => MsgType::DriverPresence,
             0x20 => MsgType::SchemaNegotiate,
             0x21 => MsgType::TelemetryDelta,
             0x22 => MsgType::TelemetrySnapshot,
@@ -223,6 +227,7 @@ impl MsgType {
             MsgType::ConnectCode => "CONNECT_CODE",
             MsgType::EngineerList => "ENGINEER_LIST",
             MsgType::EngineerKick => "ENGINEER_KICK",
+            MsgType::DriverPresence => "DRIVER_PRESENCE",
             MsgType::SchemaNegotiate => "SCHEMA_NEGOTIATE",
             MsgType::TelemetryDelta => "TELEMETRY_DELTA",
             MsgType::TelemetrySnapshot => "TELEMETRY_SNAPSHOT",
@@ -296,6 +301,7 @@ impl MsgType {
             }
             MsgType::SessionJoin => ROUTE_E_R,
             MsgType::SessionClose => ROUTE_D_R | ROUTE_R_E,
+            MsgType::DriverPresence => ROUTE_R_E,
             MsgType::ConnectCode | MsgType::EngineerList => ROUTE_R_D,
             MsgType::SchemaNegotiate
             | MsgType::TelemetryDelta
@@ -1279,7 +1285,7 @@ mod tests {
         let b = sample_header().to_bytes();
         assert_eq!(&b[0..2], &[0x4C, 0x52]);
         assert_eq!(b[2], 1);
-        assert_eq!(b[3], 0);
+        assert_eq!(b[3], PROTOCOL_MINOR);
         assert_eq!(b[4], 0x21);
         assert_eq!(b[5], 0);
         assert_eq!(b[6], 1);
@@ -1741,7 +1747,7 @@ mod tests {
 
     #[test]
     fn msg_type_ids_are_exactly_the_documented_ones() {
-        let documented: [(u8, &str); 26] = [
+        let documented: [(u8, &str); 27] = [
             (0x01, "HELLO"),
             (0x02, "AUTH"),
             (0x03, "AUTH_OK"),
@@ -1755,6 +1761,7 @@ mod tests {
             (0x16, "CONNECT_CODE"),
             (0x17, "ENGINEER_LIST"),
             (0x18, "ENGINEER_KICK"),
+            (0x19, "DRIVER_PRESENCE"),
             (0x20, "SCHEMA_NEGOTIATE"),
             (0x21, "TELEMETRY_DELTA"),
             (0x22, "TELEMETRY_SNAPSHOT"),
@@ -1898,6 +1905,13 @@ mod tests {
         assert!(MsgType::EngineerList.may_send(Relay, Driver));
         assert!(MsgType::EngineerKick.may_send(Driver, Relay));
         assert!(MsgType::SessionClose.may_send(Relay, Engineer));
+        // 1.1: driver presence goes from the relay to engineers only, never to or from a driver.
+        assert!(MsgType::DriverPresence.may_send(Relay, Engineer));
+        assert!(!MsgType::DriverPresence.may_send(Relay, Driver));
+        assert!(!MsgType::DriverPresence.may_send(Driver, Relay));
+        assert!(!MsgType::DriverPresence.may_send(Engineer, Relay));
+        assert!(!MsgType::DriverPresence.is_stream());
+        assert_eq!(MsgType::DriverPresence.delivery(), Delivery::Reliable);
         for t in MsgType::ALL {
             assert!(
                 !t.may_send(Driver, Engineer) && !t.may_send(Engineer, Driver),

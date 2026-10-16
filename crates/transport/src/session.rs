@@ -45,7 +45,9 @@ use crate::handshake::{self, Disposition, HandshakeError, Link, MIN_RELAY_PAYLOA
 use crate::liveness::{LinkHealth, LivenessMonitor};
 use crate::metrics::{LinkMetrics, MetricsInputs, MetricsState, WriterCounters};
 use crate::queue::{Outbound, OutboundQueue};
-use crate::state::{ConnectionState, ConnectionStatus, FailureReason, StatePublisher};
+use crate::state::{
+    ConnectionState, ConnectionStatus, DegradedReason, FailureReason, StatePublisher,
+};
 use crate::transport::{FrameReader, FrameWriter, TelemetryTransport};
 
 /// First sequence number of a sequence space (§5).
@@ -110,6 +112,13 @@ impl EstablishError {
         match self {
             EstablishError::Connect(e) => error_chain(e),
             EstablishError::Handshake(e) => error_chain(e),
+        }
+    }
+
+    pub(crate) fn is_security_issue(&self) -> bool {
+        match self {
+            EstablishError::Connect(e) => e.is_security_issue(),
+            _ => false,
         }
     }
 }
@@ -193,6 +202,7 @@ impl ClientCore {
             send_queue_depth: self.queue.depth(),
             clock: self.clock_sync.estimate(),
             sequence,
+            awaiting_schema: self.queue.awaiting_schema(),
         };
         let snapshot = self.metrics.snapshot(self.clock.now(), &inputs);
         self.metrics_tx.send_replace(snapshot);
@@ -246,10 +256,17 @@ pub(crate) async fn establish<T: TelemetryTransport>(
     core.status.transition(ConnectionState::Connecting, |s| {
         s.retry_in = None;
     });
-    let conn = transport
-        .connect(&core.config.endpoint)
-        .await
-        .map_err(EstablishError::Connect)?;
+    let conn = match transport.connect(&core.config.endpoint).await {
+        Ok(c) => {
+            core.status.update(|s| s.security_issue = false);
+            c
+        }
+        Err(e) => {
+            let is_sec = e.is_security_issue();
+            core.status.update(|s| s.security_issue = is_sec);
+            return Err(EstablishError::Connect(e));
+        }
+    };
     core.status
         .transition(ConnectionState::Authenticating, |_| {});
     let mut link = Link {
@@ -331,6 +348,7 @@ pub(crate) struct Ctx<'a, E> {
     pub session_id: u64,
     pub metrics: &'a mut MetricsState,
     pub queue: &'a OutboundQueue,
+    pub status: &'a StatePublisher,
     control: Vec<Message>,
     events: Vec<Emitted<E>>,
 }
@@ -522,6 +540,7 @@ where
             session_id,
             metrics: &mut core.metrics,
             queue: &core.queue,
+            status: &core.status,
             control: Vec::new(),
             events: Vec::new(),
         };
@@ -554,6 +573,12 @@ where
                 {
                     core.backoff.reset();
                     backoff_reset = true;
+                }
+                let _ = core.auth.retry_pending_persists();
+                if let Some(err) = core.auth.last_persist_error() {
+                    core.status.update(|s| s.persist_error = Some(err));
+                } else if core.status.status().persist_error.is_some() {
+                    core.status.update(|s| s.persist_error = None);
                 }
                 match apply_health(&core.status, liveness.evaluate(now)) {
                     Some(action) => Flow::Close(action),
@@ -604,6 +629,9 @@ where
             let reliable = matches!(event, Emitted::Reliable(_));
             if !deliver(events, event, &mut core.metrics, may_wait).await && reliable {
                 may_wait = false;
+                core.status.transition(ConnectionState::Degraded, |s| {
+                    s.degraded = Some(DegradedReason::PacketLoss);
+                });
             }
         }
         // The liveness tick guarantees an iteration at least every check interval.
@@ -667,11 +695,48 @@ fn heartbeat_period(configured: Duration, relay_ms: u32) -> Duration {
 fn apply_health(status: &StatePublisher, health: LinkHealth) -> Option<CloseAction> {
     match health {
         LinkHealth::Healthy => {
-            status.transition(ConnectionState::Connected, |s| s.reconnect_attempt = 0);
+            let cur = status.status();
+            if cur.driver_away {
+                status.transition(ConnectionState::Degraded, |s| {
+                    s.reconnect_attempt = 0;
+                    s.degraded = Some(DegradedReason::DriverAway);
+                });
+            } else if let Some(reason) = cur.degraded {
+                if matches!(
+                    reason,
+                    DegradedReason::DriverAway
+                        | DegradedReason::NoStreamData
+                        | DegradedReason::AwaitingSchema
+                        | DegradedReason::SequenceDesync
+                ) {
+                    status.transition(ConnectionState::Degraded, |s| {
+                        s.reconnect_attempt = 0;
+                        s.degraded = Some(reason);
+                    });
+                } else {
+                    status.transition(ConnectionState::Connected, |s| {
+                        s.reconnect_attempt = 0;
+                        s.degraded = None;
+                    });
+                }
+            } else {
+                status.transition(ConnectionState::Connected, |s| {
+                    s.reconnect_attempt = 0;
+                    s.degraded = None;
+                });
+            }
             None
         }
         LinkHealth::Degraded(reason) => {
-            status.transition(ConnectionState::Degraded, |s| s.degraded = Some(reason));
+            let cur = status.status();
+            let final_reason = if cur.driver_away {
+                DegradedReason::DriverAway
+            } else {
+                reason
+            };
+            status.transition(ConnectionState::Degraded, |s| {
+                s.degraded = Some(final_reason)
+            });
             None
         }
         LinkHealth::Stale => {

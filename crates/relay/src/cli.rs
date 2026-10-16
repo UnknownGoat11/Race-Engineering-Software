@@ -553,19 +553,30 @@ async fn wait_for_signal() {
         match signal(SignalKind::terminate()) {
             Ok(mut term) => {
                 tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {}
+                    res = tokio::signal::ctrl_c() => {
+                        if let Err(e) = res {
+                            tracing::error!(component = COMPONENT, error = %e, "Ctrl-C handler failed; waiting on SIGTERM");
+                            let _ = term.recv().await;
+                        }
+                    }
                     _ = term.recv() => {}
                 }
             }
             Err(e) => {
                 tracing::warn!(component = COMPONENT, error = %e, "SIGTERM handler not installed");
-                let _ = tokio::signal::ctrl_c().await;
+                if let Err(ce) = tokio::signal::ctrl_c().await {
+                    tracing::error!(component = COMPONENT, error = %ce, "Ctrl-C handler not installed; waiting indefinitely");
+                    std::future::pending::<()>().await;
+                }
             }
         }
     }
     #[cfg(not(unix))]
     {
-        let _ = tokio::signal::ctrl_c().await;
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(component = COMPONENT, error = %e, "Ctrl-C handler not installed; waiting indefinitely");
+            std::future::pending::<()>().await;
+        }
     }
 }
 

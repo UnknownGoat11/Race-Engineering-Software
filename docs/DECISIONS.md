@@ -363,3 +363,28 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
 - **Alternatives:** JSON events (CPU/GC cost at 100 Hz); latest-only batches (lose samples, break §63); a Rust
   graph query per rendered frame (an IPC round trip per frame; kept for historical analysis of recordings).
 - **Date:** 2026-10-02
+
+## D-024 Driver presence, snapshot rejection when away, and non-silent network error visibility (Protocol 1.1)
+- **Context:** Silent-failure audit in `crates/protocol`, `crates/relay`, and `crates/transport`. In 1.0, when a
+  driver disconnected unexpectedly, the relay held the session in grace period but connected engineers received
+  no notification, leaving their views frozen without distinguishing driver absence from a frozen link or healthy
+  idle state. Furthermore, snapshot requests during driver absence silently hung, driver sequence desynchronization
+  was dropped without notifying the sender, and database/store slot write failures could drop uncommitted state.
+- **Chosen:**
+  1. Protocol Minor bumped to 1.1 with new message `DRIVER_PRESENCE = 0x19` (`session_id`, `away`,
+     `disconnected_at_unix_s`, `grace_remaining_ns`).
+  2. Relay emits `DRIVER_PRESENCE { away: true, .. }` to all connected engineers when the driver unexpectedly
+     drops, and `DRIVER_PRESENCE { away: false, .. }` when the driver resumes. Engineer transport updates
+     connection status (`driver_away = true`, `degraded = Some(DegradedReason::DriverAway)`) and emits
+     `EngineerEvent::DriverAway` / `EngineerEvent::DriverBack`.
+  3. Snapshot requests received while driver is away are immediately answered with non-fatal
+     `ERROR(SessionNotFound, "driver away")` and counted in `metrics.snapshot_forward_failures`.
+  4. Sequence desynchronization (non-increasing sequence numbers from driver) receives rate-limited non-fatal
+     `ERROR(Malformed, "non-increasing sequence")` and increments `metrics.stale_sequence_frames`.
+  5. Relay store slot write failures increment `metrics.slot_writes_failed` and restore uncommitted writes
+     to the session cell (`prepend_slot_writes`) to ensure deletes take precedence over puts and never drop deletes.
+  6. Supervised supervisor loops and TLS certificate watchers restart on panic with backoff, ensuring resilience.
+  7. Credential redaction verified workspace-wide; zero credentials or plain codes logged.
+- **Tradeoffs:** Adds a control message type in the control range (0x19), fully backward compatible with 1.0
+  receivers (unknown control messages are skipped without sequence disturbance).
+- **Date:** 2026-10-16

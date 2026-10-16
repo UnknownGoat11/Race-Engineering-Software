@@ -249,6 +249,8 @@ pub struct RelayState {
     /// Every task of the relay (connections, housekeeping, background store writes); shutdown
     /// waits for them.
     pub tasks: TaskTracker,
+    /// Sessions whose closure write to the store failed, queued for retry during housekeeping (L8).
+    pub owed_closes: Mutex<Vec<(u64, &'static str)>>,
     next_conn_id: AtomicU64,
 }
 
@@ -276,8 +278,22 @@ impl RelayState {
             shutdown: CancellationToken::new(),
             hard_stop: CancellationToken::new(),
             tasks: TaskTracker::new(),
+            owed_closes: Mutex::new(Vec::new()),
             next_conn_id: AtomicU64::new(1),
         }
+    }
+
+    /// Queues a session whose close write failed for retry during housekeeping (L8).
+    pub fn queue_owed_close(&self, session_id: u64, reason: &'static str) {
+        let mut list = self.owed_closes.lock();
+        if !list.iter().any(|(id, _)| *id == session_id) {
+            list.push((session_id, reason));
+        }
+    }
+
+    /// Takes the currently owed session closes to retry them against the store (L8).
+    pub fn take_owed_closes(&self) -> Vec<(u64, &'static str)> {
+        std::mem::take(&mut *self.owed_closes.lock())
     }
 
     /// A relay-wide unique connection id.
