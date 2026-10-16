@@ -141,3 +141,19 @@ fn garbage_lap_number_does_not_panic() {
     assert!(report.replay.complete, "{:?}", report.replay.stopped);
     assert_eq!(report.checks.len(), common::CHECK_IDS.len());
 }
+
+#[test]
+fn markdown_counters_show_how_discontinuities_were_handled() {
+    // A reviewer of report.md must see whether an ET regression was a teleport step-back or a restart.
+    let md = report::render_markdown(&report::build(vec![analyze(&short_capture())]));
+    for counter in [
+        "teleport ET step-backs",
+        "non-finite ET",
+        "teleports",
+        "realtime entries",
+        "pit-service samples",
+        "session resets",
+    ] {
+        assert!(md.contains(counter), "missing {counter:?} in {md}");
+    }
+}

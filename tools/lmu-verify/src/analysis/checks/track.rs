@@ -3,7 +3,12 @@
 
 use lmu_reader::split_current_sector;
 
-use super::{CheckResult, Outcome, Verdict, fmt_opt, pct};
+use telemetry_model::ch;
+
+use super::{
+    CheckResult, EXACT_PASSTHROUGH_TOLERANCE, Outcome, PASSTHROUGH_TOLERANCE, PublishedVsRaw,
+    Verdict, describe_published, fmt_opt, gate_rows, pct,
+};
 use crate::analysis::Step;
 use crate::stats::{Agreement, Summary};
 
@@ -54,6 +59,11 @@ pub struct LapDistCheck {
     since_increment: Option<u64>,
     examples: Vec<String>,
     track_length: Summary,
+    /// Published `track.lap_dist_m` / `mLapDist`, `track.length_m` / info `mLapDist`, `race.laps_completed`
+    /// / `mTotalLaps` at scoring updates.
+    pub_lap_dist: PublishedVsRaw,
+    pub_length: PublishedVsRaw,
+    pub_laps: PublishedVsRaw,
 }
 
 impl LapDistCheck {
@@ -71,6 +81,12 @@ impl LapDistCheck {
         };
         let length = step.snapshot.scoring.info.lap_dist;
         let (laps, d) = (row.total_laps, row.lap_dist);
+        if let Some(frame) = step.frame {
+            self.pub_lap_dist.push(frame.f64(ch::LAP_DISTANCE), d);
+            self.pub_length.push(frame.f64(ch::TRACK_LENGTH), length);
+            self.pub_laps
+                .push(frame.f64(ch::LAPS_COMPLETED), f64::from(laps));
+        }
         if !(d.is_finite() && length.is_finite() && length > 0.0) {
             return;
         }
@@ -217,6 +233,16 @@ impl LapDistCheck {
             self.start_rebases,
             self.out_of_range
         );
+        let published = [
+            ("track.lap_dist_m", self.pub_lap_dist, PASSTHROUGH_TOLERANCE),
+            ("track.length_m", self.pub_length, PASSTHROUGH_TOLERANCE),
+            (
+                "race.laps_completed",
+                self.pub_laps,
+                EXACT_PASSTHROUGH_TOLERANCE,
+            ),
+        ];
+        describe_published(&mut o, &published);
         let fail = backward_share.is_some_and(|s| s > BACKWARD_FAIL_SHARE)
             || paired_share.is_some_and(|s| s < PAIRED_FAIL_SHARE && events >= 2)
             || self.out_of_range > 0;
@@ -226,7 +252,7 @@ impl LapDistCheck {
             && backward_share.is_some_and(|s| s <= BACKWARD_PASS_SHARE)
             && paired_share.is_some_and(|s| s >= PAIRED_PASS_SHARE)
         {
-            o.verdict(Verdict::Pass, summary)
+            gate_rows(o, &published, summary)
         } else {
             o.verdict(Verdict::Inconclusive, summary)
         }
@@ -286,6 +312,22 @@ pub struct SectorLapCheck {
     s12_match: Agreement,
     lap_match: Agreement,
     lap_sentinels: u64,
+    /// Published rows vs their raw sources (kept across discontinuities).
+    published: SectorPublished,
+}
+
+/// Published sector / timing rows vs their raw sources: `track.sector_index` / `mCurrentSector` bits,
+/// `lap.start_et_s` / `mLapStartET` (telemetry); `track.sector_index_scoring` / `(mSector + 2) mod 3`,
+/// `timing.cur_sector1_s` / `mCurSector1`, `timing.cur_sector12_s` / `mCurSector2`, `timing.last_lap_s` /
+/// `mLastLapTime` (scoring updates).
+#[derive(Debug, Clone, Copy, Default)]
+struct SectorPublished {
+    sector: PublishedVsRaw,
+    lap_start: PublishedVsRaw,
+    sector_scoring: PublishedVsRaw,
+    cur_s1: PublishedVsRaw,
+    cur_s12: PublishedVsRaw,
+    last_lap: PublishedVsRaw,
 }
 
 impl SectorLapCheck {
@@ -295,6 +337,16 @@ impl SectorLapCheck {
         };
         let et = t.elapsed_time;
         let (sector, _) = split_current_sector(t.current_sector);
+        if let Some(frame) = step.frame {
+            if i32::try_from(sector).is_ok_and(|s| (0..SECTORS).contains(&s)) {
+                self.published
+                    .sector
+                    .push(frame.f64(ch::SECTOR), f64::from(sector));
+            }
+            self.published
+                .lap_start
+                .push(frame.f64(ch::LAP_START_TIME), t.lap_start_et);
+        }
         if let Some(prev) = self.tel_sector
             && prev != sector
         {
@@ -351,6 +403,19 @@ impl SectorLapCheck {
             return;
         };
         let raw = i32::from(row.sector);
+        if let Some(frame) = step.frame {
+            let p = &mut self.published;
+            if (0..SECTORS).contains(&raw) {
+                p.sector_scoring.push(
+                    frame.f64(ch::SECTOR_SCORING),
+                    f64::from((raw + SCORING_SECTOR_OFFSET) % SECTORS),
+                );
+            }
+            p.cur_s1.push(frame.f64(ch::CUR_SECTOR1), row.cur_sector1);
+            p.cur_s12.push(frame.f64(ch::CUR_SECTOR12), row.cur_sector2);
+            p.last_lap
+                .push(frame.f64(ch::LAST_LAP_TIME), row.last_lap_time);
+        }
         let guarded = self
             .last_sector_change_s
             .is_some_and(|c| step.capture_s - c < SECTOR_GUARD_S);
@@ -415,6 +480,7 @@ impl SectorLapCheck {
                 s12_match: self.s12_match,
                 lap_match: self.lap_match,
                 lap_sentinels: self.lap_sentinels,
+                published: self.published,
                 ..Self::default()
             };
         }
@@ -497,6 +563,20 @@ impl SectorLapCheck {
                     .lap_match
                     .fraction()
                     .is_some_and(|f| f < PAIRED_FAIL_SHARE));
+        let p = self.published;
+        let published = [
+            ("track.sector_index", p.sector, EXACT_PASSTHROUGH_TOLERANCE),
+            (
+                "track.sector_index_scoring",
+                p.sector_scoring,
+                EXACT_PASSTHROUGH_TOLERANCE,
+            ),
+            ("timing.cur_sector1_s", p.cur_s1, PASSTHROUGH_TOLERANCE),
+            ("timing.cur_sector12_s", p.cur_s12, PASSTHROUGH_TOLERANCE),
+            ("timing.last_lap_s", p.last_lap, PASSTHROUGH_TOLERANCE),
+            ("lap.start_et_s", p.lap_start, PASSTHROUGH_TOLERANCE),
+        ];
+        describe_published(&mut o, &published);
         if fail {
             o.verdict(Verdict::Fail, summary)
         } else if enough_mapping
@@ -504,7 +584,7 @@ impl SectorLapCheck {
             && times_ok(&self.lap_match)
             && times_ok(&self.s1_match)
         {
-            o.verdict(Verdict::Pass, summary)
+            gate_rows(o, &published, summary)
         } else {
             o.verdict(Verdict::Inconclusive, summary)
         }

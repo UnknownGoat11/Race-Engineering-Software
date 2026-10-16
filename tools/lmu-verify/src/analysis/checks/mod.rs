@@ -215,7 +215,35 @@ pub(crate) fn gate_on_published(
     tolerance: f64,
     pass_summary: String,
 ) -> CheckResult {
-    if let Some((label, cmp)) = rows.iter().find(|(_, c)| c.disagrees(tolerance)) {
+    let rows: Vec<(&str, PublishedVsRaw, f64)> =
+        rows.iter().map(|&(l, c)| (l, c, tolerance)).collect();
+    gate_rows(o, &rows, pass_summary)
+}
+
+/// Largest |published − raw| accepted for a passthrough channel of physical magnitude: f32 storage rounds
+/// values up to 10⁵ (lap distance, fuel, rotation, acceleration) by less than this.
+pub(crate) const PASSTHROUGH_TOLERANCE: f64 = 0.01;
+/// The same for fractions, small inputs, integers and booleans (f32 rounding of |x| ≤ 10 stays below this;
+/// integers and booleans are exact).
+pub(crate) const EXACT_PASSTHROUGH_TOLERANCE: f64 = 1e-6;
+
+/// The published-row comparisons as evidence lines, one per row.
+pub(crate) fn describe_published(o: &mut Outcome, rows: &[(&str, PublishedVsRaw, f64)]) {
+    for (label, cmp, _) in rows {
+        o.line(format!(
+            "published {label} vs its raw source: {}",
+            cmp.describe()
+        ));
+    }
+}
+
+/// [`gate_on_published`] with one tolerance per row `(label, comparison, tolerance)`.
+pub(crate) fn gate_rows(
+    o: Outcome,
+    rows: &[(&str, PublishedVsRaw, f64)],
+    pass_summary: String,
+) -> CheckResult {
+    if let Some((label, cmp, _)) = rows.iter().find(|(_, c, t)| c.disagrees(*t)) {
         return o.verdict(
             Verdict::Fail,
             format!(
@@ -224,7 +252,7 @@ pub(crate) fn gate_on_published(
             ),
         );
     }
-    if let Some((label, _)) = rows.iter().find(|(_, c)| !c.agrees(tolerance)) {
+    if let Some((label, _, _)) = rows.iter().find(|(_, c, t)| !c.agrees(*t)) {
         return o.verdict(
             Verdict::Inconclusive,
             format!("{pass_summary}, but {label} was never published to compare"),
@@ -393,6 +421,38 @@ mod tests {
             failed.summary.contains("published c.d does not match"),
             "{}",
             failed.summary
+        );
+    }
+
+    /// Second review F3: each published row is judged with its own tolerance, so a passthrough that is off
+    /// (a remapped pit state, an inverted steering_filtered) fails even next to a coarse physical row.
+    #[test]
+    fn rows_are_gated_with_their_own_tolerance() {
+        let outcome = || Outcome::new("x", "x", &[], &["pit.state", "fuel.level_l"]);
+        let mut fuel = PublishedVsRaw::default();
+        fuel.push(Some(50.004), 50.0);
+        let mut state = PublishedVsRaw::default();
+        state.push(Some(4.0), 4.0);
+        let rows = |state| {
+            [
+                ("pit.state", state, EXACT_PASSTHROUGH_TOLERANCE),
+                ("fuel.level_l", fuel, PASSTHROUGH_TOLERANCE),
+            ]
+        };
+        let mut o = outcome();
+        describe_published(&mut o, &rows(state));
+        let ok = gate_rows(o, &rows(state), "ok".to_owned());
+        assert_eq!(ok.verdict, Verdict::Pass);
+        assert!(
+            ok.evidence
+                .iter()
+                .any(|l| l.starts_with("published pit.state vs its raw source"))
+        );
+        let mut remapped = state;
+        remapped.push(Some(3.0), 4.0);
+        assert_eq!(
+            gate_rows(outcome(), &rows(remapped), "ok".to_owned()).verdict,
+            Verdict::Fail
         );
     }
 }

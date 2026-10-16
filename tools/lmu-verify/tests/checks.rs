@@ -2,8 +2,9 @@
 
 mod common;
 
-use common::{CHECK_IDS, Faults, Scenario, assert_verdict, check, run};
+use common::{CHECK_IDS, Faults, Scenario, TeleportStepBack, assert_verdict, check, run};
 use lmu_verify::analysis::checks::Verdict;
+use lmu_verify::analysis::timing::NormalizerHandling;
 
 #[test]
 fn clean_run_passes_every_check() {
@@ -308,4 +309,125 @@ fn session_end_rewind_is_explained_not_a_fault() {
     assert_eq!(timing.scoring_et_session_end_rewinds, 1);
     assert_eq!(report.normalizer.session_end_rewinds, 1);
     assert_ne!(check(&report, "elapsed_time").verdict, Verdict::Fail);
+}
+
+#[test]
+fn uninitialised_soc_mitigation_is_not_a_contradiction() {
+    // gate1-hypercar (A-LMU-014): mSoC reads 0 while the battery fraction is charged; the normalizer publishes
+    // the battery fraction as the state of charge. The check must expect that, not mSoC / 100.
+    let report = run(&Scenario::with(Faults {
+        soc_uninitialised: true,
+        ..Faults::default()
+    }));
+    let soc = check(&report, "state_of_charge");
+    assert_eq!(soc.verdict, Verdict::Pass, "{}", soc.summary);
+    assert!(
+        soc.metrics
+            .get("soc_substituted_percent")
+            .is_some_and(|n| *n > 0.0),
+        "{:?}",
+        soc.metrics
+    );
+}
+
+#[test]
+fn rising_tyre_wear_contradicts_the_documented_direction() {
+    // A-LMU-040: 1.0 = new, falling while driving. A build where wear rises must FAIL, not PASS.
+    let report = run(&Scenario::with(Faults {
+        wear_rising: true,
+        ..Faults::default()
+    }));
+    let wear = check(&report, "tyre_wear_direction");
+    assert_eq!(wear.verdict, Verdict::Fail, "{}", wear.summary);
+    assert!(
+        wear.summary.contains("contradicts A-LMU-040"),
+        "{}",
+        wear.summary
+    );
+}
+
+/// The elapsed-time verdict for a garage teleport with an ET step-back follows what the normalizer did.
+fn garage_teleport(kind: TeleportStepBack) -> lmu_verify::analysis::CaptureReport {
+    run(&Scenario {
+        laps: 1,
+        pit_lap: None,
+        garage_s: 6.0,
+        faults: Faults {
+            garage_teleport: Some(kind),
+            ..Faults::default()
+        },
+        ..Scenario::default()
+    })
+}
+
+#[test]
+fn teleport_step_back_dropped_by_the_normalizer_is_explained() {
+    let report = garage_teleport(TeleportStepBack::SameSample);
+    let timing = report.timing.as_ref().expect("timing");
+    assert_eq!(timing.et_regressions, 1);
+    assert_eq!(report.normalizer.teleport_et_step_backs, 1);
+    let r = &timing.regressions[0];
+    assert_eq!(r.normalizer, NormalizerHandling::TeleportStepBackDropped);
+    assert!(r.teleport_step_back_geometry);
+    assert_eq!(timing.unexplained_et_regressions, 0, "{}", r.describe());
+    assert_ne!(check(&report, "elapsed_time").verdict, Verdict::Fail);
+}
+
+#[test]
+fn teleport_then_step_back_is_unexplained_while_the_normalizer_restarts() {
+    // pitstop1 (second review): the teleport lands on an advancing sample, the 10 ms step-back on the next one
+    // with no position jump. While the normalizer turns that into a session restart (a false SessionChanged),
+    // the step-back is UNEXPLAINED and elapsed_time FAILs; once the normalizer drops it, it is explained.
+    let report = garage_teleport(TeleportStepBack::NextSample);
+    let timing = report.timing.as_ref().expect("timing");
+    assert_eq!(timing.et_regressions, 1);
+    let r = &timing.regressions[0];
+    assert!(!r.teleport_step_back_geometry);
+    match r.normalizer {
+        NormalizerHandling::Restart => {
+            assert_eq!(timing.unexplained_et_regressions, 1);
+            assert!(r.describe().starts_with("UNEXPLAINED"), "{}", r.describe());
+            assert_eq!(check(&report, "elapsed_time").verdict, Verdict::Fail);
+        }
+        NormalizerHandling::TeleportStepBackDropped => {
+            assert_eq!(timing.unexplained_et_regressions, 0, "{}", r.describe());
+        }
+        other => panic!("unexpected normalizer handling {other:?}"),
+    }
+}
+
+/// Published rows a check judges directly (its verdict reads the published channel itself, not a raw field).
+const JUDGED_DIRECTLY: [(&str, &str); 6] = [
+    ("g_long_sign", "dynamics.g_long"),
+    ("g_lat_sign", "dynamics.g_lat"),
+    ("g_lat_sign", "dynamics.yaw_rate_radps"),
+    ("g_lat_sign", "tyres.{w}.load_n"),
+    ("steering_sign", "inputs.steering_raw"),
+    ("wheel_speed", "wheels.{w}.speed_mps"),
+];
+
+#[test]
+fn every_listed_published_row_is_compared_or_judged() {
+    // Second review F3: a check recommends a channel-map row for VERIFIED only when it has evidence on the
+    // published channel, either by judging it directly or by comparing it with its raw source.
+    let report = run(&Scenario::default());
+    let mut missing = Vec::new();
+    for c in &report.checks {
+        for row in &c.docs_rows {
+            let judged = JUDGED_DIRECTLY.contains(&(c.id, *row));
+            // Older evidence lines name the row by its channel suffix (`published brakes.*.temp_c`).
+            let suffix = row.rsplit('.').next().unwrap_or(row);
+            let compared = c
+                .evidence
+                .iter()
+                .any(|l| l.contains("published") && (l.contains(row) || l.contains(suffix)));
+            if !judged && !compared {
+                missing.push(format!("{}: {row}", c.id));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "rows listed but never compared: {missing:?}"
+    );
 }

@@ -10,8 +10,8 @@
 use telemetry_model::{ChannelId, ch};
 
 use super::{
-    CheckResult, Outcome, PublishedVsRaw, TYRE_TEMP_LEFT, TYRE_TEMP_RIGHT, Verdict, WHEELS,
-    fmt_opt, pct,
+    CheckResult, EXACT_PASSTHROUGH_TOLERANCE, Outcome, PublishedVsRaw, TYRE_TEMP_LEFT,
+    TYRE_TEMP_RIGHT, Verdict, WHEELS, describe_published, fmt_opt, gate_rows, pct,
 };
 use crate::analysis::Step;
 use crate::stats::{Agreement, Mean};
@@ -329,7 +329,17 @@ pub struct WearCheck {
     jumps: Vec<String>,
     stop_start: Option<[Option<f64>; 4]>,
     tyre_changes_up: u64,
+    /// Published `tyres.{w}.wear_frac` vs `mWear` (all four wheels, when published).
+    published_wear: PublishedVsRaw,
 }
+
+/// Published `tyres.{w}.wear_frac` channel ids in LMU wheel order.
+const TYRE_WEAR: [ChannelId; 4] = [
+    ch::TYRE_WEAR_FL,
+    ch::TYRE_WEAR_FR,
+    ch::TYRE_WEAR_RL,
+    ch::TYRE_WEAR_RR,
+];
 
 impl WearCheck {
     pub(super) fn observe(&mut self, step: &Step<'_>) {
@@ -343,6 +353,9 @@ impl WearCheck {
             return;
         };
         for (i, w) in t.wheels.iter().enumerate() {
+            if let Some(&id) = TYRE_WEAR.get(i) {
+                self.published_wear.push(frame.f64(id), w.wear);
+            }
             let (Some(prev), Some(first), Some(last)) = (
                 self.prev.get_mut(i),
                 self.first.get_mut(i),
@@ -450,15 +463,30 @@ impl WearCheck {
         }
         let share = down_share.unwrap_or(0.5);
         let dominant = share.max(1.0 - share);
-        if dominant >= WEAR_DIRECTION_SHARE {
-            let finding = if share >= 0.5 {
-                "decreases while driving ⇒ 1.0 = new tyre, falls with wear"
-            } else {
-                "increases while driving ⇒ 0.0 = new tyre, rises with wear"
-            };
+        // A-LMU-040 is VERIFIED as 1.0 = new and falling: only that direction passes, a consistent rise is a
+        // contradiction (the app's tyre-life displays would be silently inverted).
+        let published = [(
+            "tyres.{w}.wear_frac",
+            self.published_wear,
+            EXACT_PASSTHROUGH_TOLERANCE,
+        )];
+        describe_published(&mut o, &published);
+        if share >= WEAR_DIRECTION_SHARE {
+            gate_rows(
+                o,
+                &published,
+                format!(
+                    "decreases while driving ⇒ 1.0 = new tyre, falls with wear ({} of the change)",
+                    pct(Some(share))
+                ),
+            )
+        } else if 1.0 - share >= WEAR_DIRECTION_SHARE {
             o.verdict(
-                Verdict::Pass,
-                format!("{finding} ({} of the change)", pct(Some(dominant))),
+                Verdict::Fail,
+                format!(
+                    "contradicts A-LMU-040 (rises while driving: {} of the change upwards; documented 1.0 = new, falling)",
+                    pct(Some(1.0 - share))
+                ),
             )
         } else if dominant < WEAR_INCONSISTENT_SHARE {
             o.verdict(

@@ -10,10 +10,21 @@ use std::collections::VecDeque;
 use telemetry_model::ch;
 use telemetry_model::units::{CM_PER_M, STANDARD_GRAVITY};
 
+use telemetry_model::ChannelId;
+
 use super::{
-    CheckResult, LEFT_WHEELS, Outcome, RIGHT_WHEELS, TYRE_LOAD, Verdict, WHEEL_SPEED, WHEELS,
-    fmt_opt, pct,
+    CheckResult, EXACT_PASSTHROUGH_TOLERANCE, LEFT_WHEELS, Outcome, PASSTHROUGH_TOLERANCE,
+    PublishedVsRaw, RIGHT_WHEELS, TYRE_LOAD, Verdict, WHEEL_SPEED, WHEELS, describe_published,
+    fmt_opt, gate_rows, pct,
 };
+
+/// Published `wheels.{w}.rotation_radps` channel ids in LMU wheel order.
+const WHEEL_ROT: [ChannelId; 4] = [
+    ch::WHEEL_ROT_FL,
+    ch::WHEEL_ROT_FR,
+    ch::WHEEL_ROT_RL,
+    ch::WHEEL_ROT_RR,
+];
 use crate::analysis::Step;
 use crate::stats::{Agreement, Correlation, Mean, Summary};
 
@@ -78,6 +89,8 @@ pub struct GLongCheck {
     correlation: Correlation,
     full_throttle: Mean,
     braking: Mean,
+    /// Published `vehicle.local_accel_z_mps2` vs `mLocalAccel.z`.
+    accel_z: PublishedVsRaw,
 }
 
 impl GLongCheck {
@@ -88,6 +101,10 @@ impl GLongCheck {
         let Some(frame) = step.frame else {
             return;
         };
+        if let Some(t) = step.raw {
+            self.accel_z
+                .push(frame.f64(ch::LOCAL_ACCEL_Z), t.local_accel.z);
+        }
         let (Some(et), Some(v), Some(g)) = (
             frame.source_et_s,
             frame.f64(ch::SPEED),
@@ -173,6 +190,12 @@ impl GLongCheck {
             fmt_opt(thr, 2),
             fmt_opt(brk, 2)
         );
+        let published = [(
+            "vehicle.local_accel_z_mps2",
+            self.accel_z,
+            PASSTHROUGH_TOLERANCE,
+        )];
+        describe_published(&mut o, &published);
         let enough = self.correlation.count() >= MIN_PAIRS;
         let inverted = r.is_some_and(|r| r <= -MIN_SIGN_CORRELATION)
             || thr
@@ -185,7 +208,7 @@ impl GLongCheck {
             && brk.is_some_and(|b| b <= BRAKING_G_MAX)
             && thr.zip(brk).is_some_and(|(t, b)| t > b)
         {
-            o.verdict(Verdict::Pass, summary)
+            gate_rows(o, &published, summary)
         } else {
             o.verdict(Verdict::Inconclusive, summary)
         }
@@ -201,6 +224,8 @@ pub struct GLatCheck {
     zero_load_samples: u64,
     centripetal: Correlation,
     centripetal_ratio: Summary,
+    /// Published `vehicle.local_accel_x_mps2` vs `mLocalAccel.x`.
+    accel_x: PublishedVsRaw,
 }
 
 /// Clear cornering sample: (speed, g_lat, yaw rate).
@@ -217,6 +242,10 @@ impl GLatCheck {
         let Some(frame) = step.frame else {
             return;
         };
+        if let Some(t) = step.raw {
+            self.accel_x
+                .push(frame.f64(ch::LOCAL_ACCEL_X), t.local_accel.x);
+        }
         let Some((v, g, yaw)) = cornering(frame) else {
             return;
         };
@@ -301,6 +330,12 @@ impl GLatCheck {
             "agrees with yaw rate in {}, with load transfer in {load_text}",
             pct(yaw)
         );
+        let published = [(
+            "vehicle.local_accel_x_mps2",
+            self.accel_x,
+            PASSTHROUGH_TOLERANCE,
+        )];
+        describe_published(&mut o, &published);
         let verdict = match (yaw_v, load_v) {
             (Verdict::Fail, _) | (_, Verdict::Fail) => Verdict::Fail,
             (Verdict::Pass, Verdict::Pass) => Verdict::Pass,
@@ -308,6 +343,9 @@ impl GLatCheck {
             (Verdict::Pass, Verdict::Inconclusive) if self.load_agree.total == 0 => Verdict::Pass,
             _ => Verdict::Inconclusive,
         };
+        if verdict == Verdict::Pass {
+            return gate_rows(o, &published, summary);
+        }
         o.verdict(verdict, summary)
     }
 }
@@ -316,6 +354,8 @@ impl GLatCheck {
 #[derive(Debug, Clone, Default)]
 pub struct SteeringCheck {
     agree: Agreement,
+    /// Published `inputs.steering_filtered` vs `mFilteredSteering`.
+    filtered: PublishedVsRaw,
 }
 
 impl SteeringCheck {
@@ -323,6 +363,10 @@ impl SteeringCheck {
         let Some(frame) = step.frame else {
             return;
         };
+        if let Some(t) = step.raw {
+            self.filtered
+                .push(frame.f64(ch::STEERING_FILTERED), t.filtered_steering);
+        }
         let (Some((_, _, yaw)), Some(steer)) = (cornering(frame), frame.f64(ch::STEERING)) else {
             return;
         };
@@ -346,10 +390,17 @@ impl SteeringCheck {
             pct(share),
             self.agree.total
         ));
-        o.verdict(
-            sign_verdict(share, self.agree.total),
-            format!("steering right ⇔ yawing right in {}", pct(share)),
-        )
+        let published = [(
+            "inputs.steering_filtered",
+            self.filtered,
+            EXACT_PASSTHROUGH_TOLERANCE,
+        )];
+        describe_published(&mut o, &published);
+        let summary = format!("steering right ⇔ yawing right in {}", pct(share));
+        match sign_verdict(share, self.agree.total) {
+            Verdict::Pass => gate_rows(o, &published, summary),
+            v => o.verdict(v, summary),
+        }
     }
 }
 
@@ -359,6 +410,8 @@ pub struct WheelSpeedCheck {
     published: [Summary; 4],
     raw: [Summary; 4],
     negative: [Agreement; 4],
+    /// Published `wheels.{w}.rotation_radps` vs `mRotation` (all four wheels).
+    rotation: PublishedVsRaw,
 }
 
 impl WheelSpeedCheck {
@@ -376,6 +429,11 @@ impl WheelSpeedCheck {
                 .f64(ch::G_LONG)
                 .is_some_and(|g| g.abs() < STRAIGHT_MAX_G_LONG);
         for (i, w) in t.wheels.iter().enumerate() {
+            if !w.detached
+                && let Some(&id) = WHEEL_ROT.get(i)
+            {
+                self.rotation.push(frame.f64(id), w.rotation);
+            }
             if w.detached || !w.rotation.is_finite() || w.rotation == 0.0 {
                 continue;
             }
@@ -454,10 +512,16 @@ impl WheelSpeedCheck {
         } else {
             format!("rotation sign not consistently negative rolling forward; {ratios}")
         };
+        let published = [(
+            "wheels.{w}.rotation_radps",
+            self.rotation,
+            PASSTHROUGH_TOLERANCE,
+        )];
+        describe_published(&mut o, &published);
         if any_fail || positive_any {
             o.verdict(Verdict::Fail, summary)
         } else if any_ratio && all_pass && negative_all {
-            o.verdict(Verdict::Pass, summary)
+            gate_rows(o, &published, summary)
         } else {
             o.verdict(Verdict::Inconclusive, summary)
         }

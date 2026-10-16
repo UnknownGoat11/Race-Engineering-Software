@@ -681,12 +681,17 @@ fn render_session(s: &mut String, c: &CaptureReport) {
     }
     let _ = writeln!(
         s,
-        "\nNormalizer counters: {} snapshots, {} frames published, {} duplicate ET, {} ET regressions ({} session-end rewinds), {} no-player snapshots, {} invalid samples, {} mapping errors, {} scoring updates ({} rejected), {} session resets.",
+        "\nNormalizer counters: {} snapshots, {} frames published, {} duplicate ET, {} ET regressions ({} session-end rewinds, {} teleport ET step-backs), {} non-finite ET, {} teleports, {} realtime entries, {} pit-service samples, {} no-player snapshots, {} invalid samples, {} mapping errors, {} scoring updates ({} rejected), {} session resets.",
         c.normalizer.snapshots,
         c.normalizer.frames_published,
         c.normalizer.duplicate_frames,
         c.normalizer.et_regressions,
         c.normalizer.session_end_rewinds,
+        c.normalizer.teleport_et_step_backs,
+        c.normalizer.non_finite_et,
+        c.normalizer.teleports,
+        c.normalizer.realtime_entries,
+        c.normalizer.pit_service_samples,
         c.normalizer.no_player_snapshots,
         c.normalizer.invalid_samples,
         c.normalizer.mapping_errors,
@@ -839,11 +844,12 @@ fn render_timing(s: &mut String, c: &CaptureReport) {
     for r in t.regressions.iter().take(10) {
         let _ = writeln!(
             s,
-            "- ET regression at capture {:.1} s: {} → {} s ({})",
+            // Three decimals: a 10 ms step-back must stay visible (315.830 → 315.820).
+            "- ET regression at capture {:.1} s: {:.3} → {:.3} s ({})",
             r.at_capture_s,
-            num(r.from_et_s),
-            num(r.to_et_s),
-            r.explanation.as_deref().unwrap_or("UNEXPLAINED")
+            r.from_et_s,
+            r.to_et_s,
+            r.describe()
         );
     }
 }

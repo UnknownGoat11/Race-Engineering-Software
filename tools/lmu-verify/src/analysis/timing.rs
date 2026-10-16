@@ -7,11 +7,12 @@
 use std::collections::BTreeMap;
 
 use lmu_normalizer::discontinuity::{
-    CarSample, LMU_GAME_PHASE_SESSION_OVER, TELEPORT_MIN_STEP_M, is_session_end_rewind, is_teleport,
+    CarSample, LMU_GAME_PHASE_SESSION_OVER, TELEPORT_ET_STEP_BACK_MAX_S, is_session_end_rewind,
+    is_teleport_step_back,
 };
 use lmu_normalizer::mapping::decode_current_sector;
 use lmu_normalizer::mapping::session_end_et;
-use lmu_normalizer::{NormalizedOutput, TelemetryDisposition};
+use lmu_normalizer::{NormalizedOutput, NormalizerStats, TelemetryDisposition};
 use lmu_reader::{RawSnapshot, ReaderStats};
 use serde::Serialize;
 
@@ -41,18 +42,6 @@ const MAX_IDENTITY_CHANGES: usize = 1_000;
 pub const RESTART_ET_MAX_S: f64 = 10.0;
 /// A regression within this capture time of an identity change is explained by it (s).
 const REGRESSION_IDENTITY_WINDOW_S: f64 = 2.0;
-/// Fastest real motion (m/s) between two telemetry samples: a longer step in the elapsed ET, ending at rest,
-/// is a teleport (the normalizer's rule, `lmu_normalizer::discontinuity::is_teleport`, with the registry's
-/// position rate bound).
-const MAX_MOTION_MPS: f64 = 200.0;
-/// A regression within this capture time of a teleport is explained by it (s): when a practice session ran
-/// out with the car in the pit box, LMU moved it 19.6 m into its garage stall, reset fuel and lap counter and
-/// published ET 315.830 before 315.820 (Gate 1).
-const REGRESSION_TELEPORT_WINDOW_S: f64 = 0.5;
-/// Largest step back (s) a teleport explains: one or a few updates, never a session-sized jump.
-const TELEPORT_REGRESSION_MAX_S: f64 = 1.0;
-/// Teleports remembered for explaining regressions.
-const MAX_TELEPORTS: usize = 1_000;
 /// Plausible `mDeltaTime` values recorded in the histogram are below this (s).
 const MAX_DELTA_TIME_S: f64 = 1.0;
 /// Parts per million.
@@ -215,6 +204,91 @@ pub struct EtRegression {
     /// The session was over, the player out of realtime and the new ET at or after the session end: LMU's
     /// session-end rewind (`lmu_normalizer::discontinuity::is_session_end_rewind`, A-LMU-031).
     pub session_end_rewind: bool,
+    /// What the normalizer did with the sample that stepped back.
+    pub normalizer: NormalizerHandling,
+    /// The step back is a garage teleport by `lmu_normalizer::discontinuity::is_teleport_step_back` against the
+    /// previous sample (position jump, at rest, in the pit area, ET back by at most
+    /// [`TELEPORT_ET_STEP_BACK_MAX_S`]): evidence only, the classification follows the normalizer.
+    pub teleport_step_back_geometry: bool,
+}
+
+impl EtRegression {
+    /// The explanation, or `UNEXPLAINED (normalizer: …)`.
+    pub fn describe(&self) -> String {
+        self.explanation
+            .clone()
+            .unwrap_or_else(|| format!("UNEXPLAINED (normalizer: {})", self.normalizer.label()))
+    }
+}
+
+/// How the normalizer handled the sample of an ET regression, from its disposition and the change of its
+/// counters across that snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum NormalizerHandling {
+    /// Dropped as a garage-teleport ET step-back (`teleport_et_step_backs` incremented): same session, no
+    /// restart event.
+    TeleportStepBackDropped,
+    /// Session-end rewind: time base reset, no restart event.
+    SessionEndRewind,
+    /// Session restart: state reset and a `SessionChanged` event (a false restart unless a new session began).
+    Restart,
+    /// Anything else (the normalizer did not see a regression on this sample).
+    Other,
+}
+
+impl NormalizerHandling {
+    /// Report label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::TeleportStepBackDropped => "dropped as a teleport ET step-back",
+            Self::SessionEndRewind => "session-end rewind",
+            Self::Restart => "session restart, SessionChanged emitted",
+            Self::Other => "no regression handling",
+        }
+    }
+
+    fn of(disposition: TelemetryDisposition, delta: NormalizerDelta) -> Self {
+        match disposition {
+            TelemetryDisposition::Duplicate if delta.teleport_et_step_back => {
+                Self::TeleportStepBackDropped
+            }
+            TelemetryDisposition::NewSampleAfterRegression if delta.session_end_rewind => {
+                Self::SessionEndRewind
+            }
+            TelemetryDisposition::NewSampleAfterRegression => Self::Restart,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Normalizer counter changes across one snapshot.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NormalizerDelta {
+    /// `teleport_et_step_backs` grew.
+    pub teleport_et_step_back: bool,
+    /// `session_end_rewinds` grew.
+    pub session_end_rewind: bool,
+    /// `teleports` grew: the normalizer recognised a garage teleport on this snapshot (a jump at rest into
+    /// the pit area, `lmu_normalizer::discontinuity::is_teleport`, including one whose ET stepped back).
+    /// Gate 1 pitstop1's return to the garage is a 19.17 m jump, far below a plain distance threshold.
+    pub teleport: bool,
+}
+
+impl NormalizerDelta {
+    /// The changes from `before` to `after`.
+    pub fn between(before: &NormalizerStats, after: &NormalizerStats) -> Self {
+        Self {
+            teleport_et_step_back: after.teleport_et_step_backs > before.teleport_et_step_backs,
+            session_end_rewind: after.session_end_rewinds > before.session_end_rewinds,
+            teleport: after.teleports > before.teleports,
+        }
+    }
+
+    /// The car was moved by LMU on this snapshot: a garage teleport or a teleport ET step-back.
+    pub fn moved_by_lmu(&self) -> bool {
+        self.teleport || self.teleport_et_step_back
+    }
 }
 
 /// The normalizer's session-end rewind rule applied to a step back from `prev_et_s` to `new_et_s`.
@@ -461,7 +535,8 @@ pub struct TimingReport {
     pub delta_time_ms: Option<IntervalStats>,
     /// Player ET regressions (same car).
     pub et_regressions: u64,
-    /// Regressions not explained by a restart near ET 0 or an identity change.
+    /// Regressions not explained by a session-end rewind, a restart near ET 0, an identity change or a
+    /// garage-teleport step-back the normalizer dropped.
     pub unexplained_et_regressions: u64,
     /// The recorded regressions (first 50).
     pub regressions: Vec<EtRegression>,
@@ -521,9 +596,8 @@ pub struct TimingAcc {
     abs_offset: Summary,
     dispositions: BTreeMap<&'static str, u64>,
     identity_changes_s: Vec<f64>,
-    /// Slot, id and teleport facts of the last player sample (same rule as the normalizer).
+    /// Slot, id and position facts of the last player sample (teleport step-back evidence).
     last_player_pos: Option<(u8, i32, CarSample)>,
-    teleports_s: Vec<f64>,
 }
 
 /// Label of a normalizer disposition.
@@ -544,8 +618,13 @@ impl TimingAcc {
             .map_or(0.0, |first| ns.saturating_sub(first) as f64 / NS_PER_S)
     }
 
-    /// Feeds one snapshot and its normalizer output.
-    pub fn observe(&mut self, snapshot: &RawSnapshot, out: &NormalizedOutput) {
+    /// Feeds one snapshot, its normalizer output and the normalizer counter changes it caused.
+    pub fn observe(
+        &mut self,
+        snapshot: &RawSnapshot,
+        out: &NormalizedOutput,
+        delta: NormalizerDelta,
+    ) {
         let now = snapshot.capture_mono_ns;
         self.first_ns.get_or_insert(now);
         self.last_ns = Some(now);
@@ -593,6 +672,7 @@ impl TimingAcc {
                     &p.telemetry,
                     in_pit_area,
                     &snapshot.scoring.info,
+                    NormalizerHandling::of(out.disposition, delta),
                 );
             }
         }
@@ -621,6 +701,7 @@ impl TimingAcc {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn observe_player(
         &mut self,
         now: u64,
@@ -629,6 +710,7 @@ impl TimingAcc {
         t: &lmu_reader::RawTelemetry,
         in_pit_area: bool,
         info: &lmu_reader::RawScoringInfo,
+        handling: NormalizerHandling,
     ) {
         let dt = t.delta_time;
         if dt.is_finite() && dt > 0.0 && dt < MAX_DELTA_TIME_S {
@@ -641,7 +723,7 @@ impl TimingAcc {
             speed_mps: lmu_normalizer::convention::speed_mps(t.local_vel),
             in_pit_area,
         };
-        self.note_teleport(capture_s, slot, t.id, sample);
+        let geometry = self.teleport_step_back_geometry(slot, t.id, sample);
         let et = t.elapsed_time;
         if !et.is_finite() {
             return;
@@ -664,6 +746,8 @@ impl TimingAcc {
                             to_et_s: et,
                             explanation: None,
                             session_end_rewind: session_end_rewind(info, last.et, et),
+                            normalizer: handling,
+                            teleport_step_back_geometry: geometry,
                         });
                     }
                     self.drift.close();
@@ -678,21 +762,18 @@ impl TimingAcc {
         self.last_player = Some(current);
     }
 
-    /// Records a teleport of the player car at `capture_s`. Exactly the normalizer's rule
-    /// (`lmu_normalizer::discontinuity::is_teleport`: a positive ET step, at rest afterwards, in the pit area),
-    /// so the verify tool never excuses an ET defect the product would not.
-    fn note_teleport(&mut self, capture_s: f64, slot: u8, id: i32, sample: CarSample) {
-        if let Some((last_slot, last_id, prev)) = self.last_player_pos
-            && last_slot == slot
-            && last_id == id
-            && is_teleport(&prev, &sample, MAX_MOTION_MPS)
-            && self.teleports_s.len() < MAX_TELEPORTS
-        {
-            self.teleports_s.push(capture_s);
-        }
+    /// `true` when `sample` is a garage teleport with a small ET step-back from the previous sample of the
+    /// same car (`lmu_normalizer::discontinuity::is_teleport_step_back`); remembers `sample` for the next call.
+    fn teleport_step_back_geometry(&mut self, slot: u8, id: i32, sample: CarSample) -> bool {
+        let geometry = self
+            .last_player_pos
+            .is_some_and(|(last_slot, last_id, prev)| {
+                last_slot == slot && last_id == id && is_teleport_step_back(&prev, &sample)
+            });
         if sample.pos.iter().all(|v| v.is_finite()) && sample.et_s.is_finite() {
             self.last_player_pos = Some((slot, id, sample));
         }
+        geometry
     }
 
     /// Builds the report.
@@ -712,14 +793,18 @@ impl TimingAcc {
                 .any(|&c| (c - r.at_capture_s).abs() <= REGRESSION_IDENTITY_WINDOW_S)
             {
                 Some("session/track/vehicle identity changed within 2 s".to_owned())
-            } else if r.from_et_s - r.to_et_s <= TELEPORT_REGRESSION_MAX_S
-                && self
-                    .teleports_s
-                    .iter()
-                    .any(|&c| (c - r.at_capture_s).abs() <= REGRESSION_TELEPORT_WINDOW_S)
+            } else if r.normalizer == NormalizerHandling::TeleportStepBackDropped
+                && r.from_et_s - r.to_et_s <= TELEPORT_ET_STEP_BACK_MAX_S
             {
+                // Classified by what the normalizer did, never by a looser copy of its rule: any other
+                // regression to a non-zero ET is a full restart (SessionChanged) in the product.
+                let how = if r.teleport_step_back_geometry {
+                    "the car jumped into the garage on this sample"
+                } else {
+                    "continuing a step-back after a garage teleport"
+                };
                 Some(format!(
-                    "the car was teleported (moved > {TELEPORT_MIN_STEP_M} m faster than {MAX_MOTION_MPS} m/s, then at rest, e.g. into the garage) within {REGRESSION_TELEPORT_WINDOW_S} s"
+                    "garage-teleport ET step-back of ≤ {TELEPORT_ET_STEP_BACK_MAX_S} s dropped by the normalizer ({how}; same session, not a restart, A-LMU-031)"
                 ))
             } else {
                 None
@@ -785,45 +870,139 @@ mod tests {
         }
     }
 
-    /// gate1c review: the verify tool's teleport rule is the normalizer's, not a looser copy.
+    /// Step-back geometry is the normalizer's `is_teleport_step_back`, per car.
     #[test]
-    fn teleports_follow_the_normalizer_rule() {
-        let teleports = |samples: &[CarSample]| {
+    fn teleport_step_back_geometry_follows_the_normalizer_rule() {
+        let geometry = |samples: &[CarSample]| {
             let mut acc = TimingAcc::default();
-            for (i, s) in samples.iter().enumerate() {
-                acc.note_teleport(i as f64, 0, 7, *s);
-            }
-            acc.teleports_s.len()
+            samples
+                .iter()
+                .map(|s| acc.teleport_step_back_geometry(0, 7, *s))
+                .collect::<Vec<_>>()
         };
-        // Garage return (Gate 1): 652 m in 7.5 ms, at rest, in the pit area.
+        // Jump into the garage with ET 10 ms back on the same sample.
         assert_eq!(
-            teleports(&[
-                car(397.0325, 0.0, 0.0, false),
-                car(397.040, 652.0, 0.11, true)
-            ]),
-            1
+            geometry(&[car(315.830, 0.0, 0.0, true), car(315.820, 19.6, 0.0, true)]),
+            [false, true]
         );
-        // The same jump out on track is a garbage position, not a teleport.
+        // pitstop1: the jump lands on an advancing sample, the step-back on the next one (no jump).
         assert_eq!(
-            teleports(&[
-                car(397.0325, 0.0, 0.0, false),
-                car(397.040, 652.0, 0.11, false)
+            geometry(&[
+                car(315.820, 0.0, 0.0, true),
+                car(315.830, 19.6, 0.0, true),
+                car(315.820, 19.6, 0.0, true)
             ]),
-            0
+            [false, false, false]
         );
-        // A jump with ET stepping back is not a teleport either (the normalizer requires dt > 0).
+        // Out on track it is never a teleport.
         assert_eq!(
-            teleports(&[
-                car(397.040, 0.0, 0.0, true),
-                car(397.0325, 652.0, 0.11, true)
+            geometry(&[
+                car(315.830, 0.0, 0.0, false),
+                car(315.820, 19.6, 0.0, false)
             ]),
-            0
+            [false, false]
         );
         // Another car (different id) is never compared.
         let mut acc = TimingAcc::default();
-        acc.note_teleport(0.0, 0, 7, car(1.0, 0.0, 0.0, true));
-        acc.note_teleport(1.0, 0, 8, car(1.01, 652.0, 0.0, true));
-        assert!(acc.teleports_s.is_empty());
+        assert!(!acc.teleport_step_back_geometry(0, 7, car(1.01, 0.0, 0.0, true)));
+        assert!(!acc.teleport_step_back_geometry(0, 8, car(1.0, 19.6, 0.0, true)));
+    }
+
+    fn regression(from: f64, to: f64, normalizer: NormalizerHandling) -> EtRegression {
+        EtRegression {
+            at_capture_s: 100.0,
+            from_et_s: from,
+            to_et_s: to,
+            explanation: None,
+            session_end_rewind: false,
+            normalizer,
+            teleport_step_back_geometry: false,
+        }
+    }
+
+    fn unexplained(r: EtRegression) -> u64 {
+        let acc = TimingAcc {
+            regression_count: 1,
+            regressions: vec![r],
+            ..TimingAcc::default()
+        };
+        acc.finish(&ReaderStats::default())
+            .unexplained_et_regressions
+    }
+
+    /// Second review F2: the real pitstop1 step-back (315.830 → 315.820 after a garage teleport) is explained
+    /// only when the normalizer dropped it; a session restart at ET 315 s is a false restart.
+    #[test]
+    fn step_backs_are_classified_by_what_the_normalizer_did() {
+        use NormalizerHandling::{Other, Restart, SessionEndRewind, TeleportStepBackDropped};
+        assert_eq!(unexplained(regression(315.830, 315.820, Restart)), 1);
+        assert_eq!(
+            unexplained(regression(315.830, 315.820, TeleportStepBackDropped)),
+            0
+        );
+        assert_eq!(unexplained(regression(315.830, 315.820, Other)), 1);
+        assert_eq!(
+            unexplained(regression(315.830, 315.820, SessionEndRewind)),
+            1
+        );
+        // Beyond the normalizer's step-back bound nothing is excused, whatever the disposition says.
+        assert_eq!(
+            unexplained(regression(315.830, 315.230, TeleportStepBackDropped)),
+            1
+        );
+        // A restart from near zero stays a new session.
+        assert_eq!(unexplained(regression(315.830, 1.0, Restart)), 0);
+    }
+
+    /// The teleport flag follows the normalizer's `teleports` counter; a dropped step-back alone also
+    /// counts as the car being moved by LMU.
+    #[test]
+    fn normalizer_delta_reports_teleports() {
+        let before = NormalizerStats::default();
+        let jumped = NormalizerStats {
+            teleports: 1,
+            ..before
+        };
+        let d = NormalizerDelta::between(&before, &jumped);
+        assert!(d.teleport && !d.teleport_et_step_back && d.moved_by_lmu());
+        let stepped_back = NormalizerStats {
+            teleport_et_step_backs: 1,
+            ..jumped
+        };
+        let d = NormalizerDelta::between(&jumped, &stepped_back);
+        assert!(!d.teleport && d.teleport_et_step_back && d.moved_by_lmu());
+        assert!(!NormalizerDelta::between(&jumped, &jumped).moved_by_lmu());
+    }
+
+    #[test]
+    fn normalizer_handling_needs_the_counter_and_the_disposition() {
+        let dropped = NormalizerDelta {
+            teleport_et_step_back: true,
+            ..NormalizerDelta::default()
+        };
+        assert_eq!(
+            NormalizerHandling::of(TelemetryDisposition::Duplicate, dropped),
+            NormalizerHandling::TeleportStepBackDropped
+        );
+        assert_eq!(
+            NormalizerHandling::of(TelemetryDisposition::Duplicate, NormalizerDelta::default()),
+            NormalizerHandling::Other
+        );
+        assert_eq!(
+            NormalizerHandling::of(
+                TelemetryDisposition::NewSampleAfterRegression,
+                NormalizerDelta::default()
+            ),
+            NormalizerHandling::Restart
+        );
+        let rewind = NormalizerDelta {
+            session_end_rewind: true,
+            ..NormalizerDelta::default()
+        };
+        assert_eq!(
+            NormalizerHandling::of(TelemetryDisposition::NewSampleAfterRegression, rewind),
+            NormalizerHandling::SessionEndRewind
+        );
     }
 
     #[test]

@@ -49,6 +49,8 @@ const START_ET_S: f64 = 10.0;
 const PLAYER_ID: i32 = 7;
 /// Raw `mGamePhase` of a finished session.
 const SESSION_OVER_PHASE: u8 = 8;
+/// [`Faults::soc_uninitialised`]: capture-time window during which `mSoC` reads 0 (s).
+const SOC_UNINITIALISED_S: (f64, f64) = (60.0, 80.0);
 
 /// One broken convention per flag.
 #[derive(Debug, Clone, Copy, Default)]
@@ -99,7 +101,29 @@ pub struct Faults {
     pub slow_capture_clock: bool,
     /// Telemetry `mLapNumber` is garbage (`i32::MAX`) in every frame.
     pub garbage_lap_number: bool,
+    /// `mSoC` reads exactly 0 (LMU's not-initialised value) during [`SOC_UNINITIALISED_S`] (after the normalizer has
+    /// decided the scale) while the battery fraction is charged: the A-LMU-014 mitigation publishes the battery fraction.
+    pub soc_uninitialised: bool,
+    /// Tyre wear rises while driving (A-LMU-040 says 1.0 = new, falling).
+    pub wear_rising: bool,
+    /// In the garage, LMU moves the car [`TELEPORT_JUMP_M`] and ET steps back [`TELEPORT_STEP_BACK_S`]
+    /// (A-LMU-031 kind (b), pitstop1).
+    pub garage_teleport: Option<TeleportStepBack>,
 }
+
+/// Where the ET step-back of [`Faults::garage_teleport`] lands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TeleportStepBack {
+    /// On the teleported sample itself.
+    SameSample,
+    /// On the sample after an advancing teleported sample (the real pitstop1 sequence).
+    NextSample,
+}
+
+/// [`Faults::garage_teleport`]: frame of the jump (in the garage), its length (m) and the ET step back (s).
+const TELEPORT_FRAME: u64 = 200;
+const TELEPORT_JUMP_M: f64 = 20.0;
+const TELEPORT_STEP_BACK_S: f64 = 0.02;
 
 /// Scenario.
 #[derive(Debug, Clone, Copy)]
@@ -464,7 +488,16 @@ fn write_frame(b: &mut LayoutBuilder, car: &Car, f: &Faults, frame: u64, scoring
     b.set(t, telem_info::REAR_BRAKE_BIAS, REAR_BIAS);
     let ve = if f.ve_percent { car.ve * 100.0 } else { car.ve };
     b.set(t, telem_info::VIRTUAL_ENERGY, ve as f32);
-    b.set(t, telem_info::SOC, (100.0 * car.battery) as f32);
+    let soc_uninitialised = f.soc_uninitialised && {
+        let t_s = frame as f64 * DT_S;
+        (SOC_UNINITIALISED_S.0..SOC_UNINITIALISED_S.1).contains(&t_s)
+    };
+    let soc = if soc_uninitialised {
+        0.0
+    } else {
+        100.0 * car.battery
+    };
+    b.set(t, telem_info::SOC, soc as f32);
     let battery = if f.battery_percent {
         100.0 * car.battery
     } else {
@@ -560,7 +593,13 @@ fn write_frame(b: &mut LayoutBuilder, car: &Car, f: &Faults, frame: u64, scoring
         } else {
             0.0
         };
-        b.set(w, telem_wheel::WEAR, car.wear + jitter);
+        // Mirrored about 0.5: rises exactly as fast as the clean wear falls.
+        let wear = if f.wear_rising {
+            1.0 - car.wear
+        } else {
+            car.wear
+        };
+        b.set(w, telem_wheel::WEAR, wear + jitter);
     }
 
     if scoring {
@@ -650,6 +689,19 @@ pub fn capture(scenario: &Scenario) -> Vec<u8> {
         if scenario.faults.et_regression && frame == regression_frame {
             car.et -= 3.0;
             car.lap_start_et -= 3.0;
+        }
+        match scenario.faults.garage_teleport {
+            Some(TeleportStepBack::SameSample) if frame == TELEPORT_FRAME => {
+                car.pos.0 += TELEPORT_JUMP_M;
+                car.et -= TELEPORT_STEP_BACK_S;
+            }
+            Some(TeleportStepBack::NextSample) if frame == TELEPORT_FRAME => {
+                car.pos.0 += TELEPORT_JUMP_M;
+            }
+            Some(TeleportStepBack::NextSample) if frame == TELEPORT_FRAME + 1 => {
+                car.et -= TELEPORT_STEP_BACK_S;
+            }
+            _ => {}
         }
         write_frame(
             &mut b,

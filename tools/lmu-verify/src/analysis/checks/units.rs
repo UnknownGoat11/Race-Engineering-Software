@@ -4,15 +4,16 @@
 
 use lmu_normalizer::{
     BrakeTempUnit, BrakeTempUnitDetector, FractionScale, FractionScaleDetector, Normalizer,
-    UnitDecisionState, detect::BrakeObservation,
+    UnitDecisionState, detect::BrakeObservation, mapping::SOC_AGREEMENT_TOLERANCE,
 };
 use telemetry_model::ch;
 use telemetry_model::units::{KELVIN_OFFSET, PA_PER_KPA};
 
 use super::pit::TELEPORT_STEP_M;
 use super::{
-    BRAKE_TEMP, CheckResult, Outcome, PublishedVsRaw, TYRE_PRESSURE, TYRE_TEMP_MIDDLE, Verdict,
-    WHEELS, fmt_opt, gate_on_published,
+    BRAKE_TEMP, CheckResult, Outcome, PublishedVsRaw, TYRE_PRESSURE, TYRE_TEMP_LEFT,
+    TYRE_TEMP_MIDDLE, TYRE_TEMP_RIGHT, Verdict, WHEELS, describe_published, fmt_opt,
+    gate_on_published, gate_rows,
 };
 use crate::analysis::Step;
 use crate::analysis::channels::MOVING_SPEED_MPS;
@@ -269,6 +270,48 @@ pub struct TyreTempCheck {
     wheels: [WheelTemps; 4],
     max_conversion_error_c: Option<f64>,
     conversion_pairs: u64,
+    /// Every published surface (L/C/R), carcass and inner-layer (L/C/R) row vs raw − 273.15 (non-zero raw).
+    surface_vs_raw: PublishedVsRaw,
+    carcass_vs_raw: PublishedVsRaw,
+    layer_vs_raw: PublishedVsRaw,
+}
+
+/// Published carcass temperature ids in LMU wheel order.
+const TYRE_CARCASS: [telemetry_model::ChannelId; 4] = [
+    ch::TYRE_CARCASS_TEMP_FL,
+    ch::TYRE_CARCASS_TEMP_FR,
+    ch::TYRE_CARCASS_TEMP_RL,
+    ch::TYRE_CARCASS_TEMP_RR,
+];
+/// Published inner-layer temperature ids (left, middle, right) per wheel in LMU wheel order.
+const TYRE_LAYER: [[telemetry_model::ChannelId; 3]; 4] = [
+    [
+        ch::TYRE_LAYER_TEMP_LEFT_FL,
+        ch::TYRE_LAYER_TEMP_MIDDLE_FL,
+        ch::TYRE_LAYER_TEMP_RIGHT_FL,
+    ],
+    [
+        ch::TYRE_LAYER_TEMP_LEFT_FR,
+        ch::TYRE_LAYER_TEMP_MIDDLE_FR,
+        ch::TYRE_LAYER_TEMP_RIGHT_FR,
+    ],
+    [
+        ch::TYRE_LAYER_TEMP_LEFT_RL,
+        ch::TYRE_LAYER_TEMP_MIDDLE_RL,
+        ch::TYRE_LAYER_TEMP_RIGHT_RL,
+    ],
+    [
+        ch::TYRE_LAYER_TEMP_LEFT_RR,
+        ch::TYRE_LAYER_TEMP_MIDDLE_RR,
+        ch::TYRE_LAYER_TEMP_RIGHT_RR,
+    ],
+];
+
+/// Pushes published °C vs raw K − 273.15; an exact raw 0 is "not initialised" (A-LMU-062) and skipped.
+fn push_kelvin(cmp: &mut PublishedVsRaw, published: Option<f64>, raw_k: f64) {
+    if raw_k != 0.0 {
+        cmp.push(published, raw_k - KELVIN_OFFSET);
+    }
 }
 
 impl TyreTempCheck {
@@ -295,6 +338,30 @@ impl TyreTempCheck {
             for &k in &w.tire_inner_layer_temperature {
                 if k != 0.0 {
                     acc.layer.push(k);
+                }
+            }
+            let surface_ids = [
+                TYRE_TEMP_LEFT.get(i),
+                TYRE_TEMP_MIDDLE.get(i),
+                TYRE_TEMP_RIGHT.get(i),
+            ];
+            for (id, &k) in surface_ids.into_iter().zip(&w.temperature) {
+                push_kelvin(
+                    &mut self.surface_vs_raw,
+                    id.and_then(|&id| frame.f64(id)),
+                    k,
+                );
+            }
+            if let Some(&id) = TYRE_CARCASS.get(i) {
+                push_kelvin(
+                    &mut self.carcass_vs_raw,
+                    frame.f64(id),
+                    w.tire_carcass_temperature,
+                );
+            }
+            if let Some(ids) = TYRE_LAYER.get(i) {
+                for (&id, &k) in ids.iter().zip(&w.tire_inner_layer_temperature) {
+                    push_kelvin(&mut self.layer_vs_raw, frame.f64(id), k);
                 }
             }
             let published = TYRE_TEMP_MIDDLE.get(i).and_then(|&id| frame.f64(id));
@@ -359,6 +426,24 @@ impl TyreTempCheck {
             fmt_opt(self.max_conversion_error_c, 4),
             self.conversion_pairs
         ));
+        let published = [
+            (
+                "tyres.{w}.temp_surface_{left,center,right}_c",
+                self.surface_vs_raw,
+                CONVERSION_TOLERANCE_C,
+            ),
+            (
+                "tyres.{w}.temp_carcass_c",
+                self.carcass_vs_raw,
+                CONVERSION_TOLERANCE_C,
+            ),
+            (
+                "tyres.{w}.temp_inner_layer_{left,center,right}_c",
+                self.layer_vs_raw,
+                CONVERSION_TOLERANCE_C,
+            ),
+        ];
+        describe_published(&mut o, &published);
         let conversion_ok = self
             .max_conversion_error_c
             .is_some_and(|e| e <= CONVERSION_TOLERANCE_C);
@@ -377,8 +462,9 @@ impl TyreTempCheck {
                 ),
             )
         } else if all_plausible && conversion_ok {
-            o.verdict(
-                Verdict::Pass,
+            gate_rows(
+                o,
+                &published,
                 format!(
                     "Kelvin: running raw ≥ {raw_min:.1} K, every wheel median within {TYRE_C_PLAUSIBLE:?} °C, published = raw − {KELVIN_OFFSET}"
                 ),
@@ -532,7 +618,17 @@ pub struct BrakePressureCheck {
     full_front_ratio: Summary,
     full_rear_ratio: Summary,
     rear_bias: Summary,
+    /// Published `brakes.{w}.pressure_frac` vs `mBrakePressure` (all four wheels, when published).
+    published_vs_raw: PublishedVsRaw,
 }
+
+/// Published brake pressure ids in LMU wheel order.
+const BRAKE_PRESSURE: [telemetry_model::ChannelId; 4] = [
+    ch::BRAKE_PRESSURE_FL,
+    ch::BRAKE_PRESSURE_FR,
+    ch::BRAKE_PRESSURE_RL,
+    ch::BRAKE_PRESSURE_RR,
+];
 
 impl BrakePressureCheck {
     pub(super) fn observe(&mut self, step: &Step<'_>) {
@@ -556,6 +652,11 @@ impl BrakePressureCheck {
             self.full_rear_ratio.push(rear / bias);
         }
         self.correlation_unfiltered.push(t.unfiltered_brake, front);
+        if let Some(frame) = step.frame {
+            for (&id, w) in BRAKE_PRESSURE.iter().zip(&t.wheels) {
+                self.published_vs_raw.push(frame.f64(id), w.brake_pressure);
+            }
+        }
         for w in &t.wheels {
             let p = w.brake_pressure;
             self.all.push(p);
@@ -638,6 +739,12 @@ impl BrakePressureCheck {
             && near_one(front_peak)
             && near_one(rear_peak);
         let (front_ratio, rear_ratio) = (front_peak, rear_peak);
+        let published = [(
+            "brakes.{w}.pressure_frac",
+            self.published_vs_raw,
+            PUBLISHED_FRACTION_TOLERANCE,
+        )];
+        describe_published(&mut o, &published);
         if self.not_fraction > 0 || self.below_zero > 0 {
             o.verdict(
                 Verdict::Fail,
@@ -654,8 +761,9 @@ impl BrakePressureCheck {
         } else if self.above_fraction == 0
             && (pedal_times_balance || r.is_some_and(|r| r >= MIN_PEDAL_CORRELATION))
         {
-            o.verdict(
-                Verdict::Pass,
+            gate_rows(
+                o,
+                &published,
                 format!(
                     "fraction 0..{}: at full pedal the peak front ÷ (1 − bias) = {}, rear ÷ bias = {} (pedal × balance); r = {} with the pedal",
                     fmt_opt(self.all.max(), 3),
@@ -690,6 +798,10 @@ const PERCENT_ABOVE: f64 = 1.5;
 const MIN_SPAN: f64 = 0.02;
 /// VE increases adding up to more than this within a lap mean a refill (pit stop).
 const VE_REFILL_STEP: f64 = 0.005;
+/// A VE drop larger than this between two consecutive samples is a reset by LMU, not use (Gate 1
+/// pitstop1, return to the garage: 0.9392 → 0.2100 in 28 ms; a whole lap uses at most
+/// `VE_PER_LAP_PLAUSIBLE.1`, a sample a tiny fraction of that).
+const VE_RESET_STEP: f64 = 0.05;
 /// Plausible VE use per lap (fraction of the allowance).
 const VE_PER_LAP_PLAUSIBLE: (f64, f64) = (0.005, 0.25);
 /// VE laps listed.
@@ -703,7 +815,7 @@ const MIN_SOC_SAMPLES: u64 = 500;
 /// A published fraction must equal its raw source (scaled) within this (both sides are f32).
 const PUBLISHED_FRACTION_TOLERANCE: f64 = 1e-4;
 
-/// Complete laps without a refill needed for a PASS.
+/// Complete laps (a complete lap has no refill, reset or teleport) needed for a PASS.
 const MIN_VE_LAPS: u64 = 2;
 /// A lap-counter increment within this capture time of a teleport (e.g. "return to the garage") is not a
 /// line crossing: the lap before it ends and the lap after it starts away from the line (s).
@@ -714,10 +826,14 @@ const TELEPORT_LAP_GUARD_S: f64 = 2.0;
 struct VeLap {
     lap: i32,
     used: f64,
+    /// VE rose by more than [`VE_REFILL_STEP`] during the lap (pit refill).
     refill: bool,
-    /// Started and ended at an on-track line crossing with no teleport in between. A partial lap (the
-    /// first lap of the capture or after a discontinuity, an out-lap from the garage, a lap ended by a
-    /// return to the garage) is listed but never judged.
+    /// VE dropped by more than [`VE_RESET_STEP`] in one sample during the lap (reset by LMU).
+    reset: bool,
+    /// Started and ended at an on-track line crossing with no teleport, teleport ET step-back, VE refill
+    /// or VE reset in between, so `used` is the energy the lap took. A partial lap (the first lap of the
+    /// capture or after a discontinuity, an out-lap from the garage, a lap ended by a return to the garage,
+    /// a lap with a pit refill) is listed but never judged.
     complete: bool,
 }
 
@@ -728,7 +844,7 @@ struct VeLapStart {
     ve: f64,
     /// Began at an observed on-track lap increment (not mid-lap).
     from_line: bool,
-    /// A teleport happened since the lap began.
+    /// A teleport (or a teleport ET step-back) happened since the lap began.
     teleport: bool,
 }
 
@@ -760,6 +876,7 @@ struct VeLaps {
     last_teleport_s: Option<f64>,
     rise_in_lap: f64,
     refill_in_lap: bool,
+    reset_in_lap: bool,
     listed: Vec<VeLap>,
     per_lap: Summary,
     complete: u64,
@@ -784,35 +901,52 @@ impl VeLaps {
         self.prev_pos = None;
     }
 
+    /// LMU moved the car at `capture_s`: a garage teleport recognised by the normalizer (Gate 1 pitstop1:
+    /// a 19.17 m jump, far below [`TELEPORT_STEP_M`]), a teleport ET step-back it dropped (that sample has no
+    /// frame), or a jump longer than [`TELEPORT_STEP_M`] seen here. The lap in progress is no longer a
+    /// lap driven from line to line, a lap that ended within [`TELEPORT_LAP_GUARD_S`] before ended at the
+    /// teleport, and a lap-counter increment within the guard after it is not a line crossing.
+    fn teleport(&mut self, capture_s: f64) {
+        self.last_teleport_s = Some(capture_s);
+        if let Some(cur) = self.current.as_mut() {
+            cur.teleport = true;
+        }
+        if let Some(p) = self.pending.as_mut()
+            && capture_s - p.ended_s <= TELEPORT_LAP_GUARD_S
+        {
+            // The counter went up just before a teleport: that lap ended away from the line.
+            p.lap.complete = false;
+        }
+    }
+
     fn observe(&mut self, s: VeSample) {
-        let teleport = self.prev_pos.is_some_and(|p| {
+        let jump = self.prev_pos.is_some_and(|p| {
             let d = ((s.pos.0 - p.0).powi(2) + (s.pos.1 - p.1).powi(2) + (s.pos.2 - p.2).powi(2))
                 .sqrt();
             d > TELEPORT_STEP_M
         });
         self.prev_pos = Some(s.pos);
-        if teleport {
-            self.last_teleport_s = Some(s.capture_s);
-            if let Some(cur) = self.current.as_mut() {
-                cur.teleport = true;
-            }
+        if jump {
+            self.teleport(s.capture_s);
         }
-        if let Some(mut p) = self.pending.take() {
+        if let Some(p) = self.pending.take() {
             if s.capture_s - p.ended_s > TELEPORT_LAP_GUARD_S {
                 self.settle(p.lap);
             } else {
-                // The counter went up just before a teleport: that lap ended away from the line.
-                p.lap.complete &= !teleport;
                 self.pending = Some(p);
             }
         }
-        // VE only rises when refilled in the pits, at once or gradually: the rises within a lap add up.
-        if let Some(prev) = self.last_ve
-            && s.ve > prev
-        {
-            self.rise_in_lap += s.ve - prev;
-            if self.rise_in_lap > VE_REFILL_STEP {
-                self.refill_in_lap = true;
+        if let Some(prev) = self.last_ve {
+            // VE only rises when refilled in the pits, at once or gradually: the rises within a lap add up.
+            if s.ve > prev {
+                self.rise_in_lap += s.ve - prev;
+                if self.rise_in_lap > VE_REFILL_STEP {
+                    self.refill_in_lap = true;
+                }
+            }
+            // A drop no driving can produce between two samples: LMU reset the allowance.
+            if prev - s.ve > VE_RESET_STEP {
+                self.reset_in_lap = true;
             }
         }
         self.last_ve = Some(s.ve);
@@ -827,7 +961,12 @@ impl VeLaps {
                     lap: cur.lap,
                     used: cur.ve - s.ve,
                     refill: self.refill_in_lap,
-                    complete: cur.from_line && !cur.teleport && at_line,
+                    reset: self.reset_in_lap,
+                    complete: cur.from_line
+                        && !cur.teleport
+                        && at_line
+                        && !self.refill_in_lap
+                        && !self.reset_in_lap,
                 };
                 if let Some(p) = self.pending.take() {
                     self.settle(p.lap);
@@ -852,22 +991,22 @@ impl VeLaps {
             teleport: false,
         });
         self.refill_in_lap = false;
+        self.reset_in_lap = false;
         self.rise_in_lap = 0.0;
     }
 
     fn settle(&mut self, lap: VeLap) {
-        if !lap.complete {
-            self.partial += 1;
-        } else {
+        if lap.refill {
+            self.refill += 1;
+        }
+        if lap.complete {
             self.complete += 1;
-            if lap.refill {
-                self.refill += 1;
-            } else {
-                self.per_lap.push(lap.used);
-                if !(VE_PER_LAP_PLAUSIBLE.0..=VE_PER_LAP_PLAUSIBLE.1).contains(&lap.used) {
-                    self.implausible += 1;
-                }
+            self.per_lap.push(lap.used);
+            if !(VE_PER_LAP_PLAUSIBLE.0..=VE_PER_LAP_PLAUSIBLE.1).contains(&lap.used) {
+                self.implausible += 1;
             }
+        } else {
+            self.partial += 1;
         }
         if self.listed.len() < LISTED_LAPS {
             self.listed.push(lap);
@@ -897,6 +1036,11 @@ impl VirtualEnergyCheck {
     pub(super) fn observe(&mut self, step: &Step<'_>) {
         if step.discontinuity {
             self.laps.discontinuity(step.capture_s);
+        }
+        // Before the sample (the counter may go up on the teleport sample itself), and also for a dropped
+        // teleport step-back, which carries no frame.
+        if step.normalizer.moved_by_lmu() {
+            self.laps.teleport(step.capture_s);
         }
         let Some(t) = step.raw else {
             return;
@@ -960,10 +1104,10 @@ impl VirtualEnergyCheck {
             self.published_vs_raw.describe()
         ));
         o.line(format!(
-            "complete laps {} ({} with a refill), partial laps not judged {} (capture start, after a discontinuity, out-lap from the garage, ended by a teleport); use per complete lap without refill: median {}, min {}, max {}; outside {VE_PER_LAP_PLAUSIBLE:?}: {}",
+            "complete laps {}, partial laps not judged {} (capture start, after a discontinuity, out-lap from the garage, a garage teleport or teleport ET step-back, a VE refill ({} lap(s)) or VE reset in the lap); use per complete lap: median {}, min {}, max {}; outside {VE_PER_LAP_PLAUSIBLE:?}: {}",
             laps.complete,
-            laps.refill,
             laps.partial,
+            laps.refill,
             fmt_opt(laps.per_lap.median(), 4),
             fmt_opt(laps.per_lap.min(), 4),
             fmt_opt(laps.per_lap.max(), 4),
@@ -974,10 +1118,11 @@ impl VirtualEnergyCheck {
             .iter()
             .map(|l| {
                 format!(
-                    "lap {}: {:.2} %{}{}",
+                    "lap {}: {:.2} %{}{}{}",
                     l.lap,
                     100.0 * l.used,
                     if l.refill { " (refill)" } else { "" },
+                    if l.reset { " (reset)" } else { "" },
                     if l.complete { "" } else { " (partial)" }
                 )
             })
@@ -1034,7 +1179,7 @@ impl VirtualEnergyCheck {
             o.verdict(
                 Verdict::Inconclusive,
                 format!(
-                    "in 0..1 but not enough change or fewer than {MIN_VE_LAPS} complete laps without a refill ({})",
+                    "in 0..1 but not enough change or fewer than {MIN_VE_LAPS} complete laps ({})",
                     laps.per_lap.count()
                 ),
             )
@@ -1056,6 +1201,26 @@ pub struct SocCheck {
     soc_vs_fraction: PublishedVsRaw,
     /// Published `energy.battery_charge_frac` vs `mBatteryChargeFraction`.
     battery_vs_raw: PublishedVsRaw,
+    /// Published samples where the A-LMU-014 mitigation expects the battery fraction instead of the
+    /// scaled `mSoC` (percent scale, fraction scale).
+    substituted_percent: u64,
+    substituted_fraction: u64,
+}
+
+/// The `energy.soc_frac` the normalizer is expected to publish for one sample, and whether its A-LMU-014
+/// mitigation substitutes the battery fraction: exactly `lmu_normalizer`'s `prefer_battery_fraction` rule
+/// (an uninitialised `mSoC` of exactly 0 next to a charged battery, or a gap above
+/// [`SOC_AGREEMENT_TOLERANCE`], publishes `mBatteryChargeFraction`), otherwise the scaled `mSoC`.
+fn expected_published_soc(scaled_soc: f64, soc_raw: f64, battery: f64) -> (f64, bool) {
+    if !soc_raw.is_finite() || !(0.0..=1.0).contains(&battery) {
+        return (scaled_soc, false);
+    }
+    let uninitialised = soc_raw == 0.0 && battery > 0.0;
+    if uninitialised || (scaled_soc - battery).abs() > SOC_AGREEMENT_TOLERANCE {
+        (battery, true)
+    } else {
+        (scaled_soc, false)
+    }
 }
 
 impl SocCheck {
@@ -1067,8 +1232,14 @@ impl SocCheck {
         let battery = t.battery_charge_fraction;
         if let Some(frame) = step.frame {
             let published_soc = frame.f64(ch::BATTERY_SOC);
-            self.soc_vs_percent.push(published_soc, soc / 100.0);
-            self.soc_vs_fraction.push(published_soc, soc);
+            let (exp_percent, sub_percent) = expected_published_soc(soc / 100.0, soc, battery);
+            let (exp_fraction, sub_fraction) = expected_published_soc(soc, soc, battery);
+            self.soc_vs_percent.push(published_soc, exp_percent);
+            self.soc_vs_fraction.push(published_soc, exp_fraction);
+            if published_soc.is_some() {
+                self.substituted_percent += u64::from(sub_percent);
+                self.substituted_fraction += u64::from(sub_fraction);
+            }
             self.battery_vs_raw
                 .push(frame.f64(ch::BATTERY_CHARGE), battery);
         }
@@ -1131,6 +1302,14 @@ impl SocCheck {
             self.soc_vs_fraction.describe(),
             self.battery_vs_raw.describe()
         ));
+        o.metric("soc_substituted_percent", self.substituted_percent as f64)
+            .metric("soc_substituted_fraction", self.substituted_fraction as f64);
+        o.line(format!(
+            "A-LMU-014 mitigation: published samples where mSoC is uninitialised (0) or disagrees with the battery \
+             fraction by more than {SOC_AGREEMENT_TOLERANCE}, so the battery fraction is expected instead: \
+             {} (percent scale), {} (fraction scale)",
+            self.substituted_percent, self.substituted_fraction
+        ));
         let battery_bad = self.battery.min().is_some_and(|m| m < -FRACTION_TOLERANCE)
             || self
                 .battery
@@ -1167,7 +1346,10 @@ impl SocCheck {
             gate_on_published(
                 o,
                 &[
-                    ("energy.soc_frac (= mSoC / 100)", self.soc_vs_percent),
+                    (
+                        "energy.soc_frac (= mSoC / 100, or the battery fraction under the A-LMU-014 mitigation)",
+                        self.soc_vs_percent,
+                    ),
                     ("energy.battery_charge_frac", self.battery_vs_raw),
                 ],
                 PUBLISHED_FRACTION_TOLERANCE,
@@ -1180,7 +1362,10 @@ impl SocCheck {
             gate_on_published(
                 o,
                 &[
-                    ("energy.soc_frac (= mSoC)", self.soc_vs_fraction),
+                    (
+                        "energy.soc_frac (= mSoC, or the battery fraction under the A-LMU-014 mitigation)",
+                        self.soc_vs_fraction,
+                    ),
                     ("energy.battery_charge_frac", self.battery_vs_raw),
                 ],
                 PUBLISHED_FRACTION_TOLERANCE,
@@ -1319,6 +1504,90 @@ mod tests {
             s(130.0, 3, 0.87, 30.0, false),
         ]);
         assert_eq!(complete_flags(&laps), [(0, false), (1, false), (2, false)]);
+    }
+
+    /// Gate 1 pitstop1 (real sample pattern): lap 1 began at the counter increment in the pit lane during a
+    /// stop (VE refilled to 1.0). At the return to the garage the counter went up on the teleport sample
+    /// (19.17 m jump, below `TELEPORT_STEP_M`, recognised by the normalizer; VE reset 0.9392 → 0.2100), and
+    /// the next sample stepped ET back (dropped by the normalizer: no frame, only its counter). Lap 1 is
+    /// partial; judged, its 79 % "use" failed A-LMU-013 (verify-v8).
+    #[test]
+    fn real_pitstop1_garage_return_lap_is_partial() {
+        let mut laps = VeLaps::default();
+        laps.observe(s(80.32, 0, 0.1534, 0.0, false));
+        laps.observe(s(150.24, 0, 0.1534, 0.17, false));
+        laps.observe(s(150.2487, 1, 1.0, 0.34, false));
+        laps.observe(s(255.6549, 1, 0.9392, 500.0, false));
+        // The normalizer's `teleports` counter grew on this snapshot, before its sample is observed.
+        laps.teleport(255.7120);
+        laps.observe(s(255.7120, 2, 0.2100, 519.17, false));
+        // The ET step-back: no frame, `teleport_et_step_backs` grew.
+        laps.teleport(255.7133);
+        laps.observe(s(255.7156, 2, 0.2100, 519.17, false));
+        laps.observe(s(255.8490, 2, 0.2100, 519.17, true));
+        laps.observe(s(265.4, 2, 0.2100, 519.17, true));
+        laps.finish();
+        assert_eq!(complete_flags(&laps), [(0, false), (1, false)]);
+        assert_eq!(
+            (laps.complete, laps.partial, laps.implausible, laps.refill),
+            (0, 2, 0, 1)
+        );
+        assert_eq!(laps.listed.get(1).map(|l| l.reset), Some(true));
+    }
+
+    /// Without the normalizer teleport signal the same lap is still partial: the VE reset alone (a drop no
+    /// driving produces between two samples) makes it unmeasurable.
+    #[test]
+    fn ve_reset_alone_makes_the_lap_partial() {
+        let laps = feed(&[
+            s(0.0, 0, 0.95, 0.0, false),
+            s(10.0, 1, 0.94, 10.0, false),
+            s(70.0, 2, 0.90, 20.0, false),
+            s(100.0, 2, 0.88, 30.0, false),
+            s(100.03, 3, 0.21, 31.0, false),
+            s(200.0, 4, 0.17, 40.0, false),
+        ]);
+        assert_eq!(
+            complete_flags(&laps),
+            [(0, false), (1, true), (2, false), (3, true)]
+        );
+        assert_eq!(laps.implausible, 0);
+    }
+
+    /// A short teleport the normalizer recognised mid-lap makes the lap partial even when VE does not move,
+    /// and a counter increment within the guard after it is not a line crossing.
+    #[test]
+    fn normalizer_teleport_mid_lap_makes_the_lap_partial() {
+        let mut laps = VeLaps::default();
+        laps.observe(s(0.0, 0, 0.95, 0.0, false));
+        laps.observe(s(10.0, 1, 0.94, 10.0, false));
+        laps.observe(s(70.0, 2, 0.90, 20.0, false));
+        laps.teleport(80.0);
+        laps.observe(s(80.0, 2, 0.89, 39.0, false));
+        laps.observe(s(81.0, 3, 0.89, 39.0, false));
+        laps.observe(s(140.0, 4, 0.86, 50.0, false));
+        laps.observe(s(200.0, 5, 0.83, 60.0, false));
+        laps.finish();
+        assert_eq!(
+            complete_flags(&laps),
+            [(0, false), (1, true), (2, false), (3, false), (4, true)]
+        );
+    }
+
+    /// A lap with a pit refill is partial: its start-minus-end is not the energy it took.
+    #[test]
+    fn refill_lap_is_partial() {
+        let laps = feed(&[
+            s(0.0, 0, 0.30, 0.0, false),
+            s(10.0, 1, 0.29, 10.0, false),
+            s(40.0, 1, 0.27, 20.0, false),
+            s(41.0, 1, 1.0, 20.0, false),
+            s(70.0, 2, 0.97, 30.0, false),
+            s(100.0, 2, 0.94, 35.0, false),
+            s(130.0, 3, 0.91, 40.0, false),
+        ]);
+        assert_eq!(complete_flags(&laps), [(0, false), (1, false), (2, true)]);
+        assert_eq!((laps.complete, laps.refill), (1, 1));
     }
 
     #[test]

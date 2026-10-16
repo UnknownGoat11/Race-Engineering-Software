@@ -31,7 +31,9 @@ pub(super) fn rates(timing: Option<&TimingReport>) -> CheckResult {
         "update_rates",
         "Native update rates (telemetry ≈ 100 Hz, scoring ≈ 5 Hz)",
         &["A-LMU-001", "A-LMU-002"],
-        &["source.telemetry_rate_hz", "source.scoring_rate_hz"],
+        // No channel-map rows: the capture-clock update intervals are judged, never the published
+        // `source.*_rate_hz` values (second review F3).
+        &[],
     );
     let Some(t) = timing else {
         return o.verdict(Verdict::Inconclusive, "no snapshot was replayed");
@@ -85,7 +87,9 @@ pub(super) fn elapsed_time(timing: Option<&TimingReport>) -> CheckResult {
         "elapsed_time",
         "ET monotonic within a session; telemetry and scoring ET on one clock",
         &["A-LMU-031", "A-LMU-059"],
-        &["time.source_et_s", "session.elapsed_s"],
+        // No channel-map rows: the raw player and scoring ET are judged, never the published
+        // `time.source_et_s` / `session.elapsed_s` values (second review F3).
+        &[],
     );
     let Some(t) = timing else {
         return o.verdict(Verdict::Inconclusive, "no snapshot was replayed");
@@ -119,7 +123,7 @@ pub(super) fn elapsed_time(timing: Option<&TimingReport>) -> CheckResult {
             r.at_capture_s,
             r.from_et_s,
             r.to_et_s,
-            r.explanation.as_deref().unwrap_or("UNEXPLAINED")
+            r.describe()
         ));
     }
     if let Some(s) = &t.telemetry_minus_scoring_et_s {

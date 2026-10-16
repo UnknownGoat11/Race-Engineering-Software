@@ -78,12 +78,12 @@ Keep the captures themselves private, as with lmu-diag.
 | Check | Settles | Needs |
 |---|---|---|
 | `update_rates` | A-LMU-001, 002 | ≥ 10 s of telemetry and ≥ 50 scoring updates |
-| `elapsed_time` | A-LMU-031, 059 | as above; any unexplained ET regression fails. Explained: a restart below 10 s (new session), an identity change within 2 s, or a step back of ≤ 1 s within 0.5 s of a teleport (> 5 m faster than 200 m/s, then at rest: LMU moving the car into its garage, A-LMU-067), or a session-end rewind (session over, out of realtime, new ET ≥ `mEndET`: LMU closing a finished session, A-LMU-031; the normalizer's rule, applied to player and scoring ET) |
+| `elapsed_time` | A-LMU-031, 059 | as above; any unexplained ET regression fails. Explained: a restart below 10 s (new session), an identity change within 2 s, a garage-teleport ET step-back (≤ 0.05 s, `TELEPORT_ET_STEP_BACK_MAX_S`) that the normalizer itself dropped (disposition DUPLICATE_ET with `teleport_et_step_backs` incremented, A-LMU-031 kind (b)), or a session-end rewind (session over, out of realtime, new ET ≥ `mEndET`: LMU closing a finished session, A-LMU-031; the normalizer's rule, applied to player and scoring ET) |
 | `brake_temp_unit` | A-LMU-015 | ≥ 10 cold samples in the garage before driving (coldest − ambient ≈ 273 K ⇒ Kelvin) |
 | `tyre_temperature_unit` | A-LMU-049, 062 | ≥ 200 samples per wheel above 10 m/s |
 | `tyre_pressure_unit` | A-LMU-049 | ≥ 200 samples per wheel above 10 m/s |
 | `brake_pressure_fraction` | A-LMU-017 | hard braking; ≥ 50 full-pedal samples while rolling (peak = pedal × balance) |
-| `virtual_energy` | A-LMU-013 | a car with virtual energy and ≥ 2 complete laps without a refill. A lap is complete only when it starts and ends at an on-track line crossing: the lap the capture starts in, the lap after a discontinuity, the out-lap from the garage and laps ended or started by a teleport (return to the garage) or ended within 2 s before a discontinuity (session end with the car in the box) are listed as partial and never judged |
+| `virtual_energy` | A-LMU-013 | a car with virtual energy and ≥ 2 complete laps. A lap is complete only when it starts and ends at an on-track line crossing with nothing but driving in between: the lap the capture starts in, the lap after a discontinuity, the out-lap from the garage, laps containing a garage teleport (the normalizer's teleport or teleport ET step-back, or a jump > 50 m), a VE refill or a VE reset (a drop > 0.05 in one sample), laps ended or started by a teleport, and laps ended within 2 s before a discontinuity (session end with the car in the box) are listed as partial and never judged |
 | `state_of_charge` | A-LMU-014 | a hybrid with the battery in use, ≥ 5 s |
 | `g_long_sign`, `g_lat_sign`, `steering_sign` | A-LMU-024 | acceleration, hard braking and clear cornering both ways. `g_lat_sign` cross-checks the load transfer only when tyre loads are filled (four loads of exactly 0 N on LMGT3 are "n/a", A-LMU-069); the yaw evidence then decides |
 | `wheel_speed` | A-LMU-039, 060 | ≥ 100 straight, steady-speed samples per wheel |
@@ -92,7 +92,7 @@ Keep the captures themselves private, as with lmu-diag.
 | `fuel` | A-LMU-018 | driving plus a refuel |
 | `pit_flags`, `pit_state_values` | A-LMU-029, 026, 063 | a pit-lane entry and exit and a real pit-box stop (not a garage visit): without one `pit_flags` is INCONCLUSIVE. Judged against the states LMU 1.4.2.0 was seen to use: 2 entering, **4 stopped in the box**, **5 leaving the box / garage** (the header's 3 never appeared); `mPitState` ≠ 0 is required in the pit lane outside the garage stall and every serviced box stop must show 4. `pit_state_values` fails on a value above 5 or on pit-lane states (2..5) seen on track |
 | `tyre_side_mapping` | A-LMU-016 | ≥ 3 s of sustained cornering (> 1 g) each way per wheel; INCONCLUSIVE unless all four wheels agree |
-| `tyre_wear_direction` | A-LMU-040 | ≥ 5 s of driving with measurable wear |
+| `tyre_wear_direction` | A-LMU-040 | ≥ 5 s of driving with measurable wear. PASS only for the documented direction (≥ 95 % of the change downwards: 1.0 = new, falling); a consistent rise FAILs as a contradiction of A-LMU-040 |
 
 ## Robustness and memory
 

@@ -30,7 +30,7 @@ use self::census::Census;
 use self::channels::{ChannelRow, ChannelsAcc};
 use self::checks::{CheckResult, ChecksAcc};
 use self::session::{SessionAcc, SessionFacts};
-use self::timing::{NS_PER_S, TimingAcc, TimingReport};
+use self::timing::{NS_PER_S, NormalizerDelta, TimingAcc, TimingReport};
 
 /// The normalizer's measured rates are refreshed from the replay statistics this often (capture time), as
 /// the live app refreshes them periodically.
@@ -105,6 +105,10 @@ pub struct Step<'a> {
     /// Continuity broke before this step (reconnect, ET regression, session/track/vehicle change):
     /// differences with earlier samples are meaningless.
     pub discontinuity: bool,
+    /// What the normalizer's counters say happened on this snapshot (garage teleport, teleport ET
+    /// step-back, session-end rewind). Set even when the snapshot published no frame: a dropped teleport
+    /// step-back still moved the car.
+    pub normalizer: NormalizerDelta,
 }
 
 /// All accumulators of one capture.
@@ -148,7 +152,9 @@ impl CaptureAnalysis {
             self.normalizer.update_rates_from_stats(stats);
             self.last_rate_refresh_ns = Some(now);
         }
+        let before = self.normalizer.stats();
         let out = self.normalizer.process(snapshot);
+        let delta = NormalizerDelta::between(&before, &self.normalizer.stats());
         let reconnected = self
             .last_connection
             .is_some_and(|c| c != snapshot.connection_id);
@@ -157,7 +163,7 @@ impl CaptureAnalysis {
             || out.identity.is_some()
             || out.disposition == TelemetryDisposition::NewSampleAfterRegression;
 
-        self.timing.observe(snapshot, &out);
+        self.timing.observe(snapshot, &out, delta);
         let capture_s = self.timing.capture_s(now);
         self.session.observe(snapshot, &out, capture_s);
         if snapshot.scoring_updated {
@@ -179,6 +185,7 @@ impl CaptureAnalysis {
             raw,
             player_row: snapshot.player_scoring(),
             discontinuity,
+            normalizer: delta,
         };
         self.channels.observe(&step);
         self.checks.observe(&step);

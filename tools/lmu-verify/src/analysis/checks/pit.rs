@@ -14,7 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use lmu_reader::split_current_sector;
 use telemetry_model::ch;
 
-use super::{CheckResult, Outcome, Verdict, fmt_opt, pct};
+use super::{
+    CheckResult, EXACT_PASSTHROUGH_TOLERANCE, Outcome, PASSTHROUGH_TOLERANCE, PublishedVsRaw,
+    Verdict, describe_published, fmt_opt, gate_rows, pct,
+};
 use crate::analysis::Step;
 use crate::stats::{Agreement, Summary};
 
@@ -192,6 +195,20 @@ pub struct FuelPitCheck {
     pit_lane_entries: u64,
     pit_lane_exits: u64,
     last_flags: Option<(bool, Option<bool>, Option<u8>, bool)>,
+    /// Published rows vs their raw sources: `fuel.level_l` / `mFuel`, `fuel.capacity_l` / `mFuelCapacity`,
+    /// `pit.in_pit_lane` / `mCurrentSector` bit 31, and at scoring updates `pit.in_pits` / `mInPits`,
+    /// `pit.state` / `mPitState`, `pit.in_garage_stall` / `mInGarageStall` (booleans as 0 / 1).
+    pub_fuel: PublishedVsRaw,
+    pub_capacity: PublishedVsRaw,
+    pub_pit_lane: PublishedVsRaw,
+    pub_in_pits: PublishedVsRaw,
+    pub_pit_state: PublishedVsRaw,
+    pub_garage: PublishedVsRaw,
+}
+
+/// A boolean as the 0 / 1 a published boolean channel reads as.
+fn bit(b: bool) -> f64 {
+    if b { 1.0 } else { 0.0 }
 }
 
 impl FuelPitCheck {
@@ -215,6 +232,14 @@ impl FuelPitCheck {
         let Some(row) = step.player_row else {
             return;
         };
+        if let Some(frame) = step.frame {
+            self.pub_in_pits
+                .push(frame.f64(ch::IN_PITS), bit(row.in_pits));
+            self.pub_pit_state
+                .push(frame.f64(ch::PIT_STATE), f64::from(row.pit_state));
+            self.pub_garage
+                .push(frame.f64(ch::IN_GARAGE), bit(row.in_garage_stall));
+        }
         if self.pit_state != Some(row.pit_state) {
             if let Some(prev) = self.pit_state
                 && self.transitions.len() < MAX_LISTED
@@ -279,10 +304,15 @@ impl FuelPitCheck {
         let (Some(frame), Some(t)) = (step.frame, step.raw) else {
             return;
         };
+        let (_, pit_lane) = split_current_sector(t.current_sector);
+        self.pub_fuel.push(frame.f64(ch::FUEL), t.fuel);
+        self.pub_capacity
+            .push(frame.f64(ch::FUEL_CAPACITY), t.fuel_capacity);
+        self.pub_pit_lane
+            .push(frame.f64(ch::IN_PIT_LANE), bit(pit_lane));
         let Some(speed) = frame.f64(ch::SPEED) else {
             return;
         };
-        let (_, pit_lane) = split_current_sector(t.current_sector);
         match (self.pit_lane, pit_lane) {
             (Some(false), true) => self.pit_lane_entries += 1,
             (Some(true), false) => self.pit_lane_exits += 1,
@@ -452,10 +482,15 @@ impl FuelPitCheck {
             || outside > 0
             || self.stationary_outside_increase > REFUEL_MIN_L
             || self.over_capacity > 0;
+        let published = [
+            ("fuel.level_l", self.pub_fuel, PASSTHROUGH_TOLERANCE),
+            ("fuel.capacity_l", self.pub_capacity, PASSTHROUGH_TOLERANCE),
+        ];
+        describe_published(&mut o, &published);
         if fail {
             o.verdict(Verdict::Fail, summary)
         } else if decreasing && !refills.is_empty() {
-            o.verdict(Verdict::Pass, summary)
+            gate_rows(o, &published, summary)
         } else {
             o.verdict(Verdict::Inconclusive, summary)
         }
@@ -574,6 +609,21 @@ impl FuelPitCheck {
         let state_fail = state_enough
             && (state.is_some_and(|s| s < FLAG_FAIL_SHARE)
                 || serviced_box_without_stopped_state > 0);
+        let published = [
+            (
+                "pit.in_pit_lane",
+                self.pub_pit_lane,
+                EXACT_PASSTHROUGH_TOLERANCE,
+            ),
+            ("pit.in_pits", self.pub_in_pits, EXACT_PASSTHROUGH_TOLERANCE),
+            ("pit.state", self.pub_pit_state, EXACT_PASSTHROUGH_TOLERANCE),
+            (
+                "pit.in_garage_stall",
+                self.pub_garage,
+                EXACT_PASSTHROUGH_TOLERANCE,
+            ),
+        ];
+        describe_published(&mut o, &published);
         if lane_fail || state_fail {
             o.verdict(Verdict::Fail, summary)
         } else if lane_enough
@@ -583,7 +633,7 @@ impl FuelPitCheck {
             && box_with_stopped_state == pit_box.len()
             && lane_states.contains(&PIT_STATE_ENTERING)
         {
-            o.verdict(Verdict::Pass, summary)
+            gate_rows(o, &published, summary)
         } else {
             o.verdict(Verdict::Inconclusive, summary)
         }
@@ -651,10 +701,12 @@ impl FuelPitCheck {
         );
         let misplaced_fail = self.lane_states_on_track >= MIN_MISPLACED_FOR_FAIL
             && misplaced_share.is_some_and(|s| s > MISPLACED_FAIL_SHARE);
+        let published = [("pit.state", self.pub_pit_state, EXACT_PASSTHROUGH_TOLERANCE)];
+        describe_published(&mut o, &published);
         if unknown > 0 || misplaced_fail {
             o.verdict(Verdict::Fail, summary)
         } else if non_zero > 0 && misplaced_share.is_none_or(|s| s <= MISPLACED_PASS_SHARE) {
-            o.verdict(Verdict::Pass, summary)
+            gate_rows(o, &published, summary)
         } else {
             o.verdict(Verdict::Inconclusive, summary)
         }
