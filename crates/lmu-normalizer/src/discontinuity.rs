@@ -82,6 +82,8 @@ pub enum Discontinuity {
 #[derive(Debug, Clone, Default)]
 pub struct DiscontinuityDetector {
     prev: Option<CarSample>,
+    /// `prev` was itself classified as a [`Discontinuity::Teleport`] (the car arrived there by a jump).
+    prev_teleport: bool,
     prev_in_realtime: Option<bool>,
     /// A realtime entry was seen since the last published sample.
     realtime_entered: bool,
@@ -106,6 +108,7 @@ impl DiscontinuityDetector {
             .is_some_and(|prev| is_teleport(&prev, &sample, max_motion_mps));
         if sample.et_s.is_finite() && sample.pos.iter().all(|v| v.is_finite()) {
             self.prev = Some(sample);
+            self.prev_teleport = teleport;
         }
         if teleport {
             Some(Discontinuity::Teleport)
@@ -141,6 +144,84 @@ pub fn is_teleport(prev: &CarSample, next: &CarSample, max_motion_mps: f64) -> b
         && impossible_as_motion
         && at_rest
         && next.in_pit_area
+}
+
+/// Largest ET step-back (s) that can accompany a garage teleport (A-LMU-031 kind (b)). Gate 1 (LMU 1.4.2.0)
+/// saw 0.01-0.03 s (pitstop1: ET 315.8304 -> 315.8200, one sample after a 19.2 m jump into the garage); a
+/// larger step-back is never explained as a teleport.
+pub const TELEPORT_ET_STEP_BACK_MAX_S: f64 = 0.05;
+
+/// A teleport whose ET stepped back a little ([`TELEPORT_ET_STEP_BACK_MAX_S`]) instead of advancing: the
+/// position step is longer than [`TELEPORT_MIN_STEP_M`], the car is at rest afterwards and in the pit area.
+/// No motion test is possible (no positive time step), so the step-back size is the extra corroboration
+/// and the caller must also check that the player and session did not change.
+///
+/// This is the jump and the step-back on the same sample. The order seen on real data (Gate 1 pitstop1) is
+/// the jump first, with ET still advancing, and the step-back on the next sample: see
+/// [`is_step_back_after_teleport`].
+pub fn is_teleport_step_back(prev: &CarSample, next: &CarSample) -> bool {
+    let back = prev.et_s - next.et_s;
+    let step = distance(prev.pos, next.pos);
+    let at_rest = (0.0..=TELEPORT_MAX_SPEED_MPS).contains(&next.speed_mps);
+    back.is_finite()
+        && back > 0.0
+        && back <= TELEPORT_ET_STEP_BACK_MAX_S
+        && step.is_finite()
+        && step > TELEPORT_MIN_STEP_M
+        && at_rest
+        && next.in_pit_area
+}
+
+/// A small ET step-back ([`TELEPORT_ET_STEP_BACK_MAX_S`]) on the sample right after a garage teleport:
+/// `teleported` is that teleport sample (the caller checks it was classified
+/// [`Discontinuity::Teleport`]), and `next` stays where the teleport put the car (a step of at most
+/// [`TELEPORT_MIN_STEP_M`]), at rest and in the pit area.
+///
+/// Gate 1 pitstop1 (LMU 1.4.2.0), return to the garage: ET 315.8025 -> 315.8304 with a 19.17 m jump (speed
+/// 0.000 m/s, pit-lane bit set), then 1.3 ms later ET 315.8200 (back 0.0104 s), 0.00 m away, 0.004 m/s,
+/// pit-lane bit set; ET then advances again from 315.8400. A step-back that is not right after a teleport,
+/// that moves the car again, that leaves the pit area or is larger than the bound is not this.
+pub fn is_step_back_after_teleport(teleported: &CarSample, next: &CarSample) -> bool {
+    let back = teleported.et_s - next.et_s;
+    let step = distance(teleported.pos, next.pos);
+    let at_rest = (0.0..=TELEPORT_MAX_SPEED_MPS).contains(&next.speed_mps);
+    back.is_finite()
+        && back > 0.0
+        && back <= TELEPORT_ET_STEP_BACK_MAX_S
+        && step.is_finite()
+        && step <= TELEPORT_MIN_STEP_M
+        && at_rest
+        && next.in_pit_area
+}
+
+impl DiscontinuityDetector {
+    /// `true` when `next` is a garage teleport with a small ET step-back relative to the last published
+    /// sample (see [`is_teleport_step_back`]).
+    pub fn is_step_back_teleport(&self, next: &CarSample) -> bool {
+        self.prev
+            .is_some_and(|prev| is_teleport_step_back(&prev, next))
+    }
+
+    /// `true` when the last published sample was a [`Discontinuity::Teleport`] and `next` steps ET back a
+    /// little right after it without moving (see [`is_step_back_after_teleport`]).
+    pub fn is_step_back_after_last_teleport(&self, next: &CarSample) -> bool {
+        self.prev_teleport
+            && self
+                .prev
+                .is_some_and(|prev| is_step_back_after_teleport(&prev, next))
+    }
+
+    /// Records the car's new place after a recognised step-back teleport (the sample itself is not
+    /// published), so that the next sample is compared with the post-teleport position.
+    pub fn accept_step_back(&mut self, sample: CarSample) {
+        if sample.pos.iter().all(|v| v.is_finite()) {
+            // Keep the larger ET of the time base: only the position moves.
+            let et_s = self.prev.map_or(sample.et_s, |p| p.et_s.max(sample.et_s));
+            self.prev = Some(CarSample { et_s, ..sample });
+            // The teleport is consumed: a further step-back is the caller's open step-back, not a new one.
+            self.prev_teleport = false;
+        }
+    }
 }
 
 /// Raw `mGamePhase` of a finished session (`GamePhase::SessionOver`).
@@ -258,6 +339,104 @@ mod tests {
             &sample(100.01, 652.0, f64::NAN, true),
             MAX_MOTION_MPS
         ));
+    }
+
+    /// Synthetic: the jump into the garage and the ET step-back on the same sample (not seen on real data;
+    /// the real order is covered by `step_back_right_after_a_garage_teleport_is_a_teleport_step_back`).
+    #[test]
+    fn small_et_step_back_with_a_garage_jump_is_a_teleport_step_back() {
+        let prev = sample(315.830, 0.0, 0.0, true);
+        assert!(is_teleport_step_back(
+            &prev,
+            &sample(315.820, 19.6, 0.0, true)
+        ));
+        // Too large a step-back, no jump, moving, on track, or no step-back at all: not it.
+        assert!(!is_teleport_step_back(
+            &prev,
+            &sample(315.700, 19.6, 0.0, true)
+        ));
+        assert!(!is_teleport_step_back(
+            &prev,
+            &sample(315.820, 1.0, 0.0, true)
+        ));
+        assert!(!is_teleport_step_back(
+            &prev,
+            &sample(315.820, 19.6, 30.0, true)
+        ));
+        assert!(!is_teleport_step_back(
+            &prev,
+            &sample(315.820, 19.6, 0.0, false)
+        ));
+        assert!(!is_teleport_step_back(
+            &prev,
+            &sample(315.840, 19.6, 0.0, true)
+        ));
+        let mut d = DiscontinuityDetector::default();
+        d.observe(prev, MAX_MOTION_MPS);
+        let next = sample(315.820, 19.6, 0.0, true);
+        assert!(d.is_step_back_teleport(&next));
+        d.accept_step_back(next);
+        assert!(
+            !d.is_step_back_teleport(&sample(315.825, 19.6, 0.0, true)),
+            "the post-teleport position is the new reference"
+        );
+    }
+
+    /// Gate 1 pitstop1 (real sample, positions relative to the pre-jump place): the 19.17 m jump arrives
+    /// with ET advancing, the step-back of 0.0104 s on the next sample without moving.
+    #[test]
+    fn step_back_right_after_a_garage_teleport_is_a_teleport_step_back() {
+        let before = sample(315.8025, 0.0, 0.169, true);
+        let teleported = sample(315.8304, 19.17, 0.000, true);
+        let back = sample(315.8200, 19.17, 0.004, true);
+        let mut d = DiscontinuityDetector::default();
+        d.observe(before, MAX_MOTION_MPS);
+        assert!(
+            !d.is_step_back_after_last_teleport(&back),
+            "no teleport yet"
+        );
+        assert_eq!(
+            d.observe(teleported, MAX_MOTION_MPS),
+            Some(Discontinuity::Teleport)
+        );
+        assert!(
+            !d.is_step_back_teleport(&back),
+            "no jump on the step-back sample itself"
+        );
+        assert!(d.is_step_back_after_last_teleport(&back));
+        d.accept_step_back(back);
+        assert!(
+            !d.is_step_back_after_last_teleport(&sample(315.8250, 19.17, 0.0, true)),
+            "the teleport is consumed by the first step-back"
+        );
+
+        assert!(is_step_back_after_teleport(&teleported, &back));
+        // Too large a step-back, moved again, moving, out of the pit area, or no step-back: not it.
+        assert!(!is_step_back_after_teleport(
+            &teleported,
+            &sample(315.70, 19.17, 0.0, true)
+        ));
+        assert!(!is_step_back_after_teleport(
+            &teleported,
+            &sample(315.82, 30.0, 0.0, true)
+        ));
+        assert!(!is_step_back_after_teleport(
+            &teleported,
+            &sample(315.82, 19.17, 30.0, true)
+        ));
+        assert!(!is_step_back_after_teleport(
+            &teleported,
+            &sample(315.82, 19.17, 0.0, false)
+        ));
+        assert!(!is_step_back_after_teleport(
+            &teleported,
+            &sample(315.84, 19.17, 0.0, true)
+        ));
+
+        // The same step-back after an ordinary (non-teleport) sample is not explained.
+        let mut plain = DiscontinuityDetector::default();
+        plain.observe(sample(315.8304, 19.17, 0.0, true), MAX_MOTION_MPS);
+        assert!(!plain.is_step_back_after_last_teleport(&back));
     }
 
     #[test]

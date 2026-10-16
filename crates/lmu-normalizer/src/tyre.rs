@@ -1,6 +1,8 @@
 //! Tyre temperature edge mapping: LMU left/centre/right (car frame) → inner/middle/outer (wheel frame).
 //!
-//! ASSUMPTION **A-LMU-016** (docs/ASSUMPTIONS.md, docs/LMU_CHANNEL_MAP.md §11), pending Gate-1:
+//! ASSUMPTION **A-LMU-016** (docs/ASSUMPTIONS.md, docs/LMU_CHANNEL_MAP.md §11), VERIFIED at Gate 1 (stint1,
+//! LMGT3, Road Atlanta: inner-edge heating on the unloaded tyres and outer-edge heating on the loaded ones,
+//! 4/4 each; GATE1_REPORT.md §8):
 //! `mTemperature[3]` (and `mTireInnerLayerTemperature[3]`) are ordered **left, centre, right in the car
 //! frame**; the header explicitly says this is *not* inside/centre/outside. LMU's local +x points out of the
 //! car's LEFT side, so index 0 is the edge on the car's left:

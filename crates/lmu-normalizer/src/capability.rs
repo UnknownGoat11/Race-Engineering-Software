@@ -30,10 +30,16 @@ pub const CAPABILITY_DECISION_SAMPLES: u32 = 300;
 /// [`CAPABILITY_DECISION_SAMPLES`] samples pass without one (→ `Some(false)`). Tyre wear is never decided
 /// absent: a zero `mWear` is ambiguous (wear not simulated, or a new tyre if 0 = unworn, direction
 /// UNVERIFIED A-LMU-040), so it stays `None` until a non-zero value is seen.
+///
+/// Hybrid is never decided absent from samples taken in the garage stall (A-LMU-057; verify-v5 Hypercar:
+/// the hybrid channels of a hybrid car were reported NOT_SUPPORTED in 1.8 % of frames, in the garage): only
+/// samples outside the garage stall count towards its window ([`VehicleCapabilityTracker::observe_at`]).
 #[derive(Debug, Clone, Default)]
 pub struct VehicleCapabilityTracker {
     caps: VehicleCapabilities,
     samples: u32,
+    /// Samples taken outside the garage stall (the hybrid decision window).
+    hybrid_samples: u32,
 }
 
 impl VehicleCapabilityTracker {
@@ -47,11 +53,23 @@ impl VehicleCapabilityTracker {
         *self = Self::default();
     }
 
-    /// Feeds one new player telemetry sample; returns `true` if the capabilities changed.
+    /// Feeds one new player telemetry sample taken outside the garage stall (or where that is unknown);
+    /// returns `true` if the capabilities changed.
     pub fn observe(&mut self, t: &RawTelemetry) -> bool {
+        self.observe_at(t, false)
+    }
+
+    /// Feeds one new player telemetry sample; `in_garage_stall` is the player's scoring `mInGarageStall`.
+    /// A sample in the garage stall can decide hybrid present but never counts towards deciding it absent.
+    /// Returns `true` if the capabilities changed.
+    pub fn observe_at(&mut self, t: &RawTelemetry, in_garage_stall: bool) -> bool {
         let before = self.caps;
         self.samples = self.samples.saturating_add(1);
+        if !in_garage_stall {
+            self.hybrid_samples = self.hybrid_samples.saturating_add(1);
+        }
         let undecided_is_false = self.samples >= CAPABILITY_DECISION_SAMPLES;
+        let hybrid_undecided_is_false = self.hybrid_samples >= CAPABILITY_DECISION_SAMPLES;
 
         let hybrid_state = HybridMotorState::from_raw(t.electric_boost_motor_state);
         let soc_plausible =
@@ -60,7 +78,7 @@ impl VehicleCapabilityTracker {
         observed(
             &mut self.caps.supports_hybrid,
             hybrid_seen,
-            undecided_is_false,
+            hybrid_undecided_is_false,
         );
 
         let ve_seen = t.virtual_energy.is_finite() && t.virtual_energy != 0.0;
@@ -224,6 +242,38 @@ mod tests {
             tr.observe(&t);
         }
         assert_eq!(tr.capabilities().supports_hybrid, Some(true));
+    }
+
+    /// Second normalizer review F4: a hybrid car in the garage stall reads motor state 0 and SoC 0; it must
+    /// not be decided "no hybrid" there.
+    #[test]
+    fn hybrid_is_not_decided_absent_in_the_garage_stall() {
+        let mut tr = VehicleCapabilityTracker::default();
+        let mut t = zero_telemetry();
+        for _ in 0..(3 * CAPABILITY_DECISION_SAMPLES) {
+            tr.observe_at(&t, true);
+        }
+        let caps = tr.capabilities();
+        assert_eq!(caps.supports_hybrid, None, "deferred in the garage");
+        assert_eq!(
+            caps.supports_virtual_energy,
+            Some(false),
+            "others unchanged"
+        );
+        // Leaving the garage with the motor reporting: present.
+        t.electric_boost_motor_state = 2;
+        assert!(tr.observe_at(&t, false));
+        assert_eq!(tr.capabilities().supports_hybrid, Some(true));
+        // A car that shows no hybrid outside the garage is still decided absent after the window.
+        let mut gt = VehicleCapabilityTracker::default();
+        let z = zero_telemetry();
+        for _ in 0..CAPABILITY_DECISION_SAMPLES {
+            gt.observe_at(&z, true);
+        }
+        for _ in 0..CAPABILITY_DECISION_SAMPLES {
+            gt.observe_at(&z, false);
+        }
+        assert_eq!(gt.capabilities().supports_hybrid, Some(false));
     }
 
     #[test]

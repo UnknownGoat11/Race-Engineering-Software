@@ -60,6 +60,9 @@ pub enum NoticeCode {
     GameVersionUnverified,
     /// A value could not be written to the frame (internal mapping error, a bug).
     MappingError,
+    /// `mSoC` (after scaling) disagrees with `mBatteryChargeFraction`: the battery fraction is published as
+    /// the state of charge instead (A-LMU-014).
+    HybridSocDisagreement,
 }
 
 /// One diagnostic notice.

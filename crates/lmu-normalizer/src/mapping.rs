@@ -107,6 +107,11 @@ pub enum FillRule {
     /// (0 N of drag, exactly the standard atmosphere as boost pressure under way, a bit-exact 0 N of tyre
     /// force or 0 N·m of torque from the physics model); plausible at rest.
     ImpossibleWhileMoving(f64),
+    /// This unchanged first value is never trusted, at rest or moving, until the channel changes once. For
+    /// channels LMU leaves at exactly 0 on some cars (LMGT3 tyre load/forces/sliding, engine torque;
+    /// A-LMU-069): at rest in the garage or pit box an unfilled 0 cannot be told from a measured 0, so it is
+    /// withheld (`UNAVAILABLE`) instead of published as a VALID 0 (second normalizer review, F2).
+    UnconfirmedUntilChanged(f64),
 }
 
 /// Speed (m/s) above which an aerodynamic force of exactly 0 N, or a boost pressure stuck at exactly the
@@ -134,27 +139,52 @@ pub const FILL_CHECKED_CHANNELS: &[(ChannelId, FillRule)] = &[
     ),
     // LMGT3 (Gate 1: race at Sebring and practice at Laguna Seca, A-LMU-069): tyre load, forces, sliding
     // fraction and engine torque read exactly 0 for the whole session while the car laps; the Hypercar fills
-    // them. A tyre carrying the moving car's weight never reads 0 N before its first change. A float force,
-    // sliding fraction or torque from the physics model that is still bit-exactly 0 with the car under way
-    // is not a measurement either; withholding a rare genuine 0 until the first change only costs a few
-    // samples of UNAVAILABLE, publishing LMGT3's unfilled 0 as VALID would be fabricated data.
-    (ch::TYRE_LOAD_FL, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LOAD_FR, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LOAD_RL, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LOAD_RR, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LAT_FORCE_FL, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LAT_FORCE_FR, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LAT_FORCE_RL, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LAT_FORCE_RR, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LONG_FORCE_FL, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LONG_FORCE_FR, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LONG_FORCE_RL, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_LONG_FORCE_RR, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_SLIDING_FL, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_SLIDING_FR, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_SLIDING_RL, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::TYRE_SLIDING_RR, FillRule::ImpossibleWhileMoving(0.0)),
-    (ch::ENGINE_TORQUE, FillRule::ImpossibleWhileMoving(0.0)),
+    // them. A tyre carrying the car's weight never reads 0 N before its first change. A float force,
+    // sliding fraction or torque from the physics model that is still bit-exactly 0 is not trusted either,
+    // at rest included (the garage or pit box at every session start and after every reset); withholding a
+    // rare genuine 0 until the first change only costs a few samples of UNAVAILABLE, publishing LMGT3's
+    // unfilled 0 as VALID would be fabricated data.
+    (ch::TYRE_LOAD_FL, FillRule::UnconfirmedUntilChanged(0.0)),
+    (ch::TYRE_LOAD_FR, FillRule::UnconfirmedUntilChanged(0.0)),
+    (ch::TYRE_LOAD_RL, FillRule::UnconfirmedUntilChanged(0.0)),
+    (ch::TYRE_LOAD_RR, FillRule::UnconfirmedUntilChanged(0.0)),
+    (
+        ch::TYRE_LAT_FORCE_FL,
+        FillRule::UnconfirmedUntilChanged(0.0),
+    ),
+    (
+        ch::TYRE_LAT_FORCE_FR,
+        FillRule::UnconfirmedUntilChanged(0.0),
+    ),
+    (
+        ch::TYRE_LAT_FORCE_RL,
+        FillRule::UnconfirmedUntilChanged(0.0),
+    ),
+    (
+        ch::TYRE_LAT_FORCE_RR,
+        FillRule::UnconfirmedUntilChanged(0.0),
+    ),
+    (
+        ch::TYRE_LONG_FORCE_FL,
+        FillRule::UnconfirmedUntilChanged(0.0),
+    ),
+    (
+        ch::TYRE_LONG_FORCE_FR,
+        FillRule::UnconfirmedUntilChanged(0.0),
+    ),
+    (
+        ch::TYRE_LONG_FORCE_RL,
+        FillRule::UnconfirmedUntilChanged(0.0),
+    ),
+    (
+        ch::TYRE_LONG_FORCE_RR,
+        FillRule::UnconfirmedUntilChanged(0.0),
+    ),
+    (ch::TYRE_SLIDING_FL, FillRule::UnconfirmedUntilChanged(0.0)),
+    (ch::TYRE_SLIDING_FR, FillRule::UnconfirmedUntilChanged(0.0)),
+    (ch::TYRE_SLIDING_RL, FillRule::UnconfirmedUntilChanged(0.0)),
+    (ch::TYRE_SLIDING_RR, FillRule::UnconfirmedUntilChanged(0.0)),
+    (ch::ENGINE_TORQUE, FillRule::UnconfirmedUntilChanged(0.0)),
 ];
 
 /// Session-scoped detectors (reset on a session, track or vehicle change and on an ET regression).
@@ -166,6 +196,9 @@ pub struct SessionDetectors {
     pub soc: FractionScaleDetector,
     pub optimal_temp: [KelvinLatch; 4],
     pub motor_temp: KelvinLatch,
+    /// A non-zero hybrid motor temperature was seen this session (until then an exact 0 is "not
+    /// initialised", never a VALID 0 °C).
+    pub motor_temp_seen: bool,
     pub motor_water_temp: KelvinLatch,
     pub turbo: TurboUnitDetector,
     pub time_of_day: TimeOfDayDetector,
@@ -267,6 +300,10 @@ fn fill_checked(
              withheld (UNAVAILABLE) until it changes (A-LMU-065)",
             )
         }
+        (FillState::Initial, Some(FillRule::UnconfirmedUntilChanged(v))) if same(v) => Some(
+            "unchanged first value cannot be told from a value LMU does not fill (A-LMU-069): withheld \
+             (UNAVAILABLE) until it changes (A-LMU-065)",
+        ),
         _ => None,
     };
     match reason {
@@ -968,6 +1005,71 @@ fn scaled_fraction(
     }
 }
 
+/// Largest difference between the scaled `mSoC` and `mBatteryChargeFraction` (fraction of a full battery)
+/// still taken as agreement. Gate 1 (Hypercar): `mSoC` = 100 × `mBatteryChargeFraction` exactly whenever
+/// both are initialised; a tenth of a percentage point leaves room for f32 rounding only.
+pub const SOC_AGREEMENT_TOLERANCE: f64 = 0.001;
+
+/// The hybrid motor temperature. An exact 0 before any non-zero reading this session is LMU's
+/// not-initialised value (verify-v5 Hypercar: 0 while the running car's p1 was 40.7 °C), and a raw 0 once
+/// Kelvin is latched would be −273 °C: both are withheld (`UNAVAILABLE`), never a VALID 0 °C.
+fn map_motor_temp(raw: f64, st: &mut MapState<'_>, w: &mut FrameWriter<'_>) {
+    if raw.is_finite() && raw != 0.0 {
+        st.det.motor_temp_seen = true;
+    }
+    if raw == 0.0 && (!st.det.motor_temp_seen || st.det.motor_temp.is_kelvin()) {
+        st.raise(
+            DiagnosticNotice::new(
+                NoticeCode::ChannelNotFilled,
+                Severity::Info,
+                Some(ch::HYBRID_MOTOR_TEMP),
+                "hybrid motor temperature exactly 0 (not initialised by LMU): withheld (UNAVAILABLE) until a \
+                 non-zero reading",
+            )
+            .with_raw(raw),
+        );
+        w.quality(ch::HYBRID_MOTOR_TEMP, Quality::Unavailable);
+        return;
+    }
+    if st.det.motor_temp.observe(raw) {
+        st.raise(kelvin_notice(ch::HYBRID_MOTOR_TEMP, raw));
+    }
+    w.float(ch::HYBRID_MOTOR_TEMP, st.det.motor_temp.to_celsius(raw));
+}
+
+/// A-LMU-014 mitigation: when the scaled `mSoC` and `mBatteryChargeFraction` (header: 0..1) disagree by more
+/// than [`SOC_AGREEMENT_TOLERANCE`], the battery fraction wins and is published as the state of charge (verify-v5
+/// Hypercar: `mSoC` read 0 while the battery fraction was ≥ 0.0095). Nothing changes while the `mSoC` scale is
+/// undecided or the battery fraction is not a usable 0..1 value.
+fn prefer_battery_fraction(
+    soc_raw: f64,
+    battery: f64,
+    st: &mut MapState<'_>,
+    w: &mut FrameWriter<'_>,
+) {
+    if !soc_raw.is_finite() || !(0.0..=1.0).contains(&battery) {
+        return;
+    }
+    let Some(soc) = st.det.soc.to_fraction(soc_raw) else {
+        return;
+    };
+    // An exact 0 next to a non-zero battery fraction is the uninitialised mSoC, however small the gap.
+    let uninitialised = soc_raw == 0.0 && battery > 0.0;
+    if uninitialised || (soc - battery).abs() > SOC_AGREEMENT_TOLERANCE {
+        st.raise(
+            DiagnosticNotice::new(
+                NoticeCode::HybridSocDisagreement,
+                Severity::Notice,
+                Some(ch::BATTERY_SOC),
+                "mSoC disagrees with mBatteryChargeFraction: the battery fraction is published as the state \
+                 of charge (A-LMU-014)",
+            )
+            .with_raw(soc_raw),
+        );
+        w.float(ch::BATTERY_SOC, battery);
+    }
+}
+
 fn map_energy(input: &MapInput<'_>, st: &mut MapState<'_>, w: &mut FrameWriter<'_>) {
     let t = input.telemetry;
     let caps = input.caps;
@@ -983,11 +1085,7 @@ fn map_energy(input: &MapInput<'_>, st: &mut MapState<'_>, w: &mut FrameWriter<'
     if hybrid_present {
         w.float(ch::HYBRID_MOTOR_TORQUE, t.electric_boost_motor_torque);
         w.float(ch::HYBRID_MOTOR_RPM, t.electric_boost_motor_rpm);
-        let motor = t.electric_boost_motor_temperature;
-        if st.det.motor_temp.observe(motor) {
-            st.raise(kelvin_notice(ch::HYBRID_MOTOR_TEMP, motor));
-        }
-        w.float(ch::HYBRID_MOTOR_TEMP, st.det.motor_temp.to_celsius(motor));
+        map_motor_temp(t.electric_boost_motor_temperature, st, w);
         // "0 if there is no cooler" (header): exactly 0 is the sentinel.
         let water = t.electric_boost_water_temperature;
         if water == 0.0 {
@@ -1005,6 +1103,7 @@ fn map_energy(input: &MapInput<'_>, st: &mut MapState<'_>, w: &mut FrameWriter<'
         w.float(ch::BATTERY_CHARGE, t.battery_charge_fraction);
         let soc = (f64::from(t.soc), t.lap_number);
         scaled_fraction(st, w, ch::BATTERY_SOC, soc, |d| &mut d.soc);
+        prefer_battery_fraction(soc.0, t.battery_charge_fraction, st, w);
     } else {
         let q = hybrid_absent(caps);
         crate::capability::HYBRID_GATED

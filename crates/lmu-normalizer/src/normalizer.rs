@@ -42,7 +42,8 @@ use crate::detect::{
     BrakeTempUnit, BrakeTempUnitDecision, FillState, FractionScale, UnitDecisionState,
 };
 use crate::discontinuity::{
-    CarSample, Discontinuity, DiscontinuityDetector, is_session_end_rewind, pit_service_channels,
+    CarSample, Discontinuity, DiscontinuityDetector, TELEPORT_ET_STEP_BACK_MAX_S,
+    is_session_end_rewind, pit_service_channels,
 };
 use crate::identity::IdentityTracker;
 use crate::mapping::{
@@ -61,7 +62,9 @@ pub enum TelemetryDisposition {
     NewSample,
     /// A new sample after the ET went backwards (session restart; state was reset first).
     NewSampleAfterRegression,
-    /// Same `mElapsedTime` as the previous sample: no new physics sample.
+    /// Same `mElapsedTime` as the previous sample: no new physics sample. Also used for a sample inside a
+    /// garage-teleport ET step-back (A-LMU-031 kind (b), counted in
+    /// [`NormalizerStats::teleport_et_step_backs`]): it is dropped so that the published ET stays monotonic.
     Duplicate,
     /// No verified player telemetry in this snapshot.
     NoPlayer,
@@ -143,6 +146,12 @@ pub struct NormalizerStats {
     /// session end: time base reset, no restart event; A-LMU-031). Included in `et_regressions`.
     #[serde(default)]
     pub session_end_rewinds: u64,
+    /// ET regressions recognised as a garage-teleport step-back (at most
+    /// [`TELEPORT_ET_STEP_BACK_MAX_S`], same player, car moved into the pit area at rest; A-LMU-031 kind (b)):
+    /// sample dropped, rate history reset, no session reset and no restart event. Included in
+    /// `et_regressions`.
+    #[serde(default)]
+    pub teleport_et_step_backs: u64,
 }
 
 /// The raw inputs of one step, independent of how they were obtained (live reader, capture replay, test).
@@ -220,15 +229,15 @@ const STATIC_NOTES: &[(ChannelId, &str)] = &[
 const STATIC_WHEEL_NOTES: &[(ChannelId, &str)] = &[
     (
         ch::TYRE_TEMP_INNER_FL,
-        "inner/outer side mapping unverified (A-LMU-016)",
+        "inner/outer side mapping verified at Gate 1 (stint1, LMGT3; A-LMU-016)",
     ),
     (
         ch::TYRE_TEMP_OUTER_FL,
-        "inner/outer side mapping unverified (A-LMU-016)",
+        "inner/outer side mapping verified at Gate 1 (stint1, LMGT3; A-LMU-016)",
     ),
     (
         ch::TYRE_TEMP_SPREAD_FL,
-        "inner/outer side mapping unverified (A-LMU-016)",
+        "inner/outer side mapping verified at Gate 1 (stint1, LMGT3; A-LMU-016)",
     ),
     (
         ch::WHEEL_SPEED_FL,
@@ -263,6 +272,9 @@ pub struct Normalizer {
     service_channels: Vec<ChannelId>,
     /// Fastest plausible motion (m/s): the registry's position rate bound.
     max_motion_mps: f64,
+    /// A garage-teleport ET step-back is in progress: further samples still behind `last_et` (within
+    /// [`TELEPORT_ET_STEP_BACK_MAX_S`]) belong to it. Cleared by the next advancing sample.
+    teleport_step_back_open: bool,
     stats: NormalizerStats,
 }
 
@@ -295,6 +307,7 @@ impl Normalizer {
             max_motion_mps: registry::by_id(ch::POS_X)
                 .and_then(|d| d.max_rate_per_s)
                 .unwrap_or(FALLBACK_MAX_MOTION_MPS),
+            teleport_step_back_open: false,
             stats: NormalizerStats::default(),
         };
         n.capability_map = n.fresh_capability_map();
@@ -422,6 +435,23 @@ impl Normalizer {
             }
             EtStep::Regressed { by_s } => {
                 self.stats.et_regressions = self.stats.et_regressions.saturating_add(1);
+                if same_player && by_s <= TELEPORT_ET_STEP_BACK_MAX_S {
+                    let row = standings::player_row(input.vehicles, telemetry.id).ok();
+                    let sample = car_sample(telemetry, row);
+                    let opening = if self.discontinuity.is_step_back_teleport(&sample) {
+                        Some(StepBackOpening::WithJump)
+                    } else if !self.teleport_step_back_open
+                        && self.discontinuity.is_step_back_after_last_teleport(&sample)
+                    {
+                        Some(StepBackOpening::AfterJump)
+                    } else {
+                        None
+                    };
+                    if opening.is_some() || self.teleport_step_back_open {
+                        self.handle_teleport_step_back(sample, by_s, opening, &mut out);
+                        return out;
+                    }
+                }
                 let info = input.scoring_info;
                 if is_session_end_rewind(
                     info.game_phase,
@@ -477,6 +507,7 @@ impl Normalizer {
                 out.disposition = TelemetryDisposition::NewSampleAfterRegression;
             }
             EtStep::First | EtStep::Advanced { .. } | EtStep::Unchanged => {
+                self.teleport_step_back_open = false;
                 if !same_player {
                     // Rates across two different cars are meaningless.
                     self.validator.reset();
@@ -573,6 +604,7 @@ impl Normalizer {
         self.stats.session_resets = self.stats.session_resets.saturating_add(1);
         self.last_et = None;
         self.last_player_id = None;
+        self.teleport_step_back_open = false;
         self.rejection_streaks.clear();
         self.discontinuity = DiscontinuityDetector::default();
         self.det = SessionDetectors::default();
@@ -604,7 +636,10 @@ impl Normalizer {
         telemetry: &RawTelemetry,
         out: &mut NormalizedOutput,
     ) {
-        if self.vehicle_caps.observe(telemetry) {
+        // Unknown player row: counted as outside the garage (the decision is never deferred for ever).
+        let in_garage_stall = standings::player_row(input.vehicles, telemetry.id)
+            .is_ok_and(|row| row.in_garage_stall);
+        if self.vehicle_caps.observe_at(telemetry, in_garage_stall) {
             out.vehicle_capabilities = Some(self.vehicle_caps.capabilities());
         }
         let player_row = match standings::player_row(input.vehicles, telemetry.id) {
@@ -699,17 +734,49 @@ impl Normalizer {
         out.frame = Some(frame);
     }
 
+    /// A garage teleport whose ET stepped back by `by_s` (A-LMU-031 kind (b)): the same session goes on, so
+    /// nothing session-scoped is reset and no restart event is emitted. The sample is dropped (the published
+    /// ET stays monotonic, `last_et` keeps the larger ET) and the rate history is void as for any teleport.
+    /// `opening` says how a new step-back was recognised (`None`: continuing an open one).
+    fn handle_teleport_step_back(
+        &mut self,
+        sample: CarSample,
+        by_s: f64,
+        opening: Option<StepBackOpening>,
+        out: &mut NormalizedOutput,
+    ) {
+        self.stats.teleport_et_step_backs = self.stats.teleport_et_step_backs.saturating_add(1);
+        if let Some(how) = opening {
+            self.teleport_step_back_open = true;
+            if how == StepBackOpening::WithJump {
+                // The jump is on this (dropped) sample: count it here. After a jump it was counted when
+                // the teleport sample was published.
+                self.stats.teleports = self.stats.teleports.saturating_add(1);
+            }
+            self.discontinuity.accept_step_back(sample);
+            push_logged(
+                DiagnosticNotice::new(
+                    NoticeCode::EtRegression,
+                    Severity::Notice,
+                    Some(ch::ELAPSED_TIME),
+                    format!(
+                        "player ET went back by {by_s:.3} s at a garage teleport (A-LMU-031): sample dropped, rate history reset, not a restart"
+                    ),
+                )
+                .with_raw(sample.et_s)
+                .at(Some(sample.et_s)),
+                &mut out.notices,
+            );
+        }
+        self.validator.reset();
+        out.disposition = TelemetryDisposition::Duplicate;
+    }
+
     /// Recognises a garage teleport, a realtime entry or a pit service for this sample and resets the rate
     /// history of the channels it voids: everything for a teleport or a realtime entry, the fuel, energy and
     /// tyre channels for a service. Range checks still apply; an uncorroborated jump is still rejected.
     fn apply_discontinuity(&mut self, t: &RawTelemetry, row: Option<&RawVehicleScoring>) {
-        let (_, pit_lane_bit) = decode_current_sector(t.current_sector);
-        let sample = CarSample {
-            et_s: t.elapsed_time,
-            pos: [t.pos.x, t.pos.y, t.pos.z],
-            speed_mps: crate::convention::speed_mps(t.local_vel),
-            in_pit_area: pit_lane_bit || row.is_some_and(|r| r.in_pits || r.in_garage_stall),
-        };
+        let sample = car_sample(t, row);
         match self.discontinuity.observe(sample, self.max_motion_mps) {
             Some(Discontinuity::Teleport) => {
                 self.stats.teleports = self.stats.teleports.saturating_add(1);
@@ -880,5 +947,27 @@ impl Normalizer {
             .then_some("hours vs seconds undecided: withheld (A-LMU-036)");
         changed |= capability::set_note(map, ch::TIME_OF_DAY, tod_note);
         changed
+    }
+}
+
+/// The discontinuity facts of one player telemetry sample.
+/// How a new garage-teleport ET step-back was recognised (A-LMU-031 kind (b)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StepBackOpening {
+    /// The jump into the garage is on the step-back sample itself
+    /// ([`DiscontinuityDetector::is_step_back_teleport`]).
+    WithJump,
+    /// The step-back follows the published teleport sample
+    /// ([`DiscontinuityDetector::is_step_back_after_last_teleport`]; Gate 1 pitstop1).
+    AfterJump,
+}
+
+fn car_sample(t: &RawTelemetry, row: Option<&RawVehicleScoring>) -> CarSample {
+    let (_, pit_lane_bit) = decode_current_sector(t.current_sector);
+    CarSample {
+        et_s: t.elapsed_time,
+        pos: [t.pos.x, t.pos.y, t.pos.z],
+        speed_mps: crate::convention::speed_mps(t.local_vel),
+        in_pit_area: pit_lane_bit || row.is_some_and(|r| r.in_pits || r.in_garage_stall),
     }
 }

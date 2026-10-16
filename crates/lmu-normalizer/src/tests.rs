@@ -1537,6 +1537,55 @@ fn session_reset_does_not_republish_lmgt3_zeros_as_valid() {
     }
 }
 
+/// Second normalizer review F2 (verify-v5 race1/pitstop1): at rest in the pit box, at the session start and
+/// after a reset, LMGT3's unfilled zeros were published VALID 0. They stay withheld until the first change.
+#[test]
+fn lmgt3_zeros_at_rest_in_the_pit_box_are_withheld_after_a_reset() {
+    let mut fx = hypercar(500.0);
+    {
+        let t = fx.t();
+        t.engine_torque = 0.0;
+        for w in &mut t.wheels {
+            (
+                w.tire_load,
+                w.lateral_force,
+                w.longitudinal_force,
+                w.grip_fract,
+            ) = (0.0, 0.0, 0.0, 0.0);
+        }
+        t.local_vel = crate::testutil::v3(0.0, 0.0, 0.0);
+        t.current_sector = PIT_LANE_BIT | 1;
+    }
+    let ids = [
+        ch::TYRE_LOAD_FL,
+        ch::TYRE_LAT_FORCE_RR,
+        ch::TYRE_LONG_FORCE_FL,
+        ch::TYRE_SLIDING_FR,
+        ch::ENGINE_TORQUE,
+        ch::ENGINE_POWER,
+    ];
+    let mut n = Normalizer::new();
+    let start = fx.step(&mut n);
+    for id in ids {
+        assert_eq!(q(&start, id), Some(Quality::Unavailable), "start {id:?}");
+    }
+    fx.advance(-400.0);
+    let out = fx.step(&mut n);
+    assert_eq!(
+        out.disposition,
+        TelemetryDisposition::NewSampleAfterRegression
+    );
+    for id in ids {
+        assert_eq!(q(&out, id), Some(Quality::Unavailable), "reset {id:?}");
+    }
+    // Still at rest, but the value now changed: it is a measurement.
+    fx.advance(0.01);
+    fx.t().wheels[0].tire_load = 4_100.0;
+    let live = fx.step(&mut n);
+    assert!(close(f(&live, ch::TYRE_LOAD_FL), 4_100.0));
+    assert_eq!(q(&live, ch::ENGINE_TORQUE), Some(Quality::Unavailable));
+}
+
 #[test]
 fn a_stuck_plausible_value_is_withheld_after_the_travel_evidence() {
     // A constant that would be plausible on its own (1,234.5 N of drag) but never changes while the car
@@ -1953,4 +2002,270 @@ fn regression_while_the_session_runs_is_still_a_restart() {
     let out = fx.step(&mut n);
     assert_eq!(session_changes(std::slice::from_ref(&out)).len(), 1);
     assert_eq!(n.stats().session_end_rewinds, 0);
+}
+
+/// Synthetic: the car is moved 19.6 m into the garage on the sample whose ET steps back (A-LMU-031 kind (b);
+/// the real order is in `real_pitstop1_garage_return_step_back_after_the_jump_is_not_a_restart`).
+/// A teleport step-back is not a session restart: no reset, no SessionChanged, published ET stays monotonic.
+#[test]
+fn garage_teleport_with_an_et_step_back_is_not_a_restart() {
+    let mut fx = hypercar(315.830);
+    {
+        let t = fx.t();
+        t.pos = crate::testutil::v3(0.0, 0.0, 0.0);
+        t.local_vel = crate::testutil::v3(0.0, 0.0, -0.2);
+        t.current_sector = PIT_LANE_BIT | 1;
+    }
+    let mut n = Normalizer::new();
+    fx.step(&mut n);
+    let resets = n.stats().session_resets;
+    fx.advance(-0.010);
+    {
+        let t = fx.t();
+        t.pos = crate::testutil::v3(19.6, 0.0, 0.0);
+        t.local_vel = crate::testutil::v3(0.0, 0.0, 0.0);
+        t.fuel = 81.0;
+    }
+    let back = fx.step(&mut n);
+    assert_eq!(back.disposition, TelemetryDisposition::Duplicate);
+    assert!(back.frame.is_none(), "the step-back sample is dropped");
+    // Still behind the previous ET (within the step-back window): dropped as well, not a restart.
+    fx.advance(0.005);
+    let inside = fx.step(&mut n);
+    assert_eq!(inside.disposition, TelemetryDisposition::Duplicate);
+    // Back past the old ET: published, the rate guards accept the teleported values.
+    fx.advance(0.0125);
+    let next = fx.step(&mut n);
+    assert_eq!(next.disposition, TelemetryDisposition::NewSample);
+    assert!(next.rejections.is_empty(), "{:?}", rejected(&next));
+    assert!(close(f(&next, ch::FUEL), 81.0));
+    assert!(session_changes(&[back, inside, next]).is_empty());
+    let stats = n.stats();
+    assert_eq!(stats.session_resets, resets, "no session reset");
+    assert_eq!(stats.teleport_et_step_backs, 2);
+    assert_eq!(stats.et_regressions, 2);
+    assert_eq!(stats.teleports, 1);
+}
+
+/// One player sample of the Gate 1 pitstop1 garage return (LMU 1.4.2.0, capture 255.64-255.72 s): player ET,
+/// x position relative to the pre-jump place (m), speed (m/s). Pit-lane bit set, `mInRealtime` true,
+/// `mGamePhase` 8 throughout.
+const PITSTOP1_GARAGE_RETURN: [(f64, f64, f64); 6] = [
+    (315.7925, 0.0, 0.259),
+    (315.8025, 0.0, 0.169),
+    // The return to the garage: a 19.17 m jump with ET still advancing (+0.0279 s), at rest.
+    (315.8304, 19.17, 0.000),
+    // 1.3 ms later: ET back by 0.0104 s, same place.
+    (315.8200, 19.17, 0.004),
+    (315.8400, 19.17, 0.006),
+    (315.8600, 19.17, 0.006),
+];
+
+/// Sets the player sample of the fixture to `(et, x, speed)` (in the pit lane).
+fn set_pit_sample(fx: &mut Fixture, (et, x, speed): (f64, f64, f64)) {
+    let dt = et - fx.t().elapsed_time;
+    fx.advance(dt);
+    let t = fx.t();
+    t.pos = crate::testutil::v3(x, 0.0, 0.0);
+    t.local_vel = crate::testutil::v3(0.0, 0.0, -speed);
+    t.current_sector = PIT_LANE_BIT | 1;
+}
+
+/// Real-data regression (verify-v6 pitstop1 elapsed_time FAIL): the ET step-back arrives on the sample
+/// AFTER the garage jump, not with it. It is a teleport step-back (dropped, no reset, no SessionChanged);
+/// the genuine new session later (ET 325.02 -> 0) still restarts.
+#[test]
+fn real_pitstop1_garage_return_step_back_after_the_jump_is_not_a_restart() {
+    let mut fx = hypercar(PITSTOP1_GARAGE_RETURN[0].0);
+    fx.info.game_phase = 8;
+    set_pit_sample(&mut fx, PITSTOP1_GARAGE_RETURN[0]);
+    let mut n = Normalizer::new();
+    let mut outs = vec![fx.step(&mut n)];
+    let resets = n.stats().session_resets;
+    let mut dispositions = Vec::new();
+    for &s in &PITSTOP1_GARAGE_RETURN[1..] {
+        set_pit_sample(&mut fx, s);
+        let out = fx.step(&mut n);
+        dispositions.push(out.disposition);
+        outs.push(out);
+    }
+    assert_eq!(
+        dispositions,
+        [
+            TelemetryDisposition::NewSample,
+            TelemetryDisposition::NewSample,
+            TelemetryDisposition::Duplicate,
+            TelemetryDisposition::NewSample,
+            TelemetryDisposition::NewSample,
+        ]
+    );
+    assert!(outs[3].frame.is_none(), "the step-back sample is dropped");
+    // outs[0] carries the initial SessionChanged (from: None).
+    assert!(session_changes(&outs[1..]).is_empty(), "no false restart");
+    let stats = n.stats();
+    assert_eq!(stats.session_resets, resets, "no session reset");
+    assert_eq!(stats.teleports, 1, "the jump is counted once");
+    assert_eq!(stats.teleport_et_step_backs, 1);
+    assert_eq!(stats.et_regressions, 1);
+
+    // The genuine new session of the same capture (ET 325.020 -> 0.000) is still a restart.
+    set_pit_sample(&mut fx, (325.020, 19.17, 0.0));
+    fx.step(&mut n);
+    set_pit_sample(&mut fx, (0.0, 19.17, 0.0));
+    let restart = fx.step(&mut n);
+    assert_eq!(
+        restart.disposition,
+        TelemetryDisposition::NewSampleAfterRegression
+    );
+    assert_eq!(n.stats().session_resets, resets + 1);
+    assert_eq!(session_changes(&[restart]).len(), 1);
+}
+
+/// The real step-back is explained only right after the jump: with an ordinary sample between the jump and
+/// the step-back, the step-back is not corroborated and takes the restart path.
+#[test]
+fn step_back_not_right_after_the_garage_jump_is_still_a_restart() {
+    let mut fx = hypercar(PITSTOP1_GARAGE_RETURN[0].0);
+    set_pit_sample(&mut fx, PITSTOP1_GARAGE_RETURN[1]);
+    let mut n = Normalizer::new();
+    fx.step(&mut n);
+    set_pit_sample(&mut fx, PITSTOP1_GARAGE_RETURN[2]);
+    fx.step(&mut n);
+    assert_eq!(n.stats().teleports, 1);
+    set_pit_sample(&mut fx, (315.8350, 19.17, 0.0));
+    assert_eq!(fx.step(&mut n).disposition, TelemetryDisposition::NewSample);
+    let resets = n.stats().session_resets;
+    set_pit_sample(&mut fx, PITSTOP1_GARAGE_RETURN[3]);
+    assert_eq!(
+        fx.step(&mut n).disposition,
+        TelemetryDisposition::NewSampleAfterRegression
+    );
+    assert_eq!(n.stats().session_resets, resets + 1);
+    assert_eq!(n.stats().teleport_et_step_backs, 0);
+}
+
+/// A step-back without a garage jump (or a larger one) still takes the restart path.
+#[test]
+fn small_et_step_back_without_a_teleport_is_still_a_restart() {
+    let mut fx = hypercar(315.830);
+    let mut n = Normalizer::new();
+    fx.step(&mut n);
+    let resets = n.stats().session_resets;
+    fx.advance(-0.010);
+    let out = fx.step(&mut n);
+    assert_eq!(
+        out.disposition,
+        TelemetryDisposition::NewSampleAfterRegression
+    );
+    assert_eq!(n.stats().session_resets, resets + 1);
+    assert_eq!(n.stats().teleport_et_step_backs, 0);
+}
+
+/// Second normalizer review F3 (verify-v5 Hypercar): `mSoC` read 0 (VALID 0 published) while
+/// `mBatteryChargeFraction` was 0.0095; elsewhere `mSoC` = 100 × battery. The battery fraction wins (A-LMU-014).
+#[test]
+fn soc_disagreeing_with_the_battery_fraction_publishes_the_battery_fraction() {
+    let mut fx = hypercar(100.0);
+    let mut n = Normalizer::new();
+    let agree = fx.step(&mut n);
+    assert!(
+        close(f(&agree, ch::BATTERY_SOC), 0.6),
+        "percent scale decided"
+    );
+    assert!(
+        !agree
+            .notices
+            .iter()
+            .any(|x| x.code == NoticeCode::HybridSocDisagreement)
+    );
+    // The captured pattern: SoC 0 next to a small, non-zero battery fraction.
+    fx.advance(1.0); // within the 1 /s energy rate bound
+    fx.t().soc = 0.0;
+    fx.t().battery_charge_fraction = 0.0095;
+    let zero = fx.step(&mut n);
+    assert!(
+        close(f(&zero, ch::BATTERY_SOC), 0.0095),
+        "never a VALID 0: {:?} {:?}",
+        q(&zero, ch::BATTERY_SOC),
+        rejected(&zero)
+    );
+    assert!(
+        zero.notices
+            .iter()
+            .any(|x| x.code == NoticeCode::HybridSocDisagreement)
+    );
+    // A larger disagreement: the battery fraction wins as well.
+    fx.advance(1.0); // within the 1 /s energy rate bound
+    fx.t().soc = 30.0;
+    fx.t().battery_charge_fraction = 0.5;
+    assert!(close(f(&fx.step(&mut n), ch::BATTERY_SOC), 0.5));
+    // Agreement within f32 rounding keeps the scaled SoC.
+    fx.advance(1.0); // within the 1 /s energy rate bound
+    fx.t().soc = 42.0;
+    fx.t().battery_charge_fraction = 0.420_000_1;
+    assert!(close(f(&fx.step(&mut n), ch::BATTERY_SOC), 0.42));
+}
+
+/// Second normalizer review F3 (verify-v5 Hypercar): `hybrid.motor_temp_c` had VALID 0 samples while its p1
+/// was 40.7 °C. An exact 0 before the first non-zero reading is not initialised: UNAVAILABLE.
+#[test]
+fn hybrid_motor_temperature_zero_is_unavailable_until_initialised() {
+    let mut fx = hypercar(100.0);
+    fx.t().electric_boost_motor_temperature = 0.0;
+    let mut n = Normalizer::new();
+    let first = fx.step(&mut n);
+    assert_eq!(q(&first, ch::HYBRID_MOTOR_TEMP), Some(Quality::Unavailable));
+    fx.advance(0.01);
+    fx.t().electric_boost_motor_temperature = 40.7;
+    let live = fx.step(&mut n);
+    assert!(close(f(&live, ch::HYBRID_MOTOR_TEMP), 40.7));
+    // A Kelvin field reading a raw 0 later would be -273 °C: withheld as well.
+    let mut k = hypercar(100.0);
+    k.t().electric_boost_motor_temperature = 313.85;
+    let mut nk = Normalizer::new();
+    assert!(close(f(&k.step(&mut nk), ch::HYBRID_MOTOR_TEMP), 40.7));
+    k.advance(0.01);
+    k.t().electric_boost_motor_temperature = 0.0;
+    assert_eq!(
+        q(&k.step(&mut nk), ch::HYBRID_MOTOR_TEMP),
+        Some(Quality::Unavailable)
+    );
+}
+/// Second normalizer review F5: A-LMU-016 is VERIFIED (Gate 1 stint1); the tyre inner/outer notes must not
+/// keep an "unverified" caveat.
+#[test]
+fn tyre_side_mapping_note_cites_the_gate1_verification() {
+    let n = Normalizer::new();
+    for id in [
+        ch::TYRE_TEMP_INNER_FL,
+        ch::TYRE_TEMP_OUTER_RR,
+        ch::TYRE_TEMP_SPREAD_FR,
+    ] {
+        let note = n.capability_map().get(id).and_then(|c| c.note.clone());
+        assert!(
+            note.as_deref()
+                .is_some_and(|s| s.contains("verified at Gate 1") && !s.contains("unverified")),
+            "{id:?}: {note:?}"
+        );
+    }
+}
+
+/// Second normalizer review F4 through the normalizer: a hybrid car in the garage stall reading motor state 0
+/// and SoC 0 keeps its hybrid channels UNAVAILABLE (undecided), never NOT_SUPPORTED.
+#[test]
+fn hybrid_in_the_garage_stall_is_never_reported_without_hybrid() {
+    let mut fx = hypercar(100.0);
+    fx.t().electric_boost_motor_state = 0;
+    fx.t().soc = 0.0;
+    fx.rows[1].in_garage_stall = true;
+    let mut n = Normalizer::new();
+    let mut last = None;
+    for _ in 0..(CAPABILITY_DECISION_SAMPLES + 10) {
+        last = Some(fx.step(&mut n));
+        fx.advance(0.01);
+    }
+    let last = last.expect("steps");
+    assert_eq!(n.vehicle_capabilities().supports_hybrid, None);
+    assert_eq!(q(&last, ch::BATTERY_SOC), Some(Quality::Unavailable));
+    assert_eq!(q(&last, ch::HYBRID_MOTOR_TEMP), Some(Quality::Unavailable));
 }
