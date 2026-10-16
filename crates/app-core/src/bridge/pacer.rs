@@ -54,9 +54,12 @@ impl UiBridgePacer {
         let tick_duration = Duration::from_nanos(1_000_000_000 / flush_hz as u64);
         let status_interval_ticks = (flush_hz / status_hz).max(1);
 
+        use crate::hires::HiResTimer;
+
         let thread_res = Builder::new().name("ui-bridge".to_string()).spawn(move || {
             debug!(component = "ui-bridge", "started ui-bridge pacer thread");
             let mut tick_counter: u32 = 0;
+            let mut timer = HiResTimer::new(flush_hz as f64).ok();
             let mut next_tick = Instant::now() + tick_duration;
 
             while running_clone.load(Ordering::Relaxed) {
@@ -72,16 +75,20 @@ impl UiBridgePacer {
                     }
                 }
 
-                // 3. Sleep until next tick:
-                let now = Instant::now();
-                if next_tick > now {
-                    thread::sleep(next_tick - now);
-                }
-                next_tick = next_tick
-                    .checked_add(tick_duration)
-                    .unwrap_or_else(|| Instant::now() + tick_duration);
-                if next_tick < Instant::now() {
-                    next_tick = Instant::now() + tick_duration;
+                // 3. High-resolution wait or fallback sleep until next tick:
+                if let Some(ref mut t) = timer {
+                    let _ = t.tick();
+                } else {
+                    let now = Instant::now();
+                    if next_tick > now {
+                        thread::sleep(next_tick - now);
+                    }
+                    next_tick = next_tick
+                        .checked_add(tick_duration)
+                        .unwrap_or_else(|| Instant::now() + tick_duration);
+                    if next_tick < Instant::now() {
+                        next_tick = Instant::now() + tick_duration;
+                    }
                 }
             }
             debug!(component = "ui-bridge", "stopped ui-bridge pacer thread");
