@@ -19,7 +19,7 @@ use crate::dynamics::{Dynamics, WHEELS};
 use crate::error::SyntheticError;
 use crate::session::ScoringSnapshot;
 use crate::track::{Track, wrap_pi};
-use crate::vehicle::{VehicleProfile, rpm_to_radps};
+use crate::vehicle::{ChannelFill, VehicleProfile, rpm_to_radps};
 use crate::weather::WeatherState;
 
 /// Bit 31 of LMU `mCurrentSector`: set while in the pit lane (A-LMU-026).
@@ -71,6 +71,8 @@ pub struct FrameContext<'a> {
     pub delta_best_s: Option<f64>,
     /// Vehicles with telemetry (the whole field).
     pub vehicle_count: usize,
+    /// Which channels the simulated game fills; unfilled ones are written UNAVAILABLE.
+    pub channel_fill: ChannelFill,
 }
 
 /// Typed, availability-gated writes into a frame.
@@ -273,10 +275,17 @@ fn write_powertrain(w: &mut Writer<'_>, ctx: &FrameContext<'_>) -> Result<(), Sy
     w.f32(ch::RPM_MAX, v.max_rpm)?;
     w.opt_u8(ch::GEARS_MAX, u8::try_from(v.gear_count()).ok())?;
     w.f32(ch::CLUTCH_RPM, d.rpm)?;
-    w.f32(ch::ENGINE_TORQUE, d.engine_torque_nm)?;
+    let forces_filled = ctx.channel_fill.tyre_forces_filled(v.kind);
+    if forces_filled {
+        w.f32(ch::ENGINE_TORQUE, d.engine_torque_nm)?;
+    } else {
+        w.unavailable(ch::ENGINE_TORQUE)?;
+    }
     w.f32(ch::WATER_TEMP, d.water_temp_c)?;
     w.f32(ch::OIL_TEMP, d.oil_temp_c)?;
-    if v.turbo {
+    if v.turbo && !ctx.channel_fill.turbo_filled(v.kind) {
+        w.unavailable(ch::TURBO_BOOST)?;
+    } else if v.turbo {
         w.f32(ch::TURBO_BOOST, d.turbo_boost_pa)?;
     } else {
         w.not_supported(ch::TURBO_BOOST)?;
@@ -287,8 +296,12 @@ fn write_powertrain(w: &mut Writer<'_>, ctx: &FrameContext<'_>) -> Result<(), Sy
     w.boolean(ch::SPEED_LIMITER, d.limiter_on)?;
     w.boolean(ch::SPEED_LIMITER_ACTIVE, d.limiter_active)?;
     w.boolean(ch::SPEED_LIMITER_AVAILABLE, true)?;
-    // Normalizer formula: torque × angular speed.
-    w.f32(ch::ENGINE_POWER, d.engine_torque_nm * rpm_to_radps(d.rpm))?;
+    // Normalizer formula: torque × angular speed; withheld with the torque.
+    if forces_filled {
+        w.f32(ch::ENGINE_POWER, d.engine_torque_nm * rpm_to_radps(d.rpm))?;
+    } else {
+        w.unavailable(ch::ENGINE_POWER)?;
+    }
     w.f32(ch::FUEL, d.fuel_l)?;
     w.f32(ch::FUEL_CAPACITY, v.fuel_capacity_l)?;
     w.f32(ch::FUEL_FRACTION, d.fuel_l / v.fuel_capacity_l)
@@ -300,6 +313,7 @@ fn write_tyres_and_brakes(
 ) -> Result<(), SyntheticError> {
     let d = ctx.dynamics;
     let v = ctx.vehicle;
+    let forces_filled = ctx.channel_fill.tyre_forces_filled(v.kind);
     let compound_name = d.compound.label();
     w.text(ch::TYRE_COMPOUND_FRONT, compound_name)?;
     w.text(ch::TYRE_COMPOUND_REAR, compound_name)?;
@@ -333,10 +347,19 @@ fn write_tyres_and_brakes(
         w.f32(wheel(ch::TYRE_CARCASS_TEMP_FL, i), carcass)?;
         w.f32(wheel(ch::TYRE_OPTIMAL_TEMP_FL, i), v.tyre_optimal_temp_c)?;
         w.f32(wheel(ch::TYRE_WEAR_FL, i), d.tyre_wear[i])?;
-        w.f32(wheel(ch::TYRE_SLIDING_FL, i), d.tyre_sliding[i])?;
-        w.f32(wheel(ch::TYRE_LOAD_FL, i), d.tyre_load_n[i])?;
-        w.f32(wheel(ch::TYRE_LAT_FORCE_FL, i), d.tyre_lat_force_n[i])?;
-        w.f32(wheel(ch::TYRE_LONG_FORCE_FL, i), d.tyre_long_force_n[i])?;
+        let forces = [
+            (ch::TYRE_SLIDING_FL, d.tyre_sliding[i]),
+            (ch::TYRE_LOAD_FL, d.tyre_load_n[i]),
+            (ch::TYRE_LAT_FORCE_FL, d.tyre_lat_force_n[i]),
+            (ch::TYRE_LONG_FORCE_FL, d.tyre_long_force_n[i]),
+        ];
+        for (base, value) in forces {
+            if forces_filled {
+                w.f32(wheel(base, i), value)?;
+            } else {
+                w.unavailable(wheel(base, i))?;
+            }
+        }
         w.f32(wheel(ch::TYRE_RADIUS_FL, i), v.tyre_radius_m)?;
         w.u8(wheel(ch::TYRE_COMPOUND_INDEX_FL, i), d.compound.raw())?;
         w.u8(wheel(ch::TYRE_COMPOUND_TYPE_FL, i), d.compound.raw())?;
@@ -439,11 +462,20 @@ fn write_body(w: &mut Writer<'_>, ctx: &FrameContext<'_>) -> Result<(), Syntheti
     w.f32(ch::YAW_RATE, -ry)?;
     w.f32(ch::PITCH_RATE, -rx)?;
     w.f32(ch::ROLL_RATE, rz)?;
-    w.f32(ch::RIDE_HEIGHT_FRONT, d.ride_front_m)?;
-    w.f32(ch::RIDE_HEIGHT_REAR, d.ride_rear_m)?;
-    w.f32(ch::DRAG, d.drag_n)?;
-    w.f32(ch::DOWNFORCE_FRONT, d.downforce_front_n)?;
-    w.f32(ch::DOWNFORCE_REAR, d.downforce_rear_n)?;
+    let aero = [
+        (ch::RIDE_HEIGHT_FRONT, d.ride_front_m),
+        (ch::RIDE_HEIGHT_REAR, d.ride_rear_m),
+        (ch::DRAG, d.drag_n),
+        (ch::DOWNFORCE_FRONT, d.downforce_front_n),
+        (ch::DOWNFORCE_REAR, d.downforce_rear_n),
+    ];
+    for (id, value) in aero {
+        if ctx.channel_fill.aero_filled() {
+            w.f32(id, value)?;
+        } else {
+            w.unavailable(id)?;
+        }
+    }
     let (x, y, z) = ctx.position;
     w.f64(ch::POS_X, x)?;
     w.f64(ch::POS_Y, y)?;

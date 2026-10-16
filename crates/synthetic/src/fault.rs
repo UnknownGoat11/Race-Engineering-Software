@@ -207,13 +207,30 @@ impl FaultConfig {
         self.blackouts.push(Window { start, duration });
     }
 
-    /// End of the blackout covering `t`, if any (the latest end among overlapping windows).
+    /// End of the blackout covering `t`, if any. Overlapping or touching windows chain: the end is
+    /// extended while another window contains it, so a held unit is never released inside a later
+    /// window that is still blacked out.
     fn blackout_end(&self, t: Duration) -> Option<Duration> {
-        self.blackouts
+        let mut end = self
+            .blackouts
             .iter()
             .filter(|w| w.contains(t))
             .map(Window::end)
-            .max()
+            .max()?;
+        // Fixpoint: each pass strictly increases `end` or stops, so at most one pass per window.
+        for _ in 0..self.blackouts.len() {
+            let extended = self
+                .blackouts
+                .iter()
+                .filter(|w| w.contains(end))
+                .map(Window::end)
+                .max();
+            match extended {
+                Some(next) if next > end => end = next,
+                _ => break,
+            }
+        }
+        Some(end)
     }
 }
 
@@ -478,5 +495,40 @@ mod tests {
         assert!(pushed.validate().is_ok());
         assert_eq!(pushed.blackouts[0].duration, MAX_BLACKOUT);
         assert_eq!(pushed.blackouts[0].end(), Duration::MAX);
+    }
+
+    #[test]
+    fn held_units_are_not_released_inside_a_chained_blackout() {
+        let base = FaultConfig::new(LossPreset::None, Duration::ZERO, Jitter::None);
+        // Overlapping windows 0..1000 and 800..2000.
+        let overlapping = base
+            .clone()
+            .with_blackout(ms(0), ms(1_000))
+            .with_blackout(ms(800), ms(1_200));
+        let mut m = FaultModel::new(overlapping, 1).expect("config");
+        assert_eq!(m.decide(ms(500), true), Verdict::Deliver { at: ms(2_000) });
+
+        // Touching windows 0..1000 and 1000..2000, plus a third chained by touching.
+        let touching = base
+            .clone()
+            .with_blackout(ms(0), ms(1_000))
+            .with_blackout(ms(1_000), ms(1_000))
+            .with_blackout(ms(2_000), ms(500));
+        let mut m = FaultModel::new(touching, 1).expect("config");
+        assert_eq!(m.decide(ms(500), true), Verdict::Deliver { at: ms(2_500) });
+
+        // A gap stops the chain.
+        let gap = base
+            .with_blackout(ms(0), ms(1_000))
+            .with_blackout(ms(1_001), ms(1_000));
+        let mut m = FaultModel::new(gap, 1).expect("config");
+        assert_eq!(m.decide(ms(500), true), Verdict::Deliver { at: ms(1_000) });
+
+        // push_blackout twice back-to-back (FaultProxy::blackout) chains the same way.
+        let mut pushed = FaultConfig::new(LossPreset::None, Duration::ZERO, Jitter::None);
+        pushed.push_blackout(ms(0), ms(1_000));
+        pushed.push_blackout(ms(800), ms(1_000));
+        let mut m = FaultModel::new(pushed, 1).expect("config");
+        assert_eq!(m.decide(ms(100), false), Verdict::Deliver { at: ms(1_800) });
     }
 }

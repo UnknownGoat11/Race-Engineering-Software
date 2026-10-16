@@ -178,12 +178,28 @@ pub fn build_scoring(inp: &ScoringInputs<'_>) -> ScoringSnapshot {
     let length = inp.track.length_m();
     let ref_speed = length / inp.reference_lap_s.max(f64::EPSILON);
     let progress: Vec<f64> = inp.cars.iter().map(|c| c.progress_m(length)).collect();
+    // Outside race sessions LMU classifies by best lap (no time first) and publishes no classification
+    // gaps (A-LMU-034); in a race the classification follows race progress.
+    let race = inp.session.session_type.is_race();
     let mut order: Vec<usize> = (0..inp.cars.len()).collect();
-    order.sort_by(|&a, &b| {
-        progress[b]
-            .total_cmp(&progress[a])
-            .then(inp.cars[a].slot_id.cmp(&inp.cars[b].slot_id))
-    });
+    if race {
+        order.sort_by(|&a, &b| {
+            progress[b]
+                .total_cmp(&progress[a])
+                .then(inp.cars[a].slot_id.cmp(&inp.cars[b].slot_id))
+        });
+    } else {
+        order.sort_by(|&a, &b| {
+            let (ta, tb) = (inp.cars[a].timing.best_lap_s, inp.cars[b].timing.best_lap_s);
+            let by_time = match (ta, tb) {
+                (Some(x), Some(y)) => x.total_cmp(&y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            };
+            by_time.then(inp.cars[a].slot_id.cmp(&inp.cars[b].slot_id))
+        });
+    }
     let mut place_of = vec![0_usize; inp.cars.len()];
     for (rank, &i) in order.iter().enumerate() {
         place_of[i] = rank;
@@ -233,10 +249,10 @@ pub fn build_scoring(inp: &ScoringInputs<'_>) -> ScoringSnapshot {
             last_sector12_s: tm.last_sector12_s,
             cur_sector1_s: tm.cur_sector1_s,
             cur_sector12_s: tm.cur_sector12_s,
-            time_behind_next_s: Some(behind_next.max(0.0) / ref_speed),
-            laps_behind_next: Some(whole_laps(behind_next, length)),
-            time_behind_leader_s: Some(behind_leader.max(0.0) / ref_speed),
-            laps_behind_leader: Some(whole_laps(behind_leader, length)),
+            time_behind_next_s: race.then(|| behind_next.max(0.0) / ref_speed),
+            laps_behind_next: race.then(|| whole_laps(behind_next, length)),
+            time_behind_leader_s: race.then(|| behind_leader.max(0.0) / ref_speed),
+            laps_behind_leader: race.then(|| whole_laps(behind_leader, length)),
             time_into_lap_s: tm.lap_start_et_s.map(|s| (inp.et_s - s).max(0.0)),
             estimated_lap_s: Some(tm.best_lap_s.unwrap_or(inp.reference_lap_s * car.pace)),
             lap_start_et_s: tm.lap_start_et_s,
@@ -339,14 +355,18 @@ fn player_gaps(
     let Some(me) = inp.cars.get(player) else {
         return PlayerGaps::default();
     };
+    let race = inp.session.session_type.is_race();
     let rank = place_of.get(player).copied().unwrap_or(0);
+    // Place gaps are classification gaps: none outside a race (A-LMU-034). Road gaps stay.
     let place_ahead_s = rank
         .checked_sub(1)
         .and_then(|r| order.get(r))
-        .map(|&a| (progress[a] - progress[player]).max(0.0) / ref_speed);
+        .map(|&a| (progress[a] - progress[player]).max(0.0) / ref_speed)
+        .filter(|_| race);
     let place_behind_s = order
         .get(rank + 1)
-        .map(|&b| (progress[player] - progress[b]).max(0.0) / ref_speed);
+        .map(|&b| (progress[player] - progress[b]).max(0.0) / ref_speed)
+        .filter(|_| race);
     let others = inp.cars.iter().enumerate().filter(|(j, _)| *j != player);
     let car_ahead = others
         .clone()

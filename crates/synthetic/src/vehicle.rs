@@ -30,6 +30,36 @@ pub enum VehicleKind {
     Gt3,
 }
 
+/// Which channels the simulated game fills, so tests exercise the same no-data paths as production.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ChannelFill {
+    /// Like LMU 1.4.2.0 (Gate 1): ride heights, drag and downforce are never filled (both classes,
+    /// A-LMU-065), nor turbo boost on the Hypercar; on LMGT3 tyre load, lateral/longitudinal force,
+    /// sliding fraction and engine torque are not filled either (A-LMU-069). The production normalizer
+    /// publishes them as UNAVAILABLE, and so does the synthetic source (engine power with the torque).
+    #[default]
+    Lmu1_4_2,
+    /// Every simulated channel is filled (a future LMU version, or tests of the filled path).
+    Complete,
+}
+
+impl ChannelFill {
+    /// Whether ride heights, drag and downforce are filled.
+    pub fn aero_filled(self) -> bool {
+        self == Self::Complete
+    }
+
+    /// Whether the turbo boost of `kind` is filled.
+    pub fn turbo_filled(self, kind: VehicleKind) -> bool {
+        self == Self::Complete || kind != VehicleKind::HybridHypercar
+    }
+
+    /// Whether tyre load / forces / sliding and engine torque (and power) of `kind` are filled.
+    pub fn tyre_forces_filled(self, kind: VehicleKind) -> bool {
+        self == Self::Complete || kind != VehicleKind::Gt3
+    }
+}
+
 /// Static parameters of a simulated car. Values are plausible for the class, not copies of a real car.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VehicleProfile {

@@ -8,7 +8,7 @@ use telemetry_model::registry;
 
 use crate::error::SyntheticError;
 use crate::track::TrackSpec;
-use crate::vehicle::VehicleKind;
+use crate::vehicle::{ChannelFill, VehicleKind};
 use crate::weather::temperature_bounds;
 
 /// Default telemetry rate (Hz), close to LMU's native physics output.
@@ -214,6 +214,8 @@ pub struct Scenario {
     pub invalid_laps: Vec<u32>,
     pub stale: Vec<StaleSpec>,
     pub malformed: Option<MalformedSpec>,
+    /// Which channels the simulated game fills (default: like LMU 1.4.2.0).
+    pub channel_fill: ChannelFill,
 }
 
 impl Scenario {
@@ -255,6 +257,7 @@ impl Scenario {
                 invalid_laps: Vec::new(),
                 stale: Vec::new(),
                 malformed: None,
+                channel_fill: ChannelFill::default(),
             },
         }
     }
@@ -610,6 +613,11 @@ impl ScenarioBuilder {
     }
     pub fn scoring_rate_hz(mut self, hz: f64) -> Self {
         self.scenario.scoring_rate_hz = hz;
+        self
+    }
+    /// Which channels the simulated game fills.
+    pub fn channel_fill(mut self, fill: ChannelFill) -> Self {
+        self.scenario.channel_fill = fill;
         self
     }
     pub fn vehicle(mut self, kind: VehicleKind) -> Self {

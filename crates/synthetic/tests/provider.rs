@@ -374,6 +374,64 @@ fn scoring_arrives_at_the_scoring_rate_with_a_consistent_field() {
     assert!(snap.gaps.place_behind_s.is_some_and(|g| g > 0.0));
 }
 
+/// Regression (review pass 3): outside a race LMU publishes no classification gaps (A-LMU-034) and
+/// classifies by best lap; road gaps stay.
+#[test]
+fn classification_gaps_are_withheld_outside_race_sessions() {
+    use telemetry_model::enums::SessionType;
+    for session_type in [SessionType::Practice(1), SessionType::Qualifying(1)] {
+        let mut scenario = Scenario::normal_lap(5);
+        scenario.session.session_type = session_type;
+        let mut p = provider(scenario);
+        // Long enough for every car to set a best lap.
+        let ticks = (2.5 * p.reference_lap_time_s() * p.scenario().telemetry_rate_hz) as usize;
+        let mut last = None;
+        for _ in 0..ticks {
+            last = Some(tick(&mut p));
+        }
+        let t = last.expect("tick");
+        let f = frame(&t);
+        for id in [ch::GAP_PLACE_AHEAD, ch::GAP_PLACE_BEHIND] {
+            assert_ne!(f.get(id).quality, Quality::Valid, "{session_type:?} {id:?}");
+        }
+        for id in [ch::GAP_CAR_AHEAD, ch::GAP_CAR_BEHIND] {
+            assert_eq!(f.get(id).quality, Quality::Valid, "{session_type:?} {id:?}");
+        }
+        let snap = p.latest_scoring();
+        assert!(snap.gaps.place_ahead_s.is_none() && snap.gaps.place_behind_s.is_none());
+        for row in &snap.state.vehicles {
+            assert_eq!(row.time_behind_next_s, None);
+            assert_eq!(row.laps_behind_next, None);
+            assert_eq!(row.time_behind_leader_s, None);
+            assert_eq!(row.laps_behind_leader, None);
+        }
+        // Classified by best lap: places follow best laps (cars without a time last).
+        let mut rows: Vec<_> = snap.state.vehicles.iter().collect();
+        rows.sort_by_key(|r| r.place);
+        let bests: Vec<f64> = rows
+            .iter()
+            .map(|r| r.best_lap_s.unwrap_or(f64::INFINITY))
+            .collect();
+        assert!(
+            bests.iter().filter(|b| b.is_finite()).count() >= 2,
+            "{bests:?}"
+        );
+        assert!(bests.windows(2).all(|w| w[0] <= w[1]), "{bests:?}");
+    }
+    // A race keeps them.
+    let mut p = provider(Scenario::normal_lap(5));
+    for _ in 0..3_000 {
+        tick(&mut p);
+    }
+    let snap = p.latest_scoring();
+    assert!(
+        snap.state
+            .vehicles
+            .iter()
+            .all(|r| r.time_behind_leader_s.is_some())
+    );
+}
+
 #[test]
 fn pit_stop_refuels_changes_tyres_and_respects_rate_limits() {
     let mut p = provider(
@@ -481,15 +539,13 @@ fn hybrid_and_non_hybrid_profiles() {
     let mut gt = provider(Scenario::non_hybrid(1));
     let (th, tg) = (tick(&mut hy), tick(&mut gt));
     let (fh, fg) = (frame(&th), frame(&tg));
-    for id in [
-        ch::BATTERY_SOC,
-        ch::HYBRID_MOTOR_RPM,
-        ch::REGEN_POWER,
-        ch::TURBO_BOOST,
-    ] {
+    for id in [ch::BATTERY_SOC, ch::HYBRID_MOTOR_RPM, ch::REGEN_POWER] {
         assert_eq!(fh.get(id).quality, Quality::Valid, "{id:?}");
         assert_eq!(fg.get(id).quality, Quality::NotSupported, "{id:?}");
     }
+    // LMU 1.4.2.0 never fills the Hypercar's turbo boost (A-LMU-065); the GT3 has none.
+    assert_eq!(fh.get(ch::TURBO_BOOST).quality, Quality::Unavailable);
+    assert_eq!(fg.get(ch::TURBO_BOOST).quality, Quality::NotSupported);
     assert_eq!(fg.get(ch::HYBRID_MOTOR_STATE).quality, Quality::Valid);
     assert_eq!(fh.get(ch::ABS_ACTIVE).quality, Quality::NotSupported);
     assert_eq!(fg.get(ch::ABS_ACTIVE).quality, Quality::Valid);
@@ -537,6 +593,63 @@ fn hybrid_and_non_hybrid_profiles() {
         states.insert(num(frame(&t), ch::HYBRID_MOTOR_STATE) as u8);
     }
     assert!(states.len() >= 3, "{states:?}");
+}
+
+/// Regression (review pass 3): by default the synthetic game leaves unfilled exactly the channels LMU
+/// 1.4.2.0 leaves unfilled (Gate 1, A-LMU-065 / A-LMU-069), so the no-data paths are exercised; with
+/// `ChannelFill::Complete` everything is VALID.
+#[test]
+fn lmu_unfilled_channels_are_unavailable_by_default() {
+    use synthetic::{ChannelFill, VehicleKind};
+    let aero = [
+        ch::RIDE_HEIGHT_FRONT,
+        ch::RIDE_HEIGHT_REAR,
+        ch::DRAG,
+        ch::DOWNFORCE_FRONT,
+        ch::DOWNFORCE_REAR,
+    ];
+    let mut gt3_forces = vec![ch::ENGINE_TORQUE, ch::ENGINE_POWER];
+    for base in [
+        ch::TYRE_LOAD_FL,
+        ch::TYRE_LAT_FORCE_FL,
+        ch::TYRE_LONG_FORCE_FL,
+        ch::TYRE_SLIDING_FL,
+    ] {
+        gt3_forces.extend((0..4).map(|i| ChannelId(base.0 + i)));
+    }
+    let frame_of = |kind, fill| {
+        let scenario = Scenario::builder(1)
+            .vehicle(kind)
+            .channel_fill(fill)
+            .build()
+            .expect("scenario");
+        let mut p = provider(scenario);
+        let t = (0..50).map(|_| tick(&mut p)).last().expect("tick");
+        t.frame.expect("frame")
+    };
+    let hy = frame_of(VehicleKind::HybridHypercar, ChannelFill::Lmu1_4_2);
+    let gt = frame_of(VehicleKind::Gt3, ChannelFill::Lmu1_4_2);
+    for f in [&hy, &gt] {
+        for &id in &aero {
+            assert_eq!(f.get(id).quality, Quality::Unavailable, "0x{:04X}", id.0);
+        }
+    }
+    assert_eq!(hy.get(ch::TURBO_BOOST).quality, Quality::Unavailable);
+    for &id in &gt3_forces {
+        assert_eq!(hy.get(id).quality, Quality::Valid, "0x{:04X}", id.0);
+        assert_eq!(gt.get(id).quality, Quality::Unavailable, "0x{:04X}", id.0);
+    }
+    let hy = frame_of(VehicleKind::HybridHypercar, ChannelFill::Complete);
+    let gt = frame_of(VehicleKind::Gt3, ChannelFill::Complete);
+    for f in [&hy, &gt] {
+        for &id in aero.iter().chain(&gt3_forces) {
+            assert_eq!(f.get(id).quality, Quality::Valid, "0x{:04X}", id.0);
+        }
+        let mut copy = f.clone();
+        let report = FrameValidator::new().validate(&mut copy);
+        assert!(report.rejected.is_empty(), "{:?}", report.rejected);
+    }
+    assert_eq!(hy.get(ch::TURBO_BOOST).quality, Quality::Valid);
 }
 
 #[test]
@@ -757,7 +870,9 @@ async fn realtime_stream_ticks_into_a_bounded_queue() {
             .expect("scenario"),
     );
     assert!(p.clone().into_realtime(0).is_err());
-    let mut stream = p.into_realtime(8).expect("stream");
+    // Room for a whole catch-up burst (250 ms at 200 Hz) so a consumer starved by a loaded test machine
+    // never sees an eviction.
+    let mut stream = p.into_realtime(64).expect("stream");
     for expected in 0..10 {
         let t = stream.recv().await.expect("tick");
         assert_eq!(t.tick, expected);

@@ -3506,6 +3506,8 @@ dependencies = [
  "crc32c",
  "crossbeam-channel",
  "rusqlite",
+ "serde",
+ "serde_json",
  "telemetry-model",
  "thiserror 2.0.21",
  "tracing",
@@ -5225,6 +5227,7 @@ name = "transport"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "crc32c",
  "keyring",
  "parking_lot",
  "protocol",

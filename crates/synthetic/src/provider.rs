@@ -925,6 +925,7 @@ impl SyntheticTelemetryProvider {
             lateral_m,
             delta_best_s,
             vehicle_count: self.cars.len(),
+            channel_fill: self.scenario.channel_fill,
         }
     }
 }
@@ -987,20 +988,38 @@ impl RealtimeShared {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Queues `tick`; on a full queue the OLDEST tick is discarded (latest wins) and counted.
-    fn push(&self, tick: SyntheticTick) {
-        let evicted = {
+    /// Queues `tick`; on a full queue the OLDEST tick is discarded (latest wins) and counted. Its
+    /// non-repeatable content is carried into the next tick the consumer will see (see
+    /// [`carry_evicted`]), so a slow consumer loses frames but no scoring update or discrete event.
+    fn push(&self, mut tick: SyntheticTick) {
+        let (evicted, lost_events) = {
             let mut queue = self.lock();
             let evicted = if queue.len() >= self.capacity {
                 queue.pop_front()
             } else {
                 None
             };
+            let was_evicted = evicted.is_some();
+            let lost_events = match evicted {
+                Some(old) => match queue.front_mut() {
+                    Some(front) => carry_evicted(old, front),
+                    None => carry_evicted(old, &mut tick),
+                },
+                None => 0,
+            };
             queue.push_back(tick);
-            evicted
+            (was_evicted, lost_events)
         };
-        if evicted.is_some() {
+        if evicted {
             self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+        if lost_events > 0 {
+            tracing::warn!(
+                component = "synthetic.realtime",
+                lost_events,
+                cap = MAX_CARRIED_EVENTS,
+                "consumer too slow: oldest carried events discarded"
+            );
         }
         self.notify.notify_one();
     }
@@ -1013,6 +1032,31 @@ impl RealtimeShared {
         self.closed.store(true, Ordering::Release);
         self.notify.notify_one();
     }
+}
+
+/// Upper bound on the events one queued tick carries for evicted ticks (bounded memory when the consumer
+/// stalls); far above the events of a real backlog (a few per lap).
+const MAX_CARRIED_EVENTS: usize = 1024;
+
+/// Moves the non-repeatable content of an evicted tick into `next` (the next tick the consumer sees):
+/// its scoring snapshot when `next` has none (a newer snapshot supersedes it, snapshots are full
+/// states), and its events, prepended in order. Returns how many events had to be discarded to stay
+/// within [`MAX_CARRIED_EVENTS`] (oldest first).
+fn carry_evicted(evicted: SyntheticTick, next: &mut SyntheticTick) -> usize {
+    if next.scoring.is_none() {
+        next.scoring = evicted.scoring;
+    }
+    if evicted.events.is_empty() {
+        return 0;
+    }
+    let mut events = evicted.events;
+    events.append(&mut next.events);
+    let excess = events.len().saturating_sub(MAX_CARRIED_EVENTS);
+    if excess > 0 {
+        events.drain(..excess);
+    }
+    next.events = events;
+    excess
 }
 
 /// Marks the queue closed when the producer task ends for any reason (return, error, panic or abort).
@@ -1274,5 +1318,62 @@ mod tests {
                 id.0
             );
         }
+    }
+
+    /// Regression (review pass 3): a full latest-wins queue drops frames but carries the evicted
+    /// ticks' scoring snapshot and events into the next tick the consumer sees.
+    #[test]
+    fn evicted_ticks_keep_their_scoring_and_events() {
+        const POP_EVERY: usize = 37;
+        let mut p = SyntheticTelemetryProvider::new(TestMode::acknowledge(), Scenario::pit_lap(3))
+            .expect("provider");
+        let ticks = (1.6 * p.reference_lap_time_s() * p.scenario().telemetry_rate_hz) as usize;
+        let shared = RealtimeShared::new(1);
+        let (mut pushed_events, mut received_events, mut laps) = (0_usize, 0_usize, 0_usize);
+        let mut pending_scoring: Option<f64> = None;
+        let check_pop = |shared: &RealtimeShared, pending: &mut Option<f64>| {
+            let t = shared.pop().expect("queued tick");
+            assert_eq!(t.scoring.as_ref().map(|s| s.et_s), pending.take());
+            t.events.len()
+        };
+        for i in 0..ticks {
+            let t = p.next_tick().expect("tick");
+            pushed_events += t.events.len();
+            laps += t
+                .events
+                .iter()
+                .filter(|e| matches!(e, SyntheticEvent::LapCompleted { .. }))
+                .count();
+            if let Some(s) = &t.scoring {
+                pending_scoring = Some(s.et_s);
+            }
+            shared.push(t);
+            if i % POP_EVERY == POP_EVERY - 1 {
+                received_events += check_pop(&shared, &mut pending_scoring);
+            }
+        }
+        if shared.lock().front().is_some() {
+            received_events += check_pop(&shared, &mut pending_scoring);
+        }
+        assert!(laps > 0, "the run completes laps");
+        assert!(shared.dropped.load(Ordering::Relaxed) > 0);
+        assert_eq!(received_events, pushed_events);
+    }
+
+    #[test]
+    fn carried_events_are_bounded() {
+        let mut p =
+            SyntheticTelemetryProvider::new(TestMode::acknowledge(), Scenario::normal_lap(1))
+                .expect("provider");
+        let mut old = p.next_tick().expect("tick");
+        let mut next = p.next_tick().expect("tick");
+        let marker = SyntheticEvent::StallEnded;
+        old.events = vec![marker.clone(); MAX_CARRIED_EVENTS];
+        next.events = vec![marker; 3];
+        next.scoring = None;
+        let had_scoring = old.scoring.is_some();
+        assert_eq!(carry_evicted(old, &mut next), 3);
+        assert_eq!(next.events.len(), MAX_CARRIED_EVENTS);
+        assert_eq!(next.scoring.is_some(), had_scoring);
     }
 }

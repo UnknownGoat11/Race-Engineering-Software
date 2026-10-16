@@ -49,4 +49,4 @@ pub use scenario::{
 };
 pub use session::ScoringSnapshot;
 pub use track::{Track, TrackSpec};
-pub use vehicle::{VehicleKind, VehicleProfile};
+pub use vehicle::{ChannelFill, VehicleKind, VehicleProfile};
