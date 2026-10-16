@@ -71,6 +71,15 @@ pub enum Incompatible {
     },
     #[error("no common telemetry schema version (local supports {local:?}, remote {remote:?})")]
     NoCommonSchema { local: Vec<u16>, remote: Vec<u16> },
+    /// An engineer cannot decode the driver's stream: its negotiated minor is below the minor the
+    /// driver's session runs at (§10, [`check_engineer_join_minor`]).
+    #[error(
+        "engineer protocol {engineer} is older than the driver session's protocol minor {driver_minor}; update the app"
+    )]
+    EngineerBehindDriver {
+        engineer: ProtocolVersion,
+        driver_minor: u8,
+    },
     #[error(
         "relay announced environment {announced:?}, this client is configured for {expected:?}"
     )]
@@ -132,6 +141,25 @@ pub fn select_schema_version(local: &[u16], remote: &[u16]) -> Result<u16, Incom
             local: local.to_vec(),
             remote: remote.to_vec(),
         })
+}
+
+/// Relay-side check before accepting an engineer's SESSION_JOIN or `SESSION_RESUME::Engineer`
+/// (§10). Driver→relay→engineer payloads are forwarded unchanged, so the driver encodes them at the
+/// minor it negotiated with the relay (`driver_session_minor`) without knowing the engineers'
+/// minors. An engineer whose negotiated minor (`engineer`, the result of [`negotiate_protocol`] on
+/// its connection) is older could not decode new message types, fields or enum variants of that
+/// minor, so the relay refuses it with this error (the engineer app asks the user to update).
+pub fn check_engineer_join_minor(
+    driver_session_minor: u8,
+    engineer: ProtocolVersion,
+) -> Result<(), Incompatible> {
+    if engineer.minor < driver_session_minor {
+        return Err(Incompatible::EngineerBehindDriver {
+            engineer,
+            driver_minor: driver_session_minor,
+        });
+    }
+    Ok(())
 }
 
 /// Environment separation (PROTOCOL.md §6). A client configured for production accepts only a
@@ -223,6 +251,28 @@ mod tests {
         }
         assert_eq!(check_relay_environment(Development, Staging), Ok(()));
         assert_eq!(check_relay_environment(Staging, Production), Ok(()));
+    }
+
+    #[test]
+    fn engineer_older_than_the_driver_session_is_refused() {
+        // Review finding: the driver negotiates only with the relay, so a 1.1 driver's frames
+        // reached a 1.0 engineer that could not decode them (Malformed).
+        let engineer = ProtocolVersion::new(1, 0);
+        let err = check_engineer_join_minor(1, engineer).expect_err("refused");
+        assert_eq!(
+            err,
+            Incompatible::EngineerBehindDriver {
+                engineer,
+                driver_minor: 1
+            }
+        );
+        assert_eq!(err.to_error_msg().code, ErrorCode::Incompatible);
+        assert_eq!(check_engineer_join_minor(0, engineer), Ok(()));
+        assert_eq!(
+            check_engineer_join_minor(1, ProtocolVersion::new(1, 2)),
+            Ok(()),
+            "a newer engineer decodes older payloads"
+        );
     }
 
     #[test]

@@ -40,6 +40,9 @@ pub const MAX_FRAME_BYTES: usize =
     HEADER_BYTES + MAX_PAYLOAD_BYTES + RELAY_TRAILER_BYTES + CRC_BYTES;
 /// Sequence number carried by every control frame (§5).
 pub const CONTROL_SEQUENCE: u64 = 0;
+/// Sequence number of the first stream frame of every sequence space (§5): a sender starts at 1
+/// and adds exactly 1 per stream frame.
+pub const FIRST_SEQUENCE: u64 = 1;
 /// `session_id` before a session exists.
 pub const NO_SESSION: u64 = 0;
 /// Relay trailer `relay_flags` bit0: the relay replayed this frame from its per-session cache when
@@ -51,6 +54,17 @@ pub const TRAILER_FLAGS_RESERVED_MASK: u32 = !TRAILER_FLAG_REPLAYED;
 /// First and last message type id of the stream (telemetry-class) range, 0x20–0x28 (§5).
 pub(crate) const STREAM_TYPE_FIRST: u8 = 0x20;
 pub(crate) const STREAM_TYPE_LAST: u8 = 0x28;
+/// Last id of the id range reserved for the stream class in major 1 (§3, §5): 0x20–0x2F. A type a
+/// later minor adds in 0x29–0x2F is a stream type and consumes a sequence number of its sender's
+/// sequence space, so a receiver that does not know it still observes its sequence (no false loss,
+/// [`crate::sequence::StreamReceiver::observe_unknown`]) but never applies it.
+pub const STREAM_CLASS_LAST_ID: u8 = 0x2F;
+
+/// Whether a raw message type id lies in the stream-class range 0x20–0x2F reserved for major 1,
+/// known to this version or not.
+pub const fn is_stream_class_id(id: u8) -> bool {
+    id >= STREAM_TYPE_FIRST && id <= STREAM_CLASS_LAST_ID
+}
 
 /// Byte offsets inside the 40-byte header (§1).
 mod hdr {

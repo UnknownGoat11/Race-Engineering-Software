@@ -619,6 +619,11 @@ pub struct ErrorMsg {
 
 /// A TLV telemetry block (§4) kept as raw bytes. The relay never decodes it; receivers apply it
 /// with `TelemetryFrame::apply_tlv` or decode it with [`TelemetryPayload::decode`].
+///
+/// A payload decoded by [`Message::from_frame`] is a zero-copy view of the codec's read buffer,
+/// exactly like the frame it came from (§1): it pins the whole read-buffer allocation (up to
+/// ~512 KiB) while it lives. Apply-and-drop is fine; a payload kept beyond the current dispatch
+/// (last snapshot, recorder queue) MUST be copied with [`TelemetryPayload::detach`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetryPayload(Bytes);
 
@@ -636,9 +641,16 @@ impl TelemetryPayload {
         &self.0
     }
 
-    /// Raw TLV bytes as a cheaply clonable `Bytes`.
+    /// Raw TLV bytes as a cheaply clonable `Bytes`. Like the payload itself, a clone shares (and
+    /// pins) the underlying buffer; see [`TelemetryPayload::detach`].
     pub fn bytes(&self) -> &Bytes {
         &self.0
+    }
+
+    /// A copy of this payload in its own allocation of exactly its length, so keeping it does not
+    /// pin the read buffer it was decoded from (§1).
+    pub fn detach(&self) -> TelemetryPayload {
+        TelemetryPayload(Bytes::copy_from_slice(&self.0))
     }
 
     /// Decodes the block (header plus records; unknown channel ids are returned for the caller to

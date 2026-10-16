@@ -65,6 +65,45 @@ fn telemetry_payload_decodes_to_records() {
 }
 
 #[test]
+fn telemetry_payload_detach_does_not_pin_the_read_buffer() {
+    // Review finding: a TelemetryPayload from Message::from_frame shares the codec's read buffer,
+    // so a kept payload pinned the whole allocation.
+    let msg = Message::TelemetrySnapshot(common::tlv_payload(20));
+    let frame = msg
+        .to_frame(&FrameMeta::stream(
+            protocol::frame::FramePriority::P0,
+            7,
+            1,
+            0,
+        ))
+        .expect("frame");
+    let mut stream = BytesMut::new();
+    stream.extend_from_slice(frame.as_bytes());
+    stream.extend_from_slice(&[0u8; 4096]); // more buffered bytes behind the frame
+    let mut dec = FrameDecoder::new();
+    let decoded = dec
+        .decode_frame(&mut stream)
+        .expect("decode")
+        .expect("frame");
+    let Message::TelemetrySnapshot(payload) = Message::from_frame(&decoded).expect("message")
+    else {
+        panic!("snapshot expected");
+    };
+    let view = decoded.as_bytes().as_ptr_range();
+    assert!(
+        view.contains(&payload.as_bytes().as_ptr()),
+        "from_frame is zero-copy"
+    );
+    let detached = payload.detach();
+    assert_eq!(detached, payload);
+    assert!(
+        !view.contains(&detached.as_bytes().as_ptr()),
+        "detached payload must not share the read buffer"
+    );
+    assert_eq!(detached.decode().expect("tlv").1.len(), 20);
+}
+
+#[test]
 fn trailing_bytes_are_rejected() {
     let msg = Message::Ping(Ping { id: 1, t0: 2 });
     let mut buf = Vec::new();

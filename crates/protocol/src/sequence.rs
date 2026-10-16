@@ -21,7 +21,8 @@
 use std::collections::BTreeMap;
 
 use crate::frame::{
-    Delivery, Frame, FramePriority, HeaderRuleError, MsgType, STREAM_TYPE_FIRST, STREAM_TYPE_LAST,
+    CONTROL_SEQUENCE, Delivery, FIRST_SEQUENCE, Frame, FrameHeader, FramePriority, HeaderRuleError,
+    MsgType, NO_SESSION, STREAM_TYPE_FIRST, STREAM_TYPE_LAST, is_stream_class_id,
 };
 
 /// Number of sequence numbers (ending at the highest seen) for which arrival is remembered, and the
@@ -142,8 +143,27 @@ impl SequenceTracker {
     }
 
     /// Records the arrival of `seq` and classifies it.
+    ///
+    /// Restart detection (defence in depth behind the relay's SESSION_INFO, §5):
+    /// * [`FIRST_SEQUENCE`] that does not advance the highest sequence is an immediate
+    ///   [`Arrival::Restart`]. A sender emits seq 1 once per sequence space and the stream runs over
+    ///   one ordered TCP connection whose replayed frames are never tracked; with the reliable
+    ///   SCHEMA_NEGOTIATE as a space's first frame (§5) nothing of the same space overtakes it, so a
+    ///   tracked seq 1 below the highest can only be the first frame of a new space. Without this, a restart
+    ///   after fewer than [`RESTART_DETECT_RUN`] frames read the new space's first frames as
+    ///   duplicates and then silently continued the old space.
+    /// * Otherwise [`RESTART_DETECT_RUN`] consecutive stale frames with strictly increasing
+    ///   sequences (a restart whose first frame was lost or overtaken).
     pub fn observe(&mut self, seq: u64) -> Arrival {
         let arrival = self.classify(seq);
+        if seq == FIRST_SEQUENCE
+            && matches!(
+                arrival,
+                Arrival::Late | Arrival::Duplicate | Arrival::TooOld
+            )
+        {
+            return self.restart_at(seq);
+        }
         match arrival {
             Arrival::Duplicate | Arrival::TooOld => {
                 let continues = self.stale_run > 0 && seq > self.stale_run_last;
@@ -154,16 +174,23 @@ impl SequenceTracker {
                 };
                 self.stale_run_last = seq;
                 if self.stale_run >= RESTART_DETECT_RUN {
-                    let restarts = self.stats.restarts.saturating_add(1);
-                    self.reset();
-                    self.classify(seq);
-                    self.stats.restarts = restarts;
-                    return Arrival::Restart;
+                    return self.restart_at(seq);
                 }
             }
             _ => self.stale_run = 0,
         }
         arrival
+    }
+
+    /// Resets for a new sequence space whose first observed frame is `seq`, keeping the restart
+    /// count. The counters of the classification that preceded this call are discarded with the
+    /// old space.
+    fn restart_at(&mut self, seq: u64) -> Arrival {
+        let restarts = self.stats.restarts.saturating_add(1);
+        self.reset();
+        self.classify(seq);
+        self.stats.restarts = restarts;
+        Arrival::Restart
     }
 
     fn classify(&mut self, seq: u64) -> Arrival {
@@ -213,15 +240,25 @@ impl SequenceTracker {
 
 /// Priority slots per stream type in [`LiveGate`]: P0, P1, P2 and control.
 const PRIORITY_SLOTS: usize = 4;
+/// The single [`LiveGate`] slot shared by every priority of a whole-state stream type (every
+/// stream type except TELEMETRY_DELTA).
+const SHARED_SLOT: usize = 0;
 /// Number of stream (telemetry-class) message types, 0x20–0x28.
 const STREAM_TYPES: usize = (STREAM_TYPE_LAST - STREAM_TYPE_FIRST + 1) as usize;
 
-/// Live-state gate for one inbound stream (§5): "accept only if newer" **per latest-wins key**
-/// `(msg_type, priority)`, matching the relay's per-key slots and reliable queue (§2).
+/// Live-state gate for one inbound stream (§5): "accept only if newer" **per live key**, matching
+/// the relay's per-key slots and reliable queue (§2).
 ///
+/// * The live key of TELEMETRY_DELTA is `(msg_type, priority)`: its frames of different priorities
+///   carry different channels, so P1 delta 201 is still applied after P0 delta 202.
+/// * Every other stream type carries its whole state at any priority (TELEMETRY_SNAPSHOT,
+///   SCORING_UPDATE, WEATHER_UPDATE, DRIVER_STATUS, RECORDING_STATUS, and the reliable types), so
+///   its live key is the type alone: a P1 snapshot 250 arriving after a P0 snapshot 300 (the relay
+///   serves P0 first) is refused instead of rolling every channel back.
 /// * A frame is accepted if its sequence is above the last one accepted for its key. Frames of one
-///   key never overtake each other on the way, so for the reliable stream types (SCHEMA_NEGOTIATE,
-///   SESSION_EVENT, which travel in the FIFO control queue) this rejects exactly the duplicates.
+///   relay key never overtake each other on the way, so for the reliable stream types
+///   (SCHEMA_NEGOTIATE, SESSION_EVENT, which travel in the FIFO control queue) this rejects
+///   exactly the duplicates.
 /// * An accepted TELEMETRY_SNAPSHOT carries every channel (weather channels included), so it
 ///   supersedes every channel frame — TELEMETRY_DELTA of any priority and WEATHER_UPDATE — with a
 ///   sequence at or below its own.
@@ -232,7 +269,8 @@ const STREAM_TYPES: usize = (STREAM_TYPE_LAST - STREAM_TYPE_FIRST + 1) as usize;
 ///   sequence spaces) are not sequence-gated: always accepted.
 #[derive(Debug, Clone, Default)]
 pub struct LiveGate {
-    /// Last accepted sequence per `[stream type][priority slot]`.
+    /// Last accepted sequence per `[stream type][priority slot]` (whole-state types use only
+    /// [`SHARED_SLOT`]).
     applied: [[Option<u64>; PRIORITY_SLOTS]; STREAM_TYPES],
     /// Sequence of the newest accepted TELEMETRY_SNAPSHOT.
     snapshot_floor: Option<u64>,
@@ -293,11 +331,19 @@ impl LiveGate {
     }
 
     /// `[stream type][priority slot]` index of a stream type, `None` for control-class types.
+    ///
+    /// Only TELEMETRY_DELTA has one slot per priority: its frames of different priorities carry
+    /// different channels. Every other stream type carries its whole state at any priority, so all
+    /// its priorities share one slot: a frame older than one already applied at *another* priority
+    /// would roll that state back (§5).
     fn slot(msg_type: MsgType, priority: FramePriority) -> Option<(usize, usize)> {
         if !msg_type.is_stream() {
             return None;
         }
         let t = usize::from(msg_type.id() - STREAM_TYPE_FIRST);
+        if msg_type != MsgType::TelemetryDelta {
+            return Some((t, SHARED_SLOT));
+        }
         let p = match priority {
             FramePriority::P0 => 0,
             FramePriority::P1 => 1,
@@ -381,12 +427,45 @@ impl StreamReceiver {
         }
     }
 
+    /// Sequence-observes a frame whose type this version does not know but whose id lies in the
+    /// reserved stream-class range 0x20–0x2F ([`is_stream_class_id`]): a stream type added by a
+    /// later minor still consumes a sequence number of the sender's space, so skipping it unseen
+    /// would count one false loss per frame (§5, §10). The frame is never applied.
+    ///
+    /// Returns the classification, or `None` (receiver unchanged) if the id is known, outside the
+    /// range, the frame was replayed by the relay, or its header breaks the stream rules (sequence 0
+    /// or no session id). Call it where an unknown type is skipped; [`Self::receive_frame`] does.
+    pub fn observe_unknown(&mut self, header: &FrameHeader, replayed: bool) -> Option<Arrival> {
+        if header.known_msg_type().is_some()
+            || !is_stream_class_id(header.msg_type)
+            || replayed
+            || header.sequence == CONTROL_SEQUENCE
+            || header.session_id == NO_SESSION
+        {
+            return None;
+        }
+        let arrival = self.tracker.observe(header.sequence);
+        if arrival == Arrival::Restart {
+            self.gate.reset();
+        }
+        Some(arrival)
+    }
+
     /// Checks the header rules of `frame` and classifies it. A rule violation is returned (skip and
-    /// count the frame) and leaves the receiver unchanged.
+    /// count the frame) and leaves the receiver unchanged, except that an unknown type in the
+    /// reserved stream-class range is still sequence-observed ([`Self::observe_unknown`]) before
+    /// its [`HeaderRuleError::UnknownMsgType`] is returned.
     pub fn receive_frame(&mut self, frame: &Frame) -> Result<Reception, HeaderRuleError> {
-        let msg_type = frame.check_rules()?;
         let header = frame.header();
         let replayed = frame.relay_trailer().is_some_and(|t| t.replayed);
+        let msg_type = match frame.check_rules() {
+            Ok(msg_type) => msg_type,
+            Err(err @ HeaderRuleError::UnknownMsgType(_)) => {
+                self.observe_unknown(header, replayed);
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
         Ok(self.receive(msg_type, header.priority, header.sequence, replayed))
     }
 }
@@ -503,6 +582,17 @@ impl<T> ReorderBuffer<T> {
         ReorderOutcome::Accepted
     }
 
+    /// Starts a new sequence space: everything still buffered is released first (in order, gaps
+    /// counted as skipped, exactly like [`ReorderBuffer::flush`]), then the order is forgotten, so
+    /// the next pushed sequence starts the new order. Call it on every SESSION_INFO and on
+    /// [`Arrival::Restart`] (§5); otherwise every frame of the new space (seq 1, 2, …) would be
+    /// refused as [`ReorderOutcome::TooLate`]. [`ReorderBuffer::skipped`] keeps counting across
+    /// resets.
+    pub fn reset(&mut self, out: &mut impl Extend<(u64, T)>) {
+        self.flush(out);
+        self.next = None;
+    }
+
     /// Releases everything still buffered, in order, skipping the gaps (end of stream).
     pub fn flush(&mut self, out: &mut impl Extend<(u64, T)>) {
         while let Some((seq, item)) = self.pending.pop_first() {
@@ -614,7 +704,8 @@ mod tests {
 
     #[test]
     fn duplicates_are_counted_and_not_live() {
-        let (t, a) = run(&[1, 2, 2, 3, 1, 3]);
+        // Starts above FIRST_SEQUENCE: a repeated seq 1 is a restart, not a duplicate (§5).
+        let (t, a) = run(&[5, 6, 6, 7, 5, 7]);
         assert_eq!(a[2], Arrival::Duplicate);
         assert_eq!(a[4], Arrival::Duplicate);
         assert_eq!(a[5], Arrival::Duplicate);
@@ -679,6 +770,31 @@ mod tests {
         assert_eq!(buf.push(10, 4, &mut out), ReorderOutcome::TooLate(4));
         buf.flush(&mut out);
         assert_eq!(out, vec![(10, 1), (12, 2)]);
+        assert_eq!(buf.skipped(), 1);
+    }
+
+    #[test]
+    fn reorder_buffer_reset_starts_a_new_sequence_space() {
+        // Review finding: without a reset every frame of a restarted driver (seq 1, 2, …) came
+        // back as TooLate for good.
+        let mut buf = ReorderBuffer::new();
+        let mut out = Vec::new();
+        buf.push(500, 'a', &mut out);
+        buf.push(502, 'c', &mut out);
+        assert_eq!(buf.push(3, 'x', &mut out), ReorderOutcome::TooLate('x'));
+        buf.reset(&mut out);
+        assert_eq!(
+            out,
+            vec![(500, 'a'), (502, 'c')],
+            "buffered items are released"
+        );
+        assert_eq!(buf.skipped(), 1, "the gap at 501 stays counted");
+        assert_eq!(buf.pending(), 0);
+        out.clear();
+        for (s, c) in [(1, 'n'), (3, 'p'), (2, 'o')] {
+            assert_eq!(buf.push(s, c, &mut out), ReorderOutcome::Accepted);
+        }
+        assert_eq!(out, vec![(1, 'n'), (2, 'o'), (3, 'p')]);
         assert_eq!(buf.skipped(), 1);
     }
 
@@ -762,6 +878,38 @@ mod tests {
     }
 
     #[test]
+    fn whole_state_types_are_gated_across_priorities() {
+        // Review finding: a P1 snapshot 250 arriving after a P0 snapshot 300 (the relay serves P0
+        // first) found its own (type, P1) slot empty and rolled every channel back.
+        let mut gate = LiveGate::new();
+        assert!(gate.accept(TelemetrySnapshot, P0, 300));
+        assert!(!gate.accept(TelemetrySnapshot, P1, 250), "older snapshot");
+        assert!(!gate.accept(TelemetrySnapshot, P2, 300), "same snapshot");
+        assert!(gate.accept(TelemetrySnapshot, P1, 301));
+        for t in [
+            ScoringUpdate,
+            WeatherUpdate,
+            MsgType::DriverStatus,
+            MsgType::RecordingStatus,
+        ] {
+            let mut gate = LiveGate::new();
+            assert!(gate.accept(t, P0, 300), "{t}");
+            assert!(
+                !gate.accept(t, P1, 250),
+                "{t}: older state at another priority"
+            );
+            assert!(!gate.accept(t, P2, 299), "{t}");
+            assert!(gate.accept(t, P2, 301), "{t}");
+        }
+        // Deltas keep one key per priority: their priorities carry different channels.
+        let mut gate = LiveGate::new();
+        assert!(gate.accept(TelemetryDelta, P0, 300));
+        assert!(gate.accept(TelemetryDelta, P1, 250));
+        assert!(gate.accept(TelemetryDelta, P2, 260));
+        assert!(!gate.accept(TelemetryDelta, P1, 249));
+    }
+
+    #[test]
     fn join_replay_is_applied_but_not_tracked() {
         for order in [
             [
@@ -803,6 +951,67 @@ mod tests {
             );
             assert_eq!(rx.stats().lost, 0);
         }
+    }
+
+    /// `frame` re-encoded with raw type id `id` (CRC recomputed), e.g. a type of a later minor.
+    fn with_raw_type(frame: &Frame, id: u8) -> Frame {
+        const MSG_TYPE_OFFSET: usize = 4;
+        let mut raw = frame.as_bytes().to_vec();
+        raw[MSG_TYPE_OFFSET] = id;
+        let body = raw.len() - crate::frame::CRC_BYTES;
+        let crc = crc32c::crc32c(&raw[..body]);
+        raw[body..].copy_from_slice(&crc.to_le_bytes());
+        Frame::decode(bytes::Bytes::from(raw)).expect("valid framing")
+    }
+
+    #[test]
+    fn unknown_stream_class_types_are_sequence_observed_but_not_applied() {
+        // Review finding: a 1.1 stream type (e.g. 0x29) consumes a driver sequence number; a 1.0
+        // engineer that skipped it unseen counted one false loss per frame, forever.
+        let meta = |seq| FrameMeta::stream(P0, 7, seq, 0);
+        let delta = |seq| Frame::build(TelemetryDelta, &meta(seq), &[]).expect("build");
+        let mut rx = StreamReceiver::new();
+        for seq in 1..=30 {
+            if seq % 3 == 0 {
+                let future = with_raw_type(&delta(seq), 0x29);
+                assert_eq!(
+                    rx.receive_frame(&future),
+                    Err(HeaderRuleError::UnknownMsgType(0x29)),
+                    "skipped, never applied"
+                );
+            } else {
+                assert!(rx.receive_frame(&delta(seq)).expect("rules").live);
+            }
+        }
+        let s = rx.stats();
+        assert_eq!((s.lost, s.received, s.highest), (0, 30, Some(30)));
+
+        // Outside the reserved range, replayed, or breaking the stream rules: not observed.
+        let before = rx.stats();
+        for id in [0x19, 0x30, 0x40] {
+            assert_eq!(
+                rx.observe_unknown(with_raw_type(&delta(31), id).header(), false),
+                None
+            );
+        }
+        assert_eq!(
+            rx.observe_unknown(with_raw_type(&delta(31), 0x2F).header(), true),
+            None
+        );
+        let mut header = *with_raw_type(&delta(31), 0x2F).header();
+        header.sequence = CONTROL_SEQUENCE;
+        assert_eq!(rx.observe_unknown(&header, false), None);
+        header.sequence = 31;
+        header.session_id = NO_SESSION;
+        assert_eq!(rx.observe_unknown(&header, false), None);
+        assert_eq!(
+            rx.observe_unknown(delta(31).header(), false),
+            None,
+            "known types go through receive"
+        );
+        assert_eq!(rx.stats(), before);
+        header.session_id = 7;
+        assert_eq!(rx.observe_unknown(&header, false), Some(Arrival::InOrder));
     }
 
     #[test]
@@ -849,8 +1058,10 @@ mod tests {
         for seq in 249_990..=250_000 {
             assert!(live(&mut rx, TelemetryDelta, P0, seq));
         }
+        // The new space's seq 1 was lost: the run detector has to find the restart.
         let run = u64::from(RESTART_DETECT_RUN);
-        for seq in 1..run {
+        let first_seen = FIRST_SEQUENCE + 1;
+        for seq in first_seen..first_seen + run - 1 {
             let r = rx.receive(TelemetryDelta, P0, seq, false);
             assert_eq!(
                 r,
@@ -860,7 +1071,8 @@ mod tests {
                 }
             );
         }
-        let r = rx.receive(TelemetryDelta, P0, run, false);
+        let last = first_seen + run - 1;
+        let r = rx.receive(TelemetryDelta, P0, last, false);
         assert_eq!(
             r,
             Reception {
@@ -869,34 +1081,79 @@ mod tests {
             }
         );
         assert_eq!(
-            rx.receive(TelemetryDelta, P0, run + 1, false).arrival,
+            rx.receive(TelemetryDelta, P0, last + 1, false).arrival,
             Some(Arrival::InOrder)
         );
-        assert!(live(&mut rx, TelemetryDelta, P0, run + 2));
+        assert!(live(&mut rx, TelemetryDelta, P0, last + 2));
         assert_eq!(rx.stats().restarts, 1);
-        assert_eq!(rx.stats().highest, Some(run + 2));
+        assert_eq!(rx.stats().highest, Some(last + 2));
+    }
+
+    #[test]
+    fn first_sequence_below_the_highest_is_an_immediate_restart() {
+        // Review finding: the driver restarts after about 20 frames and the relay fails to send
+        // SESSION_INFO first. The new space's 1..=20 used to be duplicates (a run shorter than
+        // RESTART_DETECT_RUN), 21 InOrder, and the new SCHEMA_NEGOTIATE (seq 1) and early events
+        // were dropped by the gate as duplicates of the old space's.
+        let old_highest = 20;
+        let mut rx = StreamReceiver::new();
+        assert!(live(&mut rx, SchemaNegotiate, Control, 1));
+        for seq in 2..=old_highest {
+            assert!(live(&mut rx, SessionEvent, Control, seq));
+        }
+        let r = rx.receive(SchemaNegotiate, Control, FIRST_SEQUENCE, false);
+        assert_eq!(
+            r,
+            Reception {
+                arrival: Some(Arrival::Restart),
+                live: true
+            },
+            "the new capability map is applied"
+        );
+        assert!(
+            live(&mut rx, SessionEvent, Control, 2),
+            "the new space's events are delivered"
+        );
+        let s = rx.stats();
+        assert_eq!(
+            (s.restarts, s.highest, s.duplicated, s.lost),
+            (1, Some(2), 0, 0)
+        );
+        // The same through the TooOld path (old highest far above the window) and the Late path
+        // (tracking of the old space began above seq 1, e.g. after a join replay).
+        for first_tracked in [250_000, 5] {
+            let mut t = SequenceTracker::new();
+            t.observe(first_tracked);
+            t.observe(first_tracked + 15);
+            assert_eq!(t.observe(FIRST_SEQUENCE), Arrival::Restart);
+            assert_eq!(t.observe(FIRST_SEQUENCE + 1), Arrival::InOrder);
+            assert_eq!(t.stats().restarts, 1);
+        }
     }
 
     #[test]
     fn restart_of_a_short_stream_is_detected_through_duplicates() {
+        // The new space's seq 1 was lost; its next frames are duplicates of the old space's.
         let run = u64::from(RESTART_DETECT_RUN);
         let old_highest = REORDER_WINDOW - 1;
+        let first_seen = FIRST_SEQUENCE + 1;
         assert!(
-            run <= old_highest,
+            first_seen + run - 1 <= old_highest,
             "the new space must stay inside the seen window"
         );
         let mut rx = StreamReceiver::new();
         for seq in 1..=old_highest {
             assert!(live(&mut rx, TelemetryDelta, P0, seq));
         }
-        for seq in 1..run {
+        for seq in first_seen..first_seen + run - 1 {
             assert_eq!(
                 rx.receive(TelemetryDelta, P0, seq, false).arrival,
                 Some(Arrival::Duplicate)
             );
         }
         assert_eq!(
-            rx.receive(TelemetryDelta, P0, run, false).arrival,
+            rx.receive(TelemetryDelta, P0, first_seen + run - 1, false)
+                .arrival,
             Some(Arrival::Restart)
         );
     }
@@ -939,13 +1196,14 @@ mod tests {
     fn no_false_restart_from_isolated_stale_frames() {
         let mut t = SequenceTracker::new();
         t.observe(1_000);
+        // (Stale sequences start at 2: a stale seq 1 is a restart by definition.)
         for k in 0..u64::from(RESTART_DETECT_RUN) * 2 {
             // A stale frame followed by a fresh one never forms a run.
-            assert_eq!(t.observe(1 + k), Arrival::TooOld);
+            assert_eq!(t.observe(2 + k), Arrival::TooOld);
             assert!(t.observe(1_001 + k).advances_highest());
         }
         // Decreasing stale sequences do not form a run either.
-        for seq in (1..=u64::from(RESTART_DETECT_RUN) * 2).rev() {
+        for seq in (2..=u64::from(RESTART_DETECT_RUN) * 2).rev() {
             assert_ne!(t.observe(seq), Arrival::Restart);
         }
         assert_eq!(t.stats().restarts, 0);
