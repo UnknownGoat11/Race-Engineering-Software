@@ -1,5 +1,5 @@
 //! The blocking reader: attach to `LMU_Data`, wait for frames, copy under the SDK lock, process,
-//! and watch liveness. Meant to run on a dedicated OS thread (research §5.3).
+//! and watch liveness. Meant to run on a dedicated OS thread (research Â§5.3).
 //!
 //! ```text
 //! loop {
@@ -47,11 +47,11 @@ use crate::sys::{
 /// `tracing` component name.
 const COMPONENT: &str = "lmu-reader";
 
-/// SDK `Lock` spin count before waiting (research §5.2).
+/// SDK `Lock` spin count before waiting (research Â§5.2).
 pub const DEFAULT_LOCK_SPINS: u32 = 4_000;
 /// Upper bound of the configurable spin count.
 pub const MAX_LOCK_SPINS: u32 = 100_000;
-/// Hard upper bound of the lock wait after spinning (≤ 5 ms, research §5.3).
+/// Hard upper bound of the lock wait after spinning (â‰¤ 5 ms, research Â§5.3).
 pub const MAX_LOCK_WAIT: Duration = Duration::from_millis(5);
 /// The lock counts as stuck (A-LMU-052) after being unavailable this long, while `busy` still reads
 /// 1 and at least [`LOCK_STUCK_MIN_ATTEMPTS`] consecutive acquisitions failed.
@@ -69,6 +69,9 @@ pub const GATE_AUDIT_MIN_FRAMES: u32 = 20;
 /// Pause after a duplicate frame in gate mode. Guards against a gate that stays signalled (at most
 /// ~1,000 copies/s) while adding at most 1 ms before the next real frame (frames are ~10 ms apart).
 const DUPLICATE_BACKOFF: Duration = Duration::from_millis(1);
+/// In polling mode, longest interval between two copies while the lock-free witness is unchanged
+/// (picks up changes the witness does not cover without taking LMU's lock on every poll).
+pub const POLL_KEEPALIVE: Duration = Duration::from_secs(1);
 /// Minimum interval between repeated warnings of the same kind.
 const WARN_INTERVAL: Duration = Duration::from_secs(10);
 
@@ -90,7 +93,7 @@ pub const PATHS_REFRESH_RANGE: (Duration, Duration) =
 /// Upper bound of [`ReaderConfig::lock_free_attempts`] and [`ReaderConfig::incompatible_after`].
 pub const MAX_ATTEMPTS: u32 = 100;
 
-/// Reader tuning. The defaults follow the research contract (§5.3); every wait is bounded and every
+/// Reader tuning. The defaults follow the research contract (Â§5.3); every wait is bounded and every
 /// value is clamped to a safe range by the reader (see the `*_RANGE` constants).
 #[derive(Debug, Clone, Copy)]
 pub struct ReaderConfig {
@@ -289,6 +292,8 @@ struct Connection {
     connected_at: Instant,
     last_new_frame: Instant,
     last_poll: Option<Instant>,
+    /// Last poll that went on to copy (polling mode only; drives the keep-alive copy).
+    last_poll_copy: Option<Instant>,
     last_wake: Wake,
     audit: GateAudit,
     next_process_lookup: Instant,
@@ -611,6 +616,12 @@ impl LmuReader {
     ///   reader re-checks every `retry_interval` and recovers by itself.
     /// * `Err(Os)`: an attach attempt in this call failed unexpectedly (e.g. access denied).
     ///
+    /// Once the frame gate's Hold event has fired, the call waits for the Data event for up to
+    /// [`ReaderConfig::gate_timeout`] even past `timeout`, so a started frame is not lost.
+    ///
+    /// An `LMU_Data` section that exists while no LMU process does (kept open by another program)
+    /// is never delivered as live: its frame is delivered only after it changes (A-LMU-056).
+    ///
     /// # Errors
     /// See above.
     pub fn next_snapshot(&mut self, timeout: Duration) -> Result<Option<RawSnapshot>, LmuError> {
@@ -683,6 +694,39 @@ impl LmuReader {
         }
     }
 
+    /// Decides whether the section's current contents (`current`, `None` when unreadable) are the
+    /// frozen last frame of an LMU that is gone; returns the waiting note when they are. Remembers
+    /// the contents as frozen when no LMU process exists and nothing is remembered yet.
+    fn frozen_frame_note(
+        &mut self,
+        current: Option<Witness>,
+        lmu_running: bool,
+    ) -> Option<&'static str> {
+        // An unreadable witness means the section is smaller than the layout: attach so the
+        // structural checks report it (nothing is decoded from such a section).
+        let current = current?;
+        if lmu_running {
+            let frozen = self.frozen.filter(Witness::carries_time)?;
+            return (frozen == current).then_some(
+                "LMU is starting: LMU_Data still holds the previous session's last frame (not updated yet)",
+            );
+        }
+        match self.frozen {
+            None => {
+                self.frozen = Some(current);
+                Some(
+                    "LMU is not running (LMU_Data exists with frozen data, kept open by another program); waiting for new data",
+                )
+            }
+            Some(frozen) if frozen == current => Some(
+                "LMU is not running (LMU_Data still exists with frozen data, kept open by another program)",
+            ),
+            // The contents changed although no LMU process was found (lookup failed or a
+            // differently named executable): something is publishing, so attach.
+            Some(_) => None,
+        }
+    }
+
     /// One attach attempt. On success the first frame is copied immediately (no gate wait) so the
     /// structural checks run before anything is returned.
     fn try_connect(&mut self) -> Result<Option<RawSnapshot>, LmuError> {
@@ -698,6 +742,8 @@ impl LmuReader {
         let view = match SharedView::open(names.data_mapping) {
             Ok(Some(view)) => view,
             Ok(None) => {
+                // The section is gone, so a later one is new: no old frame can reappear in it.
+                self.frozen = None;
                 self.set_waiting(match lmu_pid {
                     None => "LMU is not running (LMU_Data does not exist)",
                     Some(_) => "LMU is running but LMU_Data does not exist yet (starting up?)",
@@ -707,20 +753,14 @@ impl LmuReader {
             Err(e) => return Err(self.connect_failed(e)),
         };
 
-        // A section kept alive by another program after LMU exited still holds the frozen frame we
-        // detached from: never present it as live (A-LMU-056), even when an LMU process exists
-        // again (it may be starting and not have published yet). Cleared by the first new frame.
-        if let Some(frozen) = self.frozen
-            && read_witness(&view).ok() == Some(frozen)
-        {
-            self.set_waiting(match lmu_pid {
-                None => {
-                    "LMU is not running (LMU_Data still exists with frozen data, kept open by another program)"
-                }
-                Some(_) => {
-                    "LMU is starting: LMU_Data still holds the previous session's last frame (not updated yet)"
-                }
-            });
+        // A section kept alive by another program after LMU exited still holds LMU's last frame:
+        // never present it as live (A-LMU-056). Without an LMU process the current contents are
+        // remembered as that frozen frame even if this reader never saw them change; they are
+        // delivered only once they change. With an LMU process the remembered frame is still
+        // refused (LMU may be starting and not have published yet), unless it carries no session
+        // time (then it equals a fresh, zero-filled section). Cleared by the first new frame.
+        if let Some(note) = self.frozen_frame_note(read_witness(&view).ok(), lmu_pid.is_some()) {
+            self.set_waiting(note);
             return Ok(None);
         }
 
@@ -773,6 +813,8 @@ impl LmuReader {
             connected_at: now,
             last_new_frame: now,
             last_poll: None,
+            // The attach itself copies (below).
+            last_poll_copy: Some(now),
             last_wake: Wake::Attach,
             audit: GateAudit::new(now),
             next_process_lookup: now,
@@ -953,19 +995,38 @@ impl LmuReader {
                     }
                 }
             }
-            conn.last_poll = Some(Instant::now());
-            conn.last_wake = Wake::Poll;
+            let now = Instant::now();
+            conn.last_poll = Some(now);
             self.stats.polls += 1;
+            // Research Â§5.4: LMU's publisher drops a frame when the SDK lock is busy, so a poll
+            // takes the lock (and copies) only when the lock-free witness changed, or at the slow
+            // keep-alive interval for changes the witness does not cover.
+            let current = read_witness(&conn.view).ok();
+            let last = self.processor.last_blocks().and_then(witness_of);
+            let unchanged = current.is_some() && current == last;
+            let keepalive_due = conn
+                .last_poll_copy
+                .is_none_or(|t| now.duration_since(t) >= POLL_KEEPALIVE);
+            if unchanged && !keepalive_due {
+                self.stats.polls_unchanged += 1;
+                return FrameWait::NotYet;
+            }
+            conn.last_poll_copy = Some(now);
+            conn.last_wake = Wake::Poll;
             return FrameWait::Ready;
         };
         if conn.consecutive_duplicates > 0 {
             // The gate fired but nothing changed: pause briefly before waiting again, in case the
-            // events stay signalled (their reset mode is UNVERIFIED, research §5.1).
+            // events stay signalled (their reset mode is UNVERIFIED, research Â§5.1).
             sleep(DUPLICATE_BACKOFF.min(remaining));
         }
         let started = Instant::now();
-        let data_timeout = remaining.min(gate_timeout);
-        match gate.wait(data_timeout.min(GATE_WITNESS_INTERVAL), data_timeout) {
+        // Only the Hold wait honours the caller's deadline. Once Hold has fired its signal is
+        // consumed, so the Data wait gets the full (bounded) gate timeout: cutting it short would
+        // lose the frame to the slower witness path and count it as a missed gate update. A call
+        // can therefore overrun its timeout by at most `gate_timeout` (â‰¤ 1 s).
+        let hold_timeout = remaining.min(gate_timeout).min(GATE_WITNESS_INTERVAL);
+        match gate.wait(hold_timeout, gate_timeout) {
             GateWait::Signaled => {
                 let now = Instant::now();
                 self.stats.gate_wakeups += 1;
@@ -1235,6 +1296,67 @@ mod tests {
         assert!(instant_after(Instant::now(), Duration::MAX) <= Instant::now());
     }
 
+    fn witnesses() -> (Witness, Witness) {
+        let track = crate::testutil::LayoutBuilder::on_track_frame();
+        let zero = vec![0u8; track.bytes().len()];
+        (
+            read_witness(track.bytes()).expect("track witness"),
+            read_witness(zero.as_slice()).expect("zero witness"),
+        )
+    }
+
+    #[test]
+    fn only_a_witness_with_session_time_identifies_a_frozen_frame() {
+        let (track, zero) = witnesses();
+        assert!(track.carries_time());
+        assert!(
+            !zero.carries_time(),
+            "a menu frame equals a fresh zero section"
+        );
+    }
+
+    #[test]
+    fn without_lmu_the_current_contents_are_frozen_until_they_change() {
+        let (track, zero) = witnesses();
+        let mut reader = LmuReader::new(ReaderConfig::default());
+        assert!(reader.frozen_frame_note(Some(track), false).is_some());
+        assert_eq!(reader.frozen, Some(track), "remembered on first sight");
+        assert!(reader.frozen_frame_note(Some(track), false).is_some());
+        assert!(
+            reader.frozen_frame_note(Some(zero), false).is_none(),
+            "changed: attach"
+        );
+        // Unreadable (section too small): attach so the structural checks report it.
+        let mut reader = LmuReader::new(ReaderConfig::default());
+        assert!(reader.frozen_frame_note(None, false).is_none());
+        // A frozen menu frame (no session time) still blocks while LMU is absent.
+        let mut reader = LmuReader::new(ReaderConfig::default());
+        reader.frozen = Some(zero);
+        assert!(reader.frozen_frame_note(Some(zero), false).is_some());
+    }
+
+    #[test]
+    fn with_lmu_running_only_a_frozen_frame_with_session_time_is_refused() {
+        let (track, zero) = witnesses();
+        let mut reader = LmuReader::new(ReaderConfig::default());
+        assert!(
+            reader.frozen_frame_note(Some(track), true).is_none(),
+            "nothing remembered"
+        );
+        assert_eq!(reader.frozen, None, "a running LMU's frame is not frozen");
+        reader.frozen = Some(track);
+        assert!(
+            reader
+                .frozen_frame_note(Some(track), true)
+                .is_some_and(|n| n.contains("starting"))
+        );
+        assert!(reader.frozen_frame_note(Some(zero), true).is_none());
+        // LMU quit from the main menu and was relaunched: the new zero section equals the
+        // remembered menu frame but must not block the running LMU.
+        reader.frozen = Some(zero);
+        assert!(reader.frozen_frame_note(Some(zero), true).is_none());
+    }
+
     #[test]
     fn throttle_limits_repeats() {
         let mut t = Throttle::default();
@@ -1331,7 +1453,13 @@ mod win32_tests {
         Ok(Some(std::process::id()))
     }
 
+    /// Opens a reader that finds "LMU" running (attaches and delivers the current frame at once).
     fn open(config: ReaderConfig) -> LmuReader {
+        LmuReader::open_with(config, lmu_is_this_process).expect("open")
+    }
+
+    /// Opens a reader that never finds an LMU process.
+    fn open_without_lmu(config: ReaderConfig) -> LmuReader {
         LmuReader::open_with(config, no_lmu).expect("open")
     }
 
@@ -1648,6 +1776,90 @@ mod win32_tests {
     }
 
     #[test]
+    fn polling_takes_the_lock_only_when_the_witness_changed() {
+        let fake = FakeLmu::new(
+            "reader-poll-witness",
+            LayoutBuilder::on_track_frame().bytes(),
+            false,
+            true,
+        );
+        let mut reader = open(config(&fake));
+        assert!(next(&mut reader).is_some());
+        let acquired = reader.stats().lock_acquired;
+
+        // Nothing changes for less than the keep-alive interval: polls, but no lock and no copy.
+        assert!(
+            reader
+                .next_snapshot(Duration::from_millis(300))
+                .expect("ok")
+                .is_none()
+        );
+        let stats = reader.stats();
+        assert!(stats.polls_unchanged >= 10, "{stats:?}");
+        assert_eq!(
+            stats.lock_acquired, acquired,
+            "no lock taken while unchanged"
+        );
+
+        fake.write(player_et_offset(), &126.0f64.to_le_bytes());
+        assert_eq!(next(&mut reader).and_then(|s| s.player_et()), Some(126.0));
+        assert_eq!(reader.stats().lock_acquired, acquired + 1);
+        assert_eq!(fake.busy(), 0);
+    }
+
+    #[test]
+    fn polling_copies_at_the_keepalive_interval_while_the_witness_is_unchanged() {
+        let fake = FakeLmu::new(
+            "reader-poll-keepalive",
+            LayoutBuilder::on_track_frame().bytes(),
+            false,
+            true,
+        );
+        let mut reader = open(config(&fake));
+        assert!(next(&mut reader).is_some());
+        let acquired = reader.stats().lock_acquired;
+        // Witness unchanged for one keep-alive interval plus a margin: exactly one keep-alive
+        // copy (it would pick up a change the witness does not cover; here it is a duplicate).
+        let _ = reader
+            .next_snapshot(POLL_KEEPALIVE + Duration::from_millis(300))
+            .expect("ok");
+        assert_eq!(reader.stats().lock_acquired, acquired + 1);
+        assert!(reader.stats().duplicate_frames >= 1);
+    }
+
+    #[test]
+    fn a_short_call_timeout_does_not_cut_the_data_wait_after_hold_fired() {
+        let fake = FakeLmu::new(
+            "reader-gate-short-call",
+            LayoutBuilder::on_track_frame().bytes(),
+            true,
+            true,
+        );
+        let mut reader = open(ReaderConfig {
+            gate_timeout: Duration::from_millis(500),
+            ..config(&fake)
+        });
+        assert!(next(&mut reader).is_some());
+
+        // LMU sets Hold, writes the frame, and sets Data a few ms later; the caller polls with a
+        // 2 ms timeout.
+        fake.write(player_et_offset(), &127.0f64.to_le_bytes());
+        fake.signal_hold();
+        let s = std::thread::scope(|scope| {
+            let consumer = scope.spawn(|| reader.next_snapshot(Duration::from_millis(2)));
+            std::thread::sleep(Duration::from_millis(15));
+            fake.signal_data();
+            consumer.join().expect("consumer thread")
+        })
+        .expect("ok")
+        .expect("frame delivered through the gate in the same call");
+        assert_eq!(s.player_et(), Some(127.0));
+        let stats = reader.stats();
+        assert_eq!(stats.gate_new_frames, 1, "{stats:?}");
+        assert_eq!(stats.gate_missed_updates, 0, "{stats:?}");
+    }
+
+    #[test]
     fn a_shifted_layout_stops_decoding() {
         let mut image = LayoutBuilder::on_track_frame();
         image.scoring_padding([0xAA, 0, 0, 0]);
@@ -1724,6 +1936,65 @@ mod win32_tests {
         assert!(reader.stats().disconnects >= 1);
     }
 
+    /// Opens a reader without an LMU process and lets the fake publish once, so the reader attaches
+    /// (data changed) and delivers that frame.
+    fn open_without_lmu_and_attach(fake: &FakeLmu, player_et: f64) -> LmuReader {
+        let mut reader = open_without_lmu(frozen_config(fake));
+        assert!(reader.pending.is_none(), "an unchanged section is not live");
+        fake.write(player_et_offset(), &player_et.to_le_bytes());
+        let s = next(&mut reader).expect("data changed: attached");
+        assert_eq!(s.player_et(), Some(player_et));
+        reader
+    }
+
+    #[test]
+    fn a_section_left_by_an_exited_lmu_is_not_live_for_a_fresh_reader() {
+        // LMU has exited but another program keeps LMU_Data mapped; this reader never saw LMU.
+        let fake = FakeLmu::new(
+            "reader-fresh-frozen",
+            LayoutBuilder::on_track_frame().bytes(),
+            true,
+            true,
+        );
+        let mut reader = open_without_lmu(frozen_config(&fake));
+        assert!(reader.pending.is_none(), "no first frame handed out");
+        assert!(
+            reader
+                .next_snapshot(Duration::from_millis(300))
+                .expect("ok")
+                .is_none()
+        );
+        assert_eq!(reader.state(), ReaderState::WaitingForLmu);
+        assert_eq!(reader.stats().connects, 0, "never attached");
+        assert_eq!(reader.stats().snapshots, 0);
+        assert!(
+            reader
+                .diagnostics()
+                .note
+                .is_some_and(|n| n.contains("frozen")),
+            "{:?}",
+            reader.diagnostics().note
+        );
+
+        // The section changes (something publishes): attach and deliver the new frame.
+        fake.write(player_et_offset(), &131.0f64.to_le_bytes());
+        let s = next(&mut reader).expect("fresh frame");
+        assert_eq!(s.player_et(), Some(131.0));
+        assert_eq!(reader.state(), ReaderState::Connected);
+    }
+
+    #[test]
+    fn a_running_lmu_with_an_existing_section_is_read_at_once() {
+        let fake = FakeLmu::new(
+            "reader-running-attach",
+            LayoutBuilder::on_track_frame().bytes(),
+            true,
+            true,
+        );
+        let mut reader = open(config(&fake));
+        assert_eq!(next(&mut reader).and_then(|s| s.player_et()), Some(120.0));
+    }
+
     #[test]
     fn frozen_data_without_lmu_detaches_and_is_not_presented_as_live() {
         let fake = FakeLmu::new(
@@ -1732,8 +2003,7 @@ mod win32_tests {
             true,
             true,
         );
-        let mut reader = open(frozen_config(&fake));
-        assert!(next(&mut reader).is_some());
+        let mut reader = open_without_lmu_and_attach(&fake, 129.0);
         detach_as_lmu_exited(&mut reader);
         assert!(
             reader
@@ -1759,8 +2029,7 @@ mod win32_tests {
             true,
             true,
         );
-        let mut reader = open(frozen_config(&fake));
-        assert!(next(&mut reader).is_some());
+        let mut reader = open_without_lmu_and_attach(&fake, 129.0);
         detach_as_lmu_exited(&mut reader);
         let connects = reader.stats().connects;
 

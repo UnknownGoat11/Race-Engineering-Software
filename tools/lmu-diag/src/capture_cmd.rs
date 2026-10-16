@@ -21,8 +21,13 @@ const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 const STATUS_EVERY: Duration = Duration::from_millis(500);
 
 /// Records for `duration` into `out`.
-pub(crate) fn run(duration: Duration, out: &Path, force: bool) -> Result<ExitCode, DiagError> {
-    let file = create_output(out, force)?;
+pub(crate) fn run(
+    duration: Duration,
+    out: &Path,
+    force: bool,
+    allow_in_git: bool,
+) -> Result<ExitCode, DiagError> {
+    let file = create_output(out, force, allow_in_git)?;
     eprintln!(
         "lmu-diag: WARNING {} will contain driver names, the player name and server names from LMU (PII). \
          Keep it private; do not commit it or share it publicly.",
@@ -71,17 +76,25 @@ pub(crate) fn run(duration: Duration, out: &Path, force: bool) -> Result<ExitCod
             next_progress += PROGRESS_EVERY;
             writer.flush()?;
             eprintln!(
-                "lmu-diag: {:>4.0} s / {} s | state {state} | {} frames",
+                "lmu-diag: {:>4.0} s / {} s | state {state} | {} frames | {} dropped",
                 started.elapsed().as_secs_f64(),
                 duration.as_secs(),
-                writer.frames()
+                writer.frames(),
+                worker.dropped_frames()
             );
         }
     }
-    worker.stop()?;
+    // Counted after the join: the reader thread may drop more until it stops.
+    let dropped = worker.stop()?;
     let frames = writer.frames();
     writer.finish()?;
-    println!("lmu-diag: wrote {frames} frames to {}", out.display());
+    println!("{}", summary_line(frames, dropped, out));
+    if dropped > 0 {
+        tracing::warn!(component = COMPONENT, dropped, "capture is incomplete");
+        eprintln!(
+            "lmu-diag: WARNING {dropped} frames were dropped (the writer fell behind); the capture has gaps (see the seq values)"
+        );
+    }
     if frames == 0 {
         eprintln!(
             "lmu-diag: no frames were captured (state {state}{}). Is LMU running and are you on track?",
@@ -90,4 +103,31 @@ pub(crate) fn run(duration: Duration, out: &Path, force: bool) -> Result<ExitCod
         return Ok(ExitCode::from(crate::EXIT_NOT_CHECKED));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The final report line: frames written and, when any were lost, how many were dropped.
+pub(crate) fn summary_line(frames: u64, dropped: u64, out: &Path) -> String {
+    if dropped == 0 {
+        format!("lmu-diag: wrote {frames} frames to {}", out.display())
+    } else {
+        format!(
+            "lmu-diag: wrote {frames} frames to {} ({dropped} frames DROPPED: incomplete)",
+            out.display()
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_summary_reports_dropped_frames() {
+        let out = Path::new("x.lmuraw");
+        assert_eq!(
+            summary_line(10, 0, out),
+            "lmu-diag: wrote 10 frames to x.lmuraw"
+        );
+        assert!(summary_line(10, 3, out).contains("3 frames DROPPED"));
+    }
 }

@@ -27,10 +27,36 @@ pub(crate) struct LiveArgs {
     pub(crate) duration: Option<Duration>,
     pub(crate) clear: bool,
     pub(crate) force: bool,
+    pub(crate) allow_in_git: bool,
 }
 
-/// Opens a new output file, refusing to overwrite unless `force`.
-pub(crate) fn create_output(path: &Path, force: bool) -> Result<File, DiagError> {
+/// The git working tree that would contain a file created at `path`, if any (its directory or an
+/// ancestor holds `.git`). `None` also when the directory does not exist (the open then fails).
+pub(crate) fn git_work_tree_of(path: &Path) -> Option<PathBuf> {
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let dir = dir.canonicalize().ok()?;
+    dir.ancestors()
+        .find(|d| d.join(".git").exists())
+        .map(Path::to_path_buf)
+}
+
+/// Opens a new output file, refusing to overwrite unless `force`, and refusing a location inside a
+/// git working tree unless `allow_in_git` (the files contain names: owner rule, keep recordings
+/// under `D:\RaceEngineeringData` and never commit them).
+pub(crate) fn create_output(
+    path: &Path,
+    force: bool,
+    allow_in_git: bool,
+) -> Result<File, DiagError> {
+    if !allow_in_git && let Some(tree) = git_work_tree_of(path) {
+        return Err(DiagError::InsideGitTree {
+            path: path.to_path_buf(),
+            tree,
+        });
+    }
     let mut options = OpenOptions::new();
     options.write(true);
     if force {
@@ -50,7 +76,9 @@ pub(crate) fn create_output(path: &Path, force: bool) -> Result<File, DiagError>
     })
 }
 
-/// One JSONL record: the decoded raw frame (scoring only when it changed, to keep the log small).
+/// One JSONL record: the decoded raw frame. Scoring is written when it changed (to keep the log
+/// small) and on the first frame after any dropped frame, so a scoring change carried by a dropped
+/// frame is never missing from the log.
 /// NaN / infinite values appear as `null` (JSON has no NaN).
 #[derive(Serialize)]
 struct LogLine<'a> {
@@ -67,30 +95,15 @@ struct LogLine<'a> {
     player: Option<&'a lmu_reader::PlayerTelemetry>,
     player_identity: lmu_reader::PlayerIdentity,
     scoring: Option<&'a lmu_reader::ScoringBlock>,
+    /// Frames dropped before this line since the log started (cumulative; the UI fell behind).
+    dropped_frames: u64,
 }
 
-struct JsonlLog {
-    path: PathBuf,
-    out: BufWriter<File>,
-    frames: u64,
-}
-
-impl JsonlLog {
-    fn create(path: &Path, force: bool) -> Result<Self, DiagError> {
-        let file = create_output(path, force)?;
-        eprintln!(
-            "lmu-diag: logging decoded frames to {} - the file contains driver, player and server names (PII); do not share it publicly.",
-            path.display()
-        );
-        Ok(Self {
-            path: path.to_path_buf(),
-            out: BufWriter::new(file),
-            frames: 0,
-        })
-    }
-
-    fn write(&mut self, s: &RawSnapshot) -> Result<(), DiagError> {
-        let line = LogLine {
+impl<'a> LogLine<'a> {
+    /// The record of `s`; `after_drop` forces the scoring block (a dropped frame may have carried
+    /// a scoring change); `dropped` is the cumulative dropped-frame count.
+    fn of(s: &'a RawSnapshot, after_drop: bool, dropped: u64) -> Self {
+        Self {
             seq: s.seq,
             capture_mono_ns: s.capture_mono_ns,
             connection_id: s.connection_id,
@@ -103,8 +116,48 @@ impl JsonlLog {
             telemetry_header: s.telemetry_header,
             player: s.player.as_ref(),
             player_identity: s.player_identity,
-            scoring: s.scoring_updated.then_some(&*s.scoring),
-        };
+            scoring: (s.scoring_updated || after_drop).then_some(&*s.scoring),
+            dropped_frames: dropped,
+        }
+    }
+}
+
+/// Whether frames were dropped between the previous logged frame and this one, whose
+/// `dropped_before` is given; `seen` is the count stamped on the previous logged frame.
+fn gap_before(seen: &mut u64, dropped_before: u64) -> bool {
+    let gap = dropped_before > *seen;
+    *seen = dropped_before;
+    gap
+}
+
+struct JsonlLog {
+    path: PathBuf,
+    out: BufWriter<File>,
+    frames: u64,
+    /// Dropped-frame count when the previous line was written.
+    dropped_seen: u64,
+}
+
+impl JsonlLog {
+    fn create(path: &Path, force: bool, allow_in_git: bool) -> Result<Self, DiagError> {
+        let file = create_output(path, force, allow_in_git)?;
+        eprintln!(
+            "lmu-diag: logging decoded frames to {} - the file contains driver, player and server names (PII); do not share it publicly.",
+            path.display()
+        );
+        Ok(Self {
+            path: path.to_path_buf(),
+            out: BufWriter::new(file),
+            frames: 0,
+            dropped_seen: 0,
+        })
+    }
+
+    /// Writes one frame; `dropped` is the count of frames dropped before it was sent
+    /// ([`crate::worker::Frame::dropped_before`]).
+    fn write(&mut self, s: &RawSnapshot, dropped: u64) -> Result<(), DiagError> {
+        let after_drop = gap_before(&mut self.dropped_seen, dropped);
+        let line = LogLine::of(s, after_drop, dropped);
         serde_json::to_writer(&mut self.out, &line)?;
         self.out
             .write_all(b"\n")
@@ -131,7 +184,7 @@ pub(crate) fn run(args: &LiveArgs) -> Result<ExitCode, DiagError> {
     let mut log = args
         .log
         .as_deref()
-        .map(|p| JsonlLog::create(p, args.force))
+        .map(|p| JsonlLog::create(p, args.force, args.allow_in_git))
         .transpose()?;
     let config = ReaderConfig::default();
     let clock = config.clock;
@@ -148,7 +201,7 @@ pub(crate) fn run(args: &LiveArgs) -> Result<ExitCode, DiagError> {
         match worker.recv_timeout(timeout) {
             Ok(Msg::Frame(frame)) => {
                 if let Some(log) = log.as_mut() {
-                    log.write(&frame.snapshot)?;
+                    log.write(&frame.snapshot, frame.dropped_before)?;
                 }
                 latest = Some(frame.snapshot);
             }
@@ -191,14 +244,74 @@ pub(crate) fn run(args: &LiveArgs) -> Result<ExitCode, DiagError> {
             break;
         }
     }
-    worker.stop()?;
+    let dropped = worker.stop()?;
     if let Some(mut log) = log {
         log.flush()?;
         println!(
-            "lmu-diag: wrote {} frames to {}",
-            log.frames,
-            log.path.display()
+            "{}",
+            crate::capture_cmd::summary_line(log.frames, dropped, &log.path)
         );
+        if dropped > 0 {
+            tracing::warn!(component = COMPONENT, dropped, "JSONL log is incomplete");
+            eprintln!(
+                "lmu-diag: WARNING {dropped} frames were dropped (the log writer fell behind); the log has gaps (see the seq values)"
+            );
+        }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lmu_reader::testutil::LayoutBuilder;
+
+    fn json(line: &LogLine<'_>) -> serde_json::Value {
+        serde_json::to_value(line).expect("json")
+    }
+
+    #[test]
+    fn outputs_inside_a_git_working_tree_are_refused() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("refused-test-output.jsonl");
+        assert!(
+            git_work_tree_of(&path).is_some(),
+            "the crate is in the repo"
+        );
+        let err = create_output(&path, false, false).expect_err("refused");
+        assert!(matches!(err, DiagError::InsideGitTree { .. }), "{err}");
+        assert!(err.to_string().contains("--allow-in-git"));
+        assert!(!path.exists(), "nothing was created");
+        assert!(
+            git_work_tree_of(Path::new("Z:\\no\\such\\dir\\x.lmuraw")).is_none(),
+            "a missing directory is left to the open to report"
+        );
+    }
+
+    #[test]
+    fn a_gap_is_reported_once_on_the_frame_after_it() {
+        let mut seen = 0;
+        assert!(!gap_before(&mut seen, 0));
+        assert!(
+            gap_before(&mut seen, 2),
+            "two frames dropped before this one"
+        );
+        assert!(!gap_before(&mut seen, 2), "no new drop");
+        assert!(gap_before(&mut seen, 3));
+    }
+
+    #[test]
+    fn scoring_is_logged_on_the_first_frame_after_a_drop() {
+        let mut s = crate::view::tests::snapshot_of(&LayoutBuilder::on_track_frame());
+        s.scoring_updated = false;
+        let quiet = json(&LogLine::of(&s, false, 0));
+        assert!(quiet["scoring"].is_null(), "unchanged scoring is omitted");
+        assert_eq!(quiet["dropped_frames"], 0);
+
+        let after_drop = json(&LogLine::of(&s, true, 4));
+        assert!(
+            after_drop["scoring"].is_object(),
+            "a dropped frame may have carried a scoring change"
+        );
+        assert_eq!(after_drop["dropped_frames"], 4);
+    }
 }

@@ -39,24 +39,36 @@ Add `--force` to overwrite an existing output file. Diagnostics logs go to stder
 (`--log-level info` or `--log-level lmu_reader=debug` for more).
 
 **Privacy:** `--log` JSONL files and `.lmuraw` captures contain driver names, your player name and
-server names. Keep them private. Do not commit them and do not post them publicly.
+server names. Keep them private. Do not commit them and do not post them publicly. Write them under
+`D:\RaceEngineeringData` (`live --log` and `capture --out` refuse a path inside a git working tree
+unless `--allow-in-git` is given). Frames dropped because the writer fell behind are counted: the
+progress and final lines report them, and every JSONL line carries the cumulative `dropped_frames`.
 
 ## Gate-1 validation session
 
 Do every step with LMU's settings untouched. If a step seems to need a settings change, note it
 instead; the owner decides.
 
+Every output file of this session goes to `D:\RaceEngineeringData\captures\gate1`, never into the
+repository (the files contain names; see **Privacy**). Create the folder once, in the PowerShell
+window you run the steps from:
+
+```powershell
+$gate1 = 'D:\RaceEngineeringData\captures\gate1'
+New-Item -ItemType Directory -Force $gate1 | Out-Null
+```
+
 1. **Start LMU** normally from Steam and wait for the main menu.
 2. **First check, in the menu.** In PowerShell:
    ```powershell
-   .\target\release\lmu-diag.exe compat | Tee-Object gate1-compat-menu.txt
+   .\target\release\lmu-diag.exe compat | Tee-Object "$gate1\gate1-compat-menu.txt"
    ```
    Expected: `state CONNECTED` (or `STALLED` if LMU publishes nothing in menus), `sync FRAME_GATE`,
    `lock SDK_LOCK`, and no `FAIL` lines. Write down the `gameVersion` value.
 3. **Get on track.** Start a Practice session with a hybrid Hypercar. Leave the garage.
 4. **Run the live view** in a second window (LMU windowed or borderless helps):
    ```powershell
-   .\target\release\lmu-diag.exe live --log gate1-live.jsonl
+   .\target\release\lmu-diag.exe live --log "$gate1\gate1-live.jsonl"
    ```
 5. **Drive 3 or more laps**, including one pit-lane entry and exit. Check these lines:
    - `LMU`: `CONNECTED`, `sync FRAME_GATE`, `lock SDK_LOCK`.
@@ -92,7 +104,7 @@ instead; the owner decides.
    Start LMU again: the view reconnects by itself.
 7. **Capture** 2 minutes of driving, including a pit entry and exit:
    ```powershell
-   .\target\release\lmu-diag.exe capture --seconds 120 --out gate1-hypercar.lmuraw
+   .\target\release\lmu-diag.exe capture --seconds 120 --out "$gate1\gate1-hypercar.lmuraw"
    ```
 8. **Repeat** steps 3-7 with an LMGT3 and an LMP2 car: virtual energy, SoC and hybrid fields differ
    by class (A-LMU-012/013/014).
@@ -101,7 +113,8 @@ instead; the owner decides.
    cargo test -p lmu-reader --test live_mapping -- --ignored --nocapture
    ```
 
-Hand over `gate1-compat-menu.txt`, your notes, the JSONL and the `.lmuraw` files (privately). The
+Hand over the files in `D:\RaceEngineeringData\captures\gate1` (`gate1-compat-menu.txt`, the JSONL
+and the `.lmuraw` files) and your notes, privately. The
 lead uses them to record the verified `gameVersion` in `crates/lmu-reader/src/compat.rs`
 (`VERIFIED_GAME_VERSIONS`) and to update the A-LMU entries in `docs/ASSUMPTIONS.md`.
 
@@ -121,7 +134,9 @@ lead uses them to record the verified `gameVersion` in `crates/lmu-reader/src/co
 - **JSONL (`--log`)**: one JSON object per decoded frame: `seq`, `capture_mono_ns`,
   `telemetry_updated`, `scoring_updated`, `support`, `version_verified`, `source`, `generic`,
   `telemetry_header`, `player` (the raw `TelemInfoV01` incl. wheels; `null` when the player's `mID`
-  could not be verified), `player_identity`, and `scoring` (only on frames where it changed).
+  could not be verified), `player_identity`, `scoring` (only on frames where it changed, and on
+  the first frame after any dropped frame), and `dropped_frames` (cumulative count of frames
+  dropped before this line; a jump means the log has a gap).
   Values are raw LMU units. NaN and infinite values appear as `null` (JSON has no NaN).
 - **`.lmuraw` (`capture`)**: a length-prefixed binary file of the raw blocks exactly as copied
   (all active telemetry slots, not only the player's), with timestamps, connection ids and lock

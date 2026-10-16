@@ -876,6 +876,22 @@ mod tests {
 
     /// Recomputes `LAYOUT_FINGERPRINT` from the probe JSON exactly as `codegen/gen_layout.py` does.
     #[test]
+    fn the_test_binary_belongs_to_this_checkout() {
+        // The probe tests read the layout JSON relative to the compile-time manifest dir. A test
+        // binary left over from a moved or copied workspace would read (or fail to read) another
+        // checkout's JSON; `cargo test` runs tests from the package root, so compare the two.
+        let compiled = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let running = std::env::current_dir().expect("current dir");
+        assert_eq!(
+            compiled.canonicalize().ok(),
+            running.canonicalize().ok(),
+            "stale test binary: built for {} but run from {}; rebuild lmu-reader (touch src/lib.rs)",
+            compiled.display(),
+            running.display()
+        );
+    }
+
+    #[test]
     fn layout_fingerprint_matches_the_probe() {
         const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
         const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;

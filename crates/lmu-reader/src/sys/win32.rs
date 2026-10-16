@@ -646,6 +646,20 @@ pub(crate) mod fake {
             }
         }
 
+        /// Sets only the Hold event (the first half of a publish).
+        pub(crate) fn signal_hold(&self) {
+            let (hold, _) = self.gate.as_ref().expect("fake has no gate");
+            // SAFETY: valid event handle created by this fake.
+            unsafe { SetEvent(hold.0) }.expect("SetEvent hold");
+        }
+
+        /// Sets only the Data event (the second half of a publish).
+        pub(crate) fn signal_data(&self) {
+            let (_, data) = self.gate.as_ref().expect("fake has no gate");
+            // SAFETY: valid event handle created by this fake.
+            unsafe { SetEvent(data.0) }.expect("SetEvent data");
+        }
+
         fn word(&self, field: Field) -> &AtomicI32 {
             let (_, view, _) = self.lock.as_ref().expect("fake has no lock");
             // SAFETY: our own page-sized, page-aligned read-write view; every user accesses the

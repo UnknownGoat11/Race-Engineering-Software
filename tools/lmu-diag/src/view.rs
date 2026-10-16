@@ -658,7 +658,7 @@ fn aids_line(t: &RawTelemetry) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use lmu_reader::offsets::{telem_info, telem_wheel};
     use lmu_reader::testutil::LayoutBuilder;
@@ -666,7 +666,8 @@ mod tests {
         CopyPlan, FrameMeta, FrameOutcome, FrameProcessor, FrameSource, RawBlocks, ReaderStats,
     };
 
-    fn snapshot_of(b: &LayoutBuilder) -> RawSnapshot {
+    /// Decodes the frame  into a snapshot (also used by other modules' tests).
+    pub(crate) fn snapshot_of(b: &LayoutBuilder) -> RawSnapshot {
         let mut blocks = RawBlocks::new();
         lmu_reader::blocks::copy_frame(b.bytes(), CopyPlan::default(), &mut blocks).expect("copy");
         let meta = FrameMeta {

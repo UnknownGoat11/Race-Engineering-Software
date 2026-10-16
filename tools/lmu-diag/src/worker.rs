@@ -7,7 +7,7 @@
 //! process never exits while the reader holds LMU's lock.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError, sync_channel};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -34,6 +34,10 @@ pub(crate) struct Frame {
     pub(crate) snapshot: RawSnapshot,
     /// The present raw blocks behind it, trimmed (only when requested, for captures).
     pub(crate) raw: Option<OwnedBlocks>,
+    /// Frames dropped before this one was sent (cumulative, stamped by the reader thread at send
+    /// time). A receiver that sees this grow knows a gap lies directly before this frame; reading
+    /// [`Worker::dropped_frames`] at receive time instead would blame an earlier queued frame.
+    pub(crate) dropped_before: u64,
 }
 
 /// Periodic reader status.
@@ -59,6 +63,7 @@ pub(crate) struct Worker {
     rx: Receiver<Msg>,
     stop: Arc<AtomicBool>,
     raw_in_flight: Arc<AtomicUsize>,
+    dropped_frames: Arc<AtomicU64>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -74,10 +79,12 @@ impl Worker {
         let (tx, rx) = sync_channel(CHANNEL_CAPACITY);
         let stop = Arc::new(AtomicBool::new(false));
         let raw_in_flight = Arc::new(AtomicUsize::new(0));
+        let dropped_frames = Arc::new(AtomicU64::new(0));
         let ctx = ThreadCtx {
             tx,
             stop: Arc::clone(&stop),
             raw_in_flight: Arc::clone(&raw_in_flight),
+            dropped_frames: Arc::clone(&dropped_frames),
             keep_raw,
             status_every,
         };
@@ -94,6 +101,7 @@ impl Worker {
             rx,
             stop,
             raw_in_flight,
+            dropped_frames,
             handle: Some(handle),
         })
     }
@@ -111,9 +119,17 @@ impl Worker {
         Ok(msg)
     }
 
-    /// Stops the thread and waits for it.
-    pub(crate) fn stop(mut self) -> Result<(), DiagError> {
-        self.join()
+    /// New frames dropped so far because the channel or the raw byte budget was full (exact,
+    /// also after [`Worker::stop`]). A frame received after this value grew was sent after the
+    /// drop (the channel orders them).
+    pub(crate) fn dropped_frames(&self) -> u64 {
+        self.dropped_frames.load(Ordering::SeqCst)
+    }
+
+    /// Stops the thread, waits for it and returns the final [`Worker::dropped_frames`] count.
+    pub(crate) fn stop(mut self) -> Result<u64, DiagError> {
+        self.join()?;
+        Ok(self.dropped_frames())
     }
 
     fn join(&mut self) -> Result<(), DiagError> {
@@ -142,6 +158,7 @@ struct ThreadCtx {
     tx: SyncSender<Msg>,
     stop: Arc<AtomicBool>,
     raw_in_flight: Arc<AtomicUsize>,
+    dropped_frames: Arc<AtomicU64>,
     keep_raw: bool,
     status_every: Duration,
 }
@@ -182,9 +199,11 @@ fn reserve(in_flight: &AtomicUsize, bytes: usize) -> bool {
 }
 
 /// Sends a frame, accounting its raw bytes against the budget.
-fn send_frame(ctx: &ThreadCtx, frame: Frame, dropped: &mut u64) -> bool {
+fn send_frame(ctx: &ThreadCtx, mut frame: Frame, dropped: &mut u64) -> bool {
+    frame.dropped_before = ctx.dropped_frames.load(Ordering::SeqCst);
     let bytes = frame.raw.as_ref().map_or(0, OwnedBlocks::byte_len);
     if !reserve(&ctx.raw_in_flight, bytes) {
+        ctx.dropped_frames.fetch_add(1, Ordering::SeqCst);
         *dropped += 1;
         return true;
     }
@@ -192,6 +211,7 @@ fn send_frame(ctx: &ThreadCtx, frame: Frame, dropped: &mut u64) -> bool {
         Ok(()) => true,
         Err(TrySendError::Full(_)) => {
             ctx.raw_in_flight.fetch_sub(bytes, Ordering::SeqCst);
+            ctx.dropped_frames.fetch_add(1, Ordering::SeqCst);
             *dropped += 1;
             true
         }
@@ -212,7 +232,12 @@ fn run(mut reader: LmuReader, ctx: &ThreadCtx) {
                 } else {
                     None
                 };
-                send_frame(ctx, Frame { snapshot, raw }, &mut dropped)
+                let frame = Frame {
+                    snapshot,
+                    raw,
+                    dropped_before: 0,
+                };
+                send_frame(ctx, frame, &mut dropped)
             }
             Ok(None) => true,
             Err(e) => {
@@ -288,5 +313,39 @@ mod tests {
         assert!(reserve(&in_flight, 10));
         assert_eq!(in_flight.load(Ordering::SeqCst), MAX_RAW_BYTES_IN_FLIGHT);
         assert!(!reserve(&in_flight, usize::MAX), "no overflow");
+    }
+
+    #[test]
+    fn frames_carry_the_drop_count_at_send_time() {
+        use lmu_reader::testutil::LayoutBuilder;
+        let frame = || Frame {
+            snapshot: crate::view::tests::snapshot_of(&LayoutBuilder::on_track_frame()),
+            raw: None,
+            dropped_before: 0,
+        };
+        let (tx, rx) = sync_channel(1);
+        let ctx = ThreadCtx {
+            tx,
+            stop: Arc::new(AtomicBool::new(false)),
+            raw_in_flight: Arc::new(AtomicUsize::new(0)),
+            dropped_frames: Arc::new(AtomicU64::new(0)),
+            keep_raw: false,
+            status_every: Duration::from_millis(10),
+        };
+        let mut dropped = 0;
+        assert!(send_frame(&ctx, frame(), &mut dropped)); // queued: A
+        assert!(send_frame(&ctx, frame(), &mut dropped)); // channel full: B dropped
+        assert_eq!(dropped, 1);
+        let Ok(Msg::Frame(a)) = rx.try_recv() else {
+            panic!("frame A")
+        };
+        assert!(send_frame(&ctx, frame(), &mut dropped)); // C, sent after the drop
+        let Ok(Msg::Frame(c)) = rx.try_recv() else {
+            panic!("frame C")
+        };
+        // A was queued before the drop although it is received after it: no gap before A.
+        assert_eq!(a.dropped_before, 0);
+        assert_eq!(c.dropped_before, 1, "the gap lies directly before C");
+        assert_eq!(ctx.dropped_frames.load(Ordering::SeqCst), 1);
     }
 }

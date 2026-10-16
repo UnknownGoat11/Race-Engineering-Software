@@ -200,6 +200,9 @@ pub struct ReaderStats {
     pub object_upgrades: u64,
     /// Polls in fallback mode (no frame gate).
     pub polls: u64,
+    /// Polls that skipped the copy (and the SDK lock) because the lock-free witness was unchanged
+    /// and the keep-alive copy was not due ([`crate::reader::POLL_KEEPALIVE`]).
+    pub polls_unchanged: u64,
     /// Frames copied out of `LMU_Data`.
     pub copies: u64,
     /// SDK lock acquisitions.

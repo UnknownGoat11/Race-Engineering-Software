@@ -8,6 +8,10 @@ dist/
 /apps/desktop/src-tauri/target
 /apps/desktop/src-tauri/gen/schemas
 *.lmurec
+# lmu-diag recordings and logs contain driver/player/server names: never commit them.
+*.lmuraw
+*.jsonl
+/gate1-*
 *.pdb
 tools/layout-probe/*.exe
 tools/layout-probe/*.obj

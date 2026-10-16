@@ -85,6 +85,9 @@ enum Command {
         /// Overwrite an existing log file.
         #[arg(long)]
         force: bool,
+        /// Allow the log inside a git working tree (refused by default: it contains names).
+        #[arg(long)]
+        allow_in_git: bool,
     },
     /// Record the raw copied blocks and timestamps to a `.lmuraw` file (contains driver names: PII).
     Capture {
@@ -97,6 +100,9 @@ enum Command {
         /// Overwrite an existing file.
         #[arg(long)]
         force: bool,
+        /// Allow the output inside a git working tree (refused by default: it contains names).
+        #[arg(long)]
+        allow_in_git: bool,
     },
 }
 
@@ -127,6 +133,17 @@ pub(crate) enum DiagError {
     /// Refusing to overwrite an existing file.
     #[error("{0} already exists; pass --force to overwrite it")]
     Exists(PathBuf),
+    /// Refusing to write a recording into a git working tree (it contains names).
+    #[error(
+        "{path} is inside the git working tree {tree}; recordings contain names and must not be committed. \
+         Write it under D:\\RaceEngineeringData instead, or pass --allow-in-git"
+    )]
+    InsideGitTree {
+        /// The requested output file.
+        path: PathBuf,
+        /// The working tree that contains it.
+        tree: PathBuf,
+    },
     /// The reader thread could not be started or stopped unexpectedly.
     #[error("reader thread: {0}")]
     Worker(String),
@@ -162,18 +179,21 @@ fn main() -> ExitCode {
             seconds,
             no_clear,
             force,
+            allow_in_git,
         } => live::run(&live::LiveArgs {
             log,
             refresh: Duration::from_millis(refresh_ms),
             duration: seconds.map(Duration::from_secs),
             clear: !no_clear,
             force,
+            allow_in_git,
         }),
         Command::Capture {
             seconds,
             out,
             force,
-        } => capture_cmd::run(Duration::from_secs(seconds), &out, force),
+            allow_in_git,
+        } => capture_cmd::run(Duration::from_secs(seconds), &out, force, allow_in_git),
     };
     match result {
         Ok(code) => code,

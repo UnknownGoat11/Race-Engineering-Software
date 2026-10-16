@@ -646,6 +646,16 @@ pub(crate) struct Witness {
     player_et_bits: Option<u64>,
 }
 
+impl Witness {
+    /// Whether the witness identifies a moment of a loaded session (a player slot, or a positive
+    /// scoring ET). A menu frame with no session (ET 0, no vehicles, empty header) is identical to
+    /// the zero-filled section a freshly started LMU creates, so it cannot tell an old frame from a
+    /// new one.
+    pub(crate) fn carries_time(&self) -> bool {
+        self.player_et_bits.is_some() || f64::from_bits(self.scoring_et_bits) > 0.0
+    }
+}
+
 /// Reads the witness values directly from the source.
 pub(crate) fn read_witness<S: ByteSource + ?Sized>(src: &S) -> Result<Witness, OutOfBounds> {
     let mut et = [0u8; 8];
