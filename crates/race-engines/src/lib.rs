@@ -15,9 +15,10 @@
 //! (rolling consumption, confidence, reserve, fuel to finish), [`stint`] (stint tracking and table) and
 //! [`publish`] (writes engine outputs into the registry's calculated channels), [`tyre`] (pressures,
 //! temperatures, deltas, balances, rise rate), [`brake`] (temperatures, trend, distribution, bias),
-//! [`energy`] (virtual energy, SoC, deployment / harvest / regen per lap) and [`alert`] (rule-based alerts
+//! [`energy`] (virtual energy, SoC, deployment / harvest / regen per lap), [`aids`] (TC / ABS duty cycle per lap) and [`alert`] (rule-based alerts
 //! with hysteresis, minimum duration and cooldown).
 
+pub mod aids;
 pub mod alert;
 pub mod brake;
 pub mod common;

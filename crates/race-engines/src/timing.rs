@@ -16,6 +16,12 @@
 //! are kept in the history but never become bests or references. A counter jump (missed laps, rejoin) or an
 //! elapsed-time regression abandons the lap in progress instead of completing it.
 //!
+//! # Discontinuities (DEFERRED 19)
+//! LMU can move the car into the garage in one frame and increment the lap counter on that very sample, so
+//! the lap ends without a pit flag (the boundary sample belongs to the next lap). The normalizer publishes
+//! such jumps in `source.discontinuity`; a lap during which, or at whose end, the car's position or time
+//! base jumped carries [`LapFlags::discontinuity`] and is never a best, a best sector or a reference.
+//!
 //! # Sectors (spec §16)
 //! The sector model is dynamic: either the source sector index (LMU reports 3, the count is learned from
 //! the indices seen) or explicit lap-distance boundaries from the track configuration (any count up to
@@ -30,6 +36,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
+use telemetry_model::enums::CarDiscontinuity;
 use telemetry_model::{TelemetryFrame, ch};
 use thiserror::Error;
 use tracing::{debug, warn};
@@ -137,6 +144,8 @@ pub struct TimingSample {
     pub in_pit_lane: Option<bool>,
     /// Official last lap time from scoring (s), adopted when it matches the computed time.
     pub official_last_lap_s: Option<f64>,
+    /// Discontinuity of the car's state on this sample (`source.discontinuity`); `None` when unknown.
+    pub discontinuity: Option<CarDiscontinuity>,
 }
 
 impl TimingSample {
@@ -167,6 +176,9 @@ impl TimingSample {
             lap_invalidated: frame_bool(frame, ch::LAP_INVALID),
             in_pit_lane: frame_bool(frame, ch::IN_PIT_LANE),
             official_last_lap_s: frame_f64(frame, ch::LAST_LAP_TIME),
+            discontinuity: frame_int(frame, ch::SRC_DISCONTINUITY)
+                .and_then(|v| u8::try_from(v).ok())
+                .and_then(CarDiscontinuity::from_code),
         })
     }
 }
@@ -293,6 +305,10 @@ pub struct LapFlags {
     pub end_evidence: TransitionEvidence,
     /// Imported from a recording.
     pub imported: bool,
+    /// The car's position or time base jumped during the lap or on its boundary sample (garage teleport,
+    /// teleport ET step-back, realtime entry; `source.discontinuity`): not a lap driven over the line.
+    #[serde(default)]
+    pub discontinuity: bool,
 }
 
 /// One completed lap.
@@ -347,6 +363,7 @@ impl LapRecord {
             && !self.flags.pit_in
             && !self.flags.pit_out
             && !self.flags.before_line
+            && !self.flags.discontinuity
     }
 
     /// The lap time as a metric whose provenance follows its source.
@@ -620,6 +637,8 @@ struct CurrentLap {
     pit_at_start: Option<bool>,
     outside_pit_seen: bool,
     pit_in: bool,
+    /// A discontinuity was seen on one of the lap's samples (or its boundary).
+    discontinuity: bool,
 }
 
 /// Cached bests over compatible laps.
@@ -899,7 +918,19 @@ impl TimingEngine {
             }
         };
 
+        let broken = s
+            .discontinuity
+            .is_some_and(CarDiscontinuity::breaks_continuity);
         if transition {
+            if broken && let Some(cur) = self.current.as_mut() {
+                // The lap ends on a jump (DEFERRED 19): it was not completed over the line.
+                debug!(
+                    component = COMPONENT,
+                    lap = cur.id.0,
+                    "lap ended on a discontinuity: excluded from bests and references"
+                );
+                cur.discontinuity = true;
+            }
             let recent_wrap = self
                 .last_wrap_et_s
                 .is_some_and(|w| (s.et_s - w).abs() <= CONFIRMATION_WINDOW_S);
@@ -940,6 +971,11 @@ impl TimingEngine {
             if self.current.is_none() {
                 self.begin_lap(s, None);
             }
+        }
+
+        if broken && let Some(cur) = self.current.as_mut() {
+            // A lap started by, or containing, a jump is not a lap driven over the line either.
+            cur.discontinuity = true;
         }
 
         // After the transition: an official time arriving with the line crossing belongs to the lap that
@@ -1199,6 +1235,7 @@ impl TimingEngine {
             pit_at_start: None,
             outside_pit_seen: false,
             pit_in: false,
+            discontinuity: false,
         };
         if !joined {
             lap.trace.push(TracePoint {
@@ -1283,6 +1320,7 @@ impl TimingEngine {
                 start_evidence: cur.start_evidence,
                 end_evidence: boundary.evidence,
                 imported: false,
+                discontinuity: cur.discontinuity,
             },
             official_mismatch_s: None,
             trace_complete,

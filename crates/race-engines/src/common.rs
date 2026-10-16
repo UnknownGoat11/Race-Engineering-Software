@@ -87,6 +87,11 @@ pub mod formula {
     pub const PIT_SPEED_INFERENCE: &str = "pit_stop_inferred_from_speed";
     /// Pit state from LMU pit flags.
     pub const PIT_STATE_LMU: &str = "pit_state_from_lmu_flags";
+    /// Most important flag by priority: red, chequered, full-course yellow, blue, local yellow, green
+    /// (`race::FlagState::summary`).
+    pub const RACE_FLAG_SUMMARY: &str = "race_flag_summary_priority";
+    /// Formation lap: game phase formation or the player's individual phase formation.
+    pub const FORMATION: &str = "formation_from_game_or_individual_phase";
     /// Projection of a world position onto the circuit polyline.
     pub const TRACK_PROJECTION: &str = "track_projection_nearest_segment";
 }

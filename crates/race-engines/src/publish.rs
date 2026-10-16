@@ -12,8 +12,9 @@
 //!   [`PublishReport::errors`], logged at debug level only (this runs at the frame rate);
 //! - `app.calculation_engine_version` carries [`CALCULATION_ENGINE_VERSION`].
 //!
-//! Engines whose outputs are not passed (`None`) get all their channels written `Unavailable`. Energy (VE),
-//! tyre, brake and alert channels belong to the other engines and are not touched here.
+//! Engines whose outputs are not passed (`None`) get all their channels written `Unavailable`. Energy (VE)
+//! channels are written by [`crate::energy::publish_energy`]; tyre, brake, track, race-classification, flag
+//! and driver-aid channels by [`extended::publish_extended`].
 
 use telemetry_model::frame::FrameError;
 use telemetry_model::registry;
@@ -29,6 +30,9 @@ use crate::fuel::FuelEstimate;
 use crate::race::RaceSnapshot;
 use crate::stint::StintSnapshot;
 use crate::timing::TimingSnapshot;
+
+pub mod extended;
+pub use extended::{EXTENDED_CHANNELS, ExtendedOutputs, publish_extended};
 
 /// Tracing component name.
 const COMPONENT: &str = "race_engines::publish";

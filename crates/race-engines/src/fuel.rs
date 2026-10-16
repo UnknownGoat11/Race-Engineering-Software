@@ -344,7 +344,10 @@ impl FuelLapInfo {
             lap_time_s: record.time_s,
             complete: record.time_trusted()
                 && !record.flags.joined_mid_lap
-                && !record.flags.before_line,
+                && !record.flags.before_line
+                // A lap whose position or time base jumped (garage teleport, DEFERRED 19) never measured
+                // a full lap of consumption.
+                && !record.flags.discontinuity,
             pit_in: record.flags.pit_in,
             pit_out: record.flags.pit_out,
             formation,

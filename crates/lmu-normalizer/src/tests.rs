@@ -9,7 +9,7 @@ use lmu_reader::{
     TelemetryHeader, TelemetrySlots,
 };
 use telemetry_model::channel::{Availability, Source};
-use telemetry_model::enums::SessionType;
+use telemetry_model::enums::{CarDiscontinuity, SessionType};
 use telemetry_model::events::SessionEvent;
 use telemetry_model::registry::{self, Wheel};
 use telemetry_model::{ChannelId, Quality, Value, ch};
@@ -1351,6 +1351,10 @@ fn realtime_entry_resets_rate_guards() {
         rejected(&out)
     );
     assert_eq!(n.stats().realtime_entries, 1);
+    assert_eq!(
+        f(&out, ch::SRC_DISCONTINUITY),
+        Some(f64::from(CarDiscontinuity::RealtimeEntry.code()))
+    );
 }
 
 #[test]
@@ -1983,10 +1987,19 @@ fn session_end_rewind_resets_the_time_base_without_a_restart_event() {
     );
     let stats = n.stats();
     assert_eq!((stats.et_regressions, stats.session_end_rewinds), (1, 1));
+    assert_eq!(
+        f(&rewound, ch::SRC_DISCONTINUITY),
+        Some(f64::from(CarDiscontinuity::SessionEndRewind.code())),
+        "the rewind is published on the rewound sample"
+    );
     // The next sample continues from the rewound ET: no further regression.
     fx.advance(0.02);
     let next = fx.step(&mut n);
     assert_eq!(next.disposition, TelemetryDisposition::NewSample);
+    assert_eq!(
+        f(&next, ch::SRC_DISCONTINUITY),
+        Some(f64::from(CarDiscontinuity::None.code()))
+    );
     assert_eq!(n.stats().et_regressions, 1);
 }
 
@@ -2107,6 +2120,24 @@ fn real_pitstop1_garage_return_step_back_after_the_jump_is_not_a_restart() {
     assert_eq!(stats.teleports, 1, "the jump is counted once");
     assert_eq!(stats.teleport_et_step_backs, 1);
     assert_eq!(stats.et_regressions, 1);
+    // DEFERRED 19: source.discontinuity reports the jump on its own sample and the dropped step-back on the
+    // next published one; ordinary samples report none (0), never "no data".
+    let codes: Vec<Option<f64>> = outs
+        .iter()
+        .filter(|o| o.frame.is_some())
+        .map(|o| f(o, ch::SRC_DISCONTINUITY))
+        .collect();
+    let code = |k: CarDiscontinuity| Some(f64::from(k.code()));
+    assert_eq!(
+        codes,
+        [
+            code(CarDiscontinuity::None),
+            code(CarDiscontinuity::None),
+            code(CarDiscontinuity::Teleport),
+            code(CarDiscontinuity::TeleportStepBack),
+            code(CarDiscontinuity::None),
+        ]
+    );
 
     // The genuine new session of the same capture (ET 325.020 -> 0.000) is still a restart.
     set_pit_sample(&mut fx, (325.020, 19.17, 0.0));

@@ -14,5 +14,9 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+# The writer-coverage test (tests/channel_writers.rs) checks the normalizer's calculated channels too.
+lmu-normalizer.workspace = true
+
 [lints]
 workspace = true

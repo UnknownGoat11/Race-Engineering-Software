@@ -209,6 +209,18 @@ const MAX_WHEEL_SURFACE_SPEED_MPS: f64 = 2.0 * MAX_SPEED_MPS;
 const MAX_WHEEL_ROT_RADPS: f64 = MAX_WHEEL_SURFACE_SPEED_MPS / MIN_TYRE_RADIUS_M;
 /// Wind speed bound (m/s).
 const MAX_WIND_MPS: f64 = 60.0;
+/// Largest threshold-band code of the tyre and brake engines (0 low, 1 in range, 2 high).
+const MAX_BAND_CODE: f64 = 2.0;
+/// Brake temperature difference bound (°C): the largest difference of two temperatures that each pass their
+/// own range; the inputs are validated individually.
+const BRAKE_TEMP_SPREAD_MAX_C: f64 = BRAKE_TEMP_MAX_C - BRAKE_TEMP_MIN_C;
+/// Front brake bias bounds (`1 − rear`), mirroring [`BRAKE_BIAS_REAR_MIN`] / [`BRAKE_BIAS_REAR_MAX`].
+const BRAKE_BIAS_FRONT_MIN: f64 = 1.0 - BRAKE_BIAS_REAR_MAX;
+const BRAKE_BIAS_FRONT_MAX: f64 = 1.0 - BRAKE_BIAS_REAR_MIN;
+/// Largest flag-summary code (0 green … 5 chequered, race-engines `publish::extended`).
+const MAX_FLAG_SUMMARY_CODE: f64 = 5.0;
+/// Largest car-state discontinuity code ([`crate::enums::CarDiscontinuity`]).
+const MAX_DISCONTINUITY_CODE: f64 = 4.0;
 /// Largest positive `long` (game version).
 const I32_MAX_F64: f64 = i32::MAX as f64;
 
@@ -717,11 +729,59 @@ registry! {
     TYRE_COMPOUND_NAME_FR = 0x0379, "tyres.fr.compound_name", "TyreCompound_FR" => missing("Tyre compound name FR", U::Text, T::Str, Source::LmuSharedMemoryTelemetry, "unavailable: compound names exist per axle only (tyres.front_compound_name)").p2();
     TYRE_COMPOUND_NAME_RL = 0x037A, "tyres.rl.compound_name", "TyreCompound_RL" => missing("Tyre compound name RL", U::Text, T::Str, Source::LmuSharedMemoryTelemetry, "unavailable: compound names exist per axle only (tyres.rear_compound_name)").p2();
     TYRE_COMPOUND_NAME_RR = 0x037B, "tyres.rr.compound_name", "TyreCompound_RR" => missing("Tyre compound name RR", U::Text, T::Str, Source::LmuSharedMemoryTelemetry, "unavailable: compound names exist per axle only (tyres.rear_compound_name)").p2();
+    TYRE_PRESSURE_DELTA_FL = 0x0380, "tyres.fl.pressure_delta_pa", "TyrePressureDelta_FL" => calc("Tyre pressure change since stint start FL", U::Pascal, T::F32, "formula:tyre_delta_vs_stint_start").range(-MAX_TYRE_PRESSURE_PA, MAX_TYRE_PRESSURE_PA);
+    TYRE_PRESSURE_DELTA_FR = 0x0381, "tyres.fr.pressure_delta_pa", "TyrePressureDelta_FR" => calc("Tyre pressure change since stint start FR", U::Pascal, T::F32, "formula:tyre_delta_vs_stint_start").range(-MAX_TYRE_PRESSURE_PA, MAX_TYRE_PRESSURE_PA);
+    TYRE_PRESSURE_DELTA_RL = 0x0382, "tyres.rl.pressure_delta_pa", "TyrePressureDelta_RL" => calc("Tyre pressure change since stint start RL", U::Pascal, T::F32, "formula:tyre_delta_vs_stint_start").range(-MAX_TYRE_PRESSURE_PA, MAX_TYRE_PRESSURE_PA);
+    TYRE_PRESSURE_DELTA_RR = 0x0383, "tyres.rr.pressure_delta_pa", "TyrePressureDelta_RR" => calc("Tyre pressure change since stint start RR", U::Pascal, T::F32, "formula:tyre_delta_vs_stint_start").range(-MAX_TYRE_PRESSURE_PA, MAX_TYRE_PRESSURE_PA);
+    TYRE_LAYER_TEMP_AVG_FL = 0x0384, "tyres.fl.temp_inner_layer_avg_c", "TyreLayerTemp_FL_Avg" => calc("Tyre inner-layer temp FL average", U::Celsius, T::F32, "formula:tyre_layer_temp_mean_of_three").p2().range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_LAYER_TEMP_AVG_FR = 0x0385, "tyres.fr.temp_inner_layer_avg_c", "TyreLayerTemp_FR_Avg" => calc("Tyre inner-layer temp FR average", U::Celsius, T::F32, "formula:tyre_layer_temp_mean_of_three").p2().range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_LAYER_TEMP_AVG_RL = 0x0386, "tyres.rl.temp_inner_layer_avg_c", "TyreLayerTemp_RL_Avg" => calc("Tyre inner-layer temp RL average", U::Celsius, T::F32, "formula:tyre_layer_temp_mean_of_three").p2().range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_LAYER_TEMP_AVG_RR = 0x0387, "tyres.rr.temp_inner_layer_avg_c", "TyreLayerTemp_RR_Avg" => calc("Tyre inner-layer temp RR average", U::Celsius, T::F32, "formula:tyre_layer_temp_mean_of_three").p2().range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_TEMP_DELTA_FL = 0x0388, "tyres.fl.temp_surface_delta_c", "TyreTempDelta_FL" => calc("Tyre surface temp FL change since stint start", U::Celsius, T::F32, "formula:tyre_delta_vs_stint_start").range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_DELTA_FR = 0x0389, "tyres.fr.temp_surface_delta_c", "TyreTempDelta_FR" => calc("Tyre surface temp FR change since stint start", U::Celsius, T::F32, "formula:tyre_delta_vs_stint_start").range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_DELTA_RL = 0x038A, "tyres.rl.temp_surface_delta_c", "TyreTempDelta_RL" => calc("Tyre surface temp RL change since stint start", U::Celsius, T::F32, "formula:tyre_delta_vs_stint_start").range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_DELTA_RR = 0x038B, "tyres.rr.temp_surface_delta_c", "TyreTempDelta_RR" => calc("Tyre surface temp RR change since stint start", U::Celsius, T::F32, "formula:tyre_delta_vs_stint_start").range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_CARCASS_TEMP_DELTA_FL = 0x038C, "tyres.fl.temp_carcass_delta_c", "TyreCarcassTempDelta_FL" => calc("Tyre carcass temp FL change since stint start", U::Celsius, T::F32, "formula:tyre_delta_vs_stint_start").range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_CARCASS_TEMP_DELTA_FR = 0x038D, "tyres.fr.temp_carcass_delta_c", "TyreCarcassTempDelta_FR" => calc("Tyre carcass temp FR change since stint start", U::Celsius, T::F32, "formula:tyre_delta_vs_stint_start").range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_CARCASS_TEMP_DELTA_RL = 0x038E, "tyres.rl.temp_carcass_delta_c", "TyreCarcassTempDelta_RL" => calc("Tyre carcass temp RL change since stint start", U::Celsius, T::F32, "formula:tyre_delta_vs_stint_start").range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_CARCASS_TEMP_DELTA_RR = 0x038F, "tyres.rr.temp_carcass_delta_c", "TyreCarcassTempDelta_RR" => calc("Tyre carcass temp RR change since stint start", U::Celsius, T::F32, "formula:tyre_delta_vs_stint_start").range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_PEAK_FL = 0x0390, "tyres.fl.temp_surface_peak_c", "TyreTempPeak_FL" => calc("Tyre surface temp FL peak since stint start", U::Celsius, T::F32, "formula:tyre_surface_avg_peak_since_stint_start").range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_TEMP_PEAK_FR = 0x0391, "tyres.fr.temp_surface_peak_c", "TyreTempPeak_FR" => calc("Tyre surface temp FR peak since stint start", U::Celsius, T::F32, "formula:tyre_surface_avg_peak_since_stint_start").range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_TEMP_PEAK_RL = 0x0392, "tyres.rl.temp_surface_peak_c", "TyreTempPeak_RL" => calc("Tyre surface temp RL peak since stint start", U::Celsius, T::F32, "formula:tyre_surface_avg_peak_since_stint_start").range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_TEMP_PEAK_RR = 0x0393, "tyres.rr.temp_surface_peak_c", "TyreTempPeak_RR" => calc("Tyre surface temp RR peak since stint start", U::Celsius, T::F32, "formula:tyre_surface_avg_peak_since_stint_start").range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_TEMP_ROLLING_AVG_FL = 0x0394, "tyres.fl.temp_surface_rolling_avg_c", "TyreTempRollingAvg_FL" => calc("Tyre surface temp FL rolling average", U::Celsius, T::F32, "formula:tyre_surface_avg_time_window_mean").estimated().range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_TEMP_ROLLING_AVG_FR = 0x0395, "tyres.fr.temp_surface_rolling_avg_c", "TyreTempRollingAvg_FR" => calc("Tyre surface temp FR rolling average", U::Celsius, T::F32, "formula:tyre_surface_avg_time_window_mean").estimated().range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_TEMP_ROLLING_AVG_RL = 0x0396, "tyres.rl.temp_surface_rolling_avg_c", "TyreTempRollingAvg_RL" => calc("Tyre surface temp RL rolling average", U::Celsius, T::F32, "formula:tyre_surface_avg_time_window_mean").estimated().range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_TEMP_ROLLING_AVG_RR = 0x0397, "tyres.rr.temp_surface_rolling_avg_c", "TyreTempRollingAvg_RR" => calc("Tyre surface temp RR rolling average", U::Celsius, T::F32, "formula:tyre_surface_avg_time_window_mean").estimated().range(TYRE_TEMP_MIN_C, TYRE_TEMP_MAX_C);
+    TYRE_TEMP_INNER_MIDDLE_FL = 0x0398, "tyres.fl.inner_middle_delta_c", "TyreTempInnerMiddle_FL" => calc("Tyre inner-minus-middle FL", U::Celsius, T::F32, "formula:tyre_inner_minus_middle").p2().range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_INNER_MIDDLE_FR = 0x0399, "tyres.fr.inner_middle_delta_c", "TyreTempInnerMiddle_FR" => calc("Tyre inner-minus-middle FR", U::Celsius, T::F32, "formula:tyre_inner_minus_middle").p2().range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_INNER_MIDDLE_RL = 0x039A, "tyres.rl.inner_middle_delta_c", "TyreTempInnerMiddle_RL" => calc("Tyre inner-minus-middle RL", U::Celsius, T::F32, "formula:tyre_inner_minus_middle").p2().range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_INNER_MIDDLE_RR = 0x039B, "tyres.rr.inner_middle_delta_c", "TyreTempInnerMiddle_RR" => calc("Tyre inner-minus-middle RR", U::Celsius, T::F32, "formula:tyre_inner_minus_middle").p2().range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_MIDDLE_OUTER_FL = 0x039C, "tyres.fl.middle_outer_delta_c", "TyreTempMiddleOuter_FL" => calc("Tyre middle-minus-outer FL", U::Celsius, T::F32, "formula:tyre_middle_minus_outer").p2().range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_MIDDLE_OUTER_FR = 0x039D, "tyres.fr.middle_outer_delta_c", "TyreTempMiddleOuter_FR" => calc("Tyre middle-minus-outer FR", U::Celsius, T::F32, "formula:tyre_middle_minus_outer").p2().range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_MIDDLE_OUTER_RL = 0x039E, "tyres.rl.middle_outer_delta_c", "TyreTempMiddleOuter_RL" => calc("Tyre middle-minus-outer RL", U::Celsius, T::F32, "formula:tyre_middle_minus_outer").p2().range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_MIDDLE_OUTER_RR = 0x039F, "tyres.rr.middle_outer_delta_c", "TyreTempMiddleOuter_RR" => calc("Tyre middle-minus-outer RR", U::Celsius, T::F32, "formula:tyre_middle_minus_outer").p2().range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_BAND_FL = 0x03A0, "tyres.fl.temp_band", "TyreTempBand_FL" => calc("Tyre surface temp band FL (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").range(0.0, MAX_BAND_CODE);
+    TYRE_TEMP_BAND_FR = 0x03A1, "tyres.fr.temp_band", "TyreTempBand_FR" => calc("Tyre surface temp band FR (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").range(0.0, MAX_BAND_CODE);
+    TYRE_TEMP_BAND_RL = 0x03A2, "tyres.rl.temp_band", "TyreTempBand_RL" => calc("Tyre surface temp band RL (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").range(0.0, MAX_BAND_CODE);
+    TYRE_TEMP_BAND_RR = 0x03A3, "tyres.rr.temp_band", "TyreTempBand_RR" => calc("Tyre surface temp band RR (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").range(0.0, MAX_BAND_CODE);
+    TYRE_PRESSURE_BAND_FL = 0x03A4, "tyres.fl.pressure_band", "TyrePressureBand_FL" => calc("Tyre pressure band FL (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").range(0.0, MAX_BAND_CODE);
+    TYRE_PRESSURE_BAND_FR = 0x03A5, "tyres.fr.pressure_band", "TyrePressureBand_FR" => calc("Tyre pressure band FR (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").range(0.0, MAX_BAND_CODE);
+    TYRE_PRESSURE_BAND_RL = 0x03A6, "tyres.rl.pressure_band", "TyrePressureBand_RL" => calc("Tyre pressure band RL (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").range(0.0, MAX_BAND_CODE);
+    TYRE_PRESSURE_BAND_RR = 0x03A7, "tyres.rr.pressure_band", "TyrePressureBand_RR" => calc("Tyre pressure band RR (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").range(0.0, MAX_BAND_CODE);
+    TYRE_EDGE_SPREAD_BAND_FL = 0x03A8, "tyres.fl.edge_spread_band", "TyreEdgeSpreadBand_FL" => calc("Tyre edge spread band FL (1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").p2().range(0.0, MAX_BAND_CODE);
+    TYRE_EDGE_SPREAD_BAND_FR = 0x03A9, "tyres.fr.edge_spread_band", "TyreEdgeSpreadBand_FR" => calc("Tyre edge spread band FR (1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").p2().range(0.0, MAX_BAND_CODE);
+    TYRE_EDGE_SPREAD_BAND_RL = 0x03AA, "tyres.rl.edge_spread_band", "TyreEdgeSpreadBand_RL" => calc("Tyre edge spread band RL (1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").p2().range(0.0, MAX_BAND_CODE);
+    TYRE_EDGE_SPREAD_BAND_RR = 0x03AB, "tyres.rr.edge_spread_band", "TyreEdgeSpreadBand_RR" => calc("Tyre edge spread band RR (1 in range, 2 high)", U::Enum, T::U8, "formula:tyre_threshold_band").p2().range(0.0, MAX_BAND_CODE);
     TYRE_COMPOUND_FRONT = 0x03E0, "tyres.front_compound_name", "TyreCompoundFront" => tel("Front tyre compound", U::Text, T::Str, tp!("mFrontTireCompoundName")).stat();
     TYRE_COMPOUND_REAR = 0x03E1, "tyres.rear_compound_name", "TyreCompoundRear" => tel("Rear tyre compound", U::Text, T::Str, tp!("mRearTireCompoundName")).stat();
     TYRE_COMPOUND_INDEX_FRONT = 0x03E2, "tyres.front_compound_index", "TyreCompoundIndexFront" => tel("Front tyre compound index", U::Count, T::U8, tp!("mFrontTireCompoundIndex")).p2().stat();
     TYRE_COMPOUND_INDEX_REAR = 0x03E3, "tyres.rear_compound_index", "TyreCompoundIndexRear" => tel("Rear tyre compound index", U::Count, T::U8, tp!("mRearTireCompoundIndex")).p2().stat();
     TYRE_SETS_AVAILABLE = 0x03E4, "tyres.sets_available", "TyreSetsAvailable" => missing("Tyre sets available", U::Count, T::U8, Source::LmuRest, "unavailable: REST pit menu (CLAIMED)").p2();
+    TYRE_TEMP_BALANCE_FRONT_REAR = 0x03F0, "tyres.balance_front_rear_temp_c", "TyreTempBalanceFrontRear" => calc("Tyre surface temp front-axle minus rear-axle mean", U::Celsius, T::F32, "formula:tyre_front_minus_rear_axle_mean").range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_TEMP_BALANCE_LEFT_RIGHT = 0x03F1, "tyres.balance_left_right_temp_c", "TyreTempBalanceLeftRight" => calc("Tyre surface temp left-side minus right-side mean", U::Celsius, T::F32, "formula:tyre_left_minus_right_side_mean").range(-TYRE_SPREAD_MAX_C, TYRE_SPREAD_MAX_C);
+    TYRE_PRESSURE_BALANCE_FRONT_REAR = 0x03F2, "tyres.balance_front_rear_pressure_pa", "TyrePressureBalanceFrontRear" => calc("Tyre pressure front-axle minus rear-axle mean", U::Pascal, T::F32, "formula:tyre_front_minus_rear_axle_mean").range(-MAX_TYRE_PRESSURE_PA, MAX_TYRE_PRESSURE_PA);
+    TYRE_PRESSURE_BALANCE_LEFT_RIGHT = 0x03F3, "tyres.balance_left_right_pressure_pa", "TyrePressureBalanceLeftRight" => calc("Tyre pressure left-side minus right-side mean", U::Pascal, T::F32, "formula:tyre_left_minus_right_side_mean").range(-MAX_TYRE_PRESSURE_PA, MAX_TYRE_PRESSURE_PA);
 
     // ===== 0x0400 brakes (per wheel: base + 0 FL, 1 FR, 2 RL, 3 RR) ================================================
     BRAKE_TEMP_FL = 0x0400, "brakes.fl.temp_c", "BrakeTemp_FL" => tel("Brake temp FL (unit detected, A-LMU-015)", U::Celsius, T::F32, tp!("mWheel[0].mBrakeTemp")).range(BRAKE_TEMP_MIN_C, BRAKE_TEMP_MAX_C).rate(BRAKE_TEMP_RATE_C_PER_S);
@@ -752,9 +812,19 @@ registry! {
     BRAKE_AIR_TEMP_FR = 0x0419, "brakes.fr.temp_air_c", "BrakeAirTemp_FR" => missing("Brake air temp FR", U::Celsius, T::F32, Source::LmuDuckDb, "unavailable: DuckDB recordings only (Brakes Air Temp)").p2();
     BRAKE_AIR_TEMP_RL = 0x041A, "brakes.rl.temp_air_c", "BrakeAirTemp_RL" => missing("Brake air temp RL", U::Celsius, T::F32, Source::LmuDuckDb, "unavailable: DuckDB recordings only (Brakes Air Temp)").p2();
     BRAKE_AIR_TEMP_RR = 0x041B, "brakes.rr.temp_air_c", "BrakeAirTemp_RR" => missing("Brake air temp RR", U::Celsius, T::F32, Source::LmuDuckDb, "unavailable: DuckDB recordings only (Brakes Air Temp)").p2();
+    BRAKE_TEMP_PEAK_FL = 0x041C, "brakes.fl.temp_peak_c", "BrakeTempPeak_FL" => calc("Brake temp FL peak since stint start", U::Celsius, T::F32, "formula:brake_temp_peak_since_stint_start").range(BRAKE_TEMP_MIN_C, BRAKE_TEMP_MAX_C);
+    BRAKE_TEMP_PEAK_FR = 0x041D, "brakes.fr.temp_peak_c", "BrakeTempPeak_FR" => calc("Brake temp FR peak since stint start", U::Celsius, T::F32, "formula:brake_temp_peak_since_stint_start").range(BRAKE_TEMP_MIN_C, BRAKE_TEMP_MAX_C);
+    BRAKE_TEMP_PEAK_RL = 0x041E, "brakes.rl.temp_peak_c", "BrakeTempPeak_RL" => calc("Brake temp RL peak since stint start", U::Celsius, T::F32, "formula:brake_temp_peak_since_stint_start").range(BRAKE_TEMP_MIN_C, BRAKE_TEMP_MAX_C);
+    BRAKE_TEMP_PEAK_RR = 0x041F, "brakes.rr.temp_peak_c", "BrakeTempPeak_RR" => calc("Brake temp RR peak since stint start", U::Celsius, T::F32, "formula:brake_temp_peak_since_stint_start").range(BRAKE_TEMP_MIN_C, BRAKE_TEMP_MAX_C);
+    BRAKE_TEMP_BAND_FL = 0x0420, "brakes.fl.temp_band", "BrakeTempBand_FL" => calc("Brake temp band FL (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:brake_threshold_band").range(0.0, MAX_BAND_CODE);
+    BRAKE_TEMP_BAND_FR = 0x0421, "brakes.fr.temp_band", "BrakeTempBand_FR" => calc("Brake temp band FR (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:brake_threshold_band").range(0.0, MAX_BAND_CODE);
+    BRAKE_TEMP_BAND_RL = 0x0422, "brakes.rl.temp_band", "BrakeTempBand_RL" => calc("Brake temp band RL (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:brake_threshold_band").range(0.0, MAX_BAND_CODE);
+    BRAKE_TEMP_BAND_RR = 0x0423, "brakes.rr.temp_band", "BrakeTempBand_RR" => calc("Brake temp band RR (0 low, 1 in range, 2 high)", U::Enum, T::U8, "formula:brake_threshold_band").range(0.0, MAX_BAND_CODE);
     BRAKE_BIAS_REAR = 0x0480, "brakes.bias_rear_frac", "BrakeBiasRear" => tel("Brake bias (rear share)", U::Fraction, T::F32, tp!("mRearBrakeBias")).range(BRAKE_BIAS_REAR_MIN, BRAKE_BIAS_REAR_MAX);
     BRAKE_MIGRATION = 0x0481, "brakes.migration", "BrakeMigration" => tel("Brake migration setting", U::Count, T::U8, tp!("mMigration")).p2().vd();
     BRAKE_MIGRATION_MAX = 0x0482, "brakes.migration_max", "BrakeMigrationMax" => tel("Brake migration setting max", U::Count, T::U8, tp!("mMigrationMax")).p2().stat().vd();
+    BRAKE_TEMP_FRONT_REAR = 0x0483, "brakes.temp_front_minus_rear_c", "BrakeTempFrontRear" => calc("Brake temp front-axle minus rear-axle mean", U::Celsius, T::F32, "formula:brake_front_minus_rear_axle_mean").range(-BRAKE_TEMP_SPREAD_MAX_C, BRAKE_TEMP_SPREAD_MAX_C);
+    BRAKE_BIAS_FRONT = 0x0484, "brakes.bias_front_frac", "BrakeBiasFront" => calc("Brake bias (front share, 1 - rear)", U::Fraction, T::F32, "formula:brake_bias_front_one_minus_rear").range(BRAKE_BIAS_FRONT_MIN, BRAKE_BIAS_FRONT_MAX);
 
     // ===== 0x0500 dynamics =======================================================================================
     LOCAL_VEL_X = 0x0500, "vehicle.local_vel_x_mps", "LocalVelX" => tel("Local velocity x (LMU frame, + left)", U::MetrePerSecond, T::F32, tp!("mLocalVel.x")).p2().range(-MAX_SPEED_MPS, MAX_SPEED_MPS).rate(MAX_BODY_ACCEL_MPS2);
@@ -921,6 +991,14 @@ registry! {
     DISTANCE = 0x082D, "race.total_distance_m", "Distance" => calc("Total distance", U::Metre, T::F64, "formula:laps_times_length_plus_lap_dist").scoring().range(MIN_LAP_DIST_M, MAX_TOTAL_DISTANCE_M);
     PENALTY_DETAILS = 0x082E, "race.penalty_details", "PenaltyDetails" => missing("Penalty details", U::Text, T::Str, Source::LmuSharedMemoryScoring, "unavailable: only the outstanding count mNumPenalties exists").p2();
     SAFETY_CAR_POSITION = 0x082F, "race.safety_car_position", "SafetyCarPosition" => missing("Safety car lap distance", U::Metre, T::F64, Source::LmuSharedMemoryScoring, "unavailable: only mGamePhase == 6 signals a safety car").p2();
+    CLASS_GAP_AHEAD = 0x0830, "race.class_gap_ahead_s", "ClassGapAhead" => calc("Gap to the class car ahead (same lap, race)", U::Second, T::F64, "formula:gap_from_time_behind_leader").p0().estimated().scoring().range(0.0, MAX_SESSION_TIME_S);
+    CLASS_GAP_BEHIND = 0x0831, "race.class_gap_behind_s", "ClassGapBehind" => calc("Gap to the class car behind (same lap, race)", U::Second, T::F64, "formula:gap_from_time_behind_leader").p0().estimated().scoring().range(0.0, MAX_SESSION_TIME_S);
+    CLASS_GAP_AHEAD_LAPS = 0x0832, "race.class_gap_ahead_laps", "ClassGapAheadLaps" => calc("Laps to the class car ahead (race)", U::Count, T::I32, "formula:gap_from_time_behind_leader").estimated().scoring().range(0.0, MAX_LAPS);
+    CLASS_GAP_BEHIND_LAPS = 0x0833, "race.class_gap_behind_laps", "ClassGapBehindLaps" => calc("Laps to the class car behind (race)", U::Count, T::I32, "formula:gap_from_time_behind_leader").estimated().scoring().range(0.0, MAX_LAPS);
+    BEST_LAP_GAP_AHEAD = 0x0834, "race.best_lap_gap_ahead_s", "BestLapGapAhead" => calc("Best-lap gap to the place ahead (practice, qualifying)", U::Second, T::F64, "formula:gap_best_lap_difference").p0().scoring().range(0.0, MAX_LAP_TIME_S);
+    BEST_LAP_GAP_BEHIND = 0x0835, "race.best_lap_gap_behind_s", "BestLapGapBehind" => calc("Best-lap gap to the place behind (practice, qualifying)", U::Second, T::F64, "formula:gap_best_lap_difference").p0().scoring().range(0.0, MAX_LAP_TIME_S);
+    CLASS_BEST_LAP_GAP_AHEAD = 0x0836, "race.class_best_lap_gap_ahead_s", "ClassBestLapGapAhead" => calc("Best-lap gap to the class car ahead (practice, qualifying)", U::Second, T::F64, "formula:gap_best_lap_difference").p0().scoring().range(0.0, MAX_LAP_TIME_S);
+    CLASS_BEST_LAP_GAP_BEHIND = 0x0837, "race.class_best_lap_gap_behind_s", "ClassBestLapGapBehind" => calc("Best-lap gap to the class car behind (practice, qualifying)", U::Second, T::F64, "formula:gap_best_lap_difference").p0().scoring().range(0.0, MAX_LAP_TIME_S);
 
     // ===== 0x0900 weather & track conditions =======================================================================
     AIR_TEMP = 0x0900, "weather.ambient_temp_c", "AirTemp" => sco("Ambient temperature", U::Celsius, T::F32, si!("mAmbientTemp")).env().range(-30.0, 60.0);
@@ -958,6 +1036,7 @@ registry! {
     MAP_Y = 0x0A0F, "track.map_y_m", "MapY" => calc("Map y (screen up, A-LMU-025)", U::Metre, T::F64, "formula:map_xy_from_world_pos").p0().range(-MAX_WORLD_COORD_M, MAX_WORLD_COORD_M).rate(MAX_POSITION_RATE_MPS);
     GPS_LATITUDE = 0x0A10, "vehicle.gps_lat_rad", "GPSLatitude" => missing("GPS latitude", U::Radian, T::F64, Source::LmuDuckDb, "unavailable: DuckDB recordings only").p2();
     GPS_LONGITUDE = 0x0A11, "vehicle.gps_lon_rad", "GPSLongitude" => missing("GPS longitude", U::Radian, T::F64, Source::LmuDuckDb, "unavailable: DuckDB recordings only").p2();
+    MAP_LAP_DISTANCE = 0x0A12, "track.map_lap_dist_m", "MapLapDistance" => calc("Lap distance projected on the track map", U::Metre, T::F64, "formula:track_projection_nearest_segment").discrete().range(0.0, MAX_TRACK_LENGTH_M);
 
     // ===== 0x0B00 flags & pit ==========================================================================================
     YELLOW_FLAG_STATE = 0x0B00, "flags.yellow_flag_state", "YellowFlagState" => sco("Full-course yellow state", U::Enum, T::I8, si!("mYellowFlagState")).p0().range(-1.0, 7.0);
@@ -972,6 +1051,8 @@ registry! {
     LOCAL_YELLOW_S1 = 0x0B09, "flags.local_yellow_s1", "LocalYellowS1" => calc("Local yellow sector 1 (experimental)", U::None, T::Bool, "formula:local_yellow_from_sector_flags").p0().scoring().experimental();
     LOCAL_YELLOW_S2 = 0x0B0A, "flags.local_yellow_s2", "LocalYellowS2" => calc("Local yellow sector 2 (experimental)", U::None, T::Bool, "formula:local_yellow_from_sector_flags").p0().scoring().experimental();
     LOCAL_YELLOW_S3 = 0x0B0B, "flags.local_yellow_s3", "LocalYellowS3" => calc("Local yellow sector 3 (experimental)", U::None, T::Bool, "formula:local_yellow_from_sector_flags").p0().scoring().experimental();
+    FLAG_SUMMARY = 0x0B0C, "flags.summary", "FlagSummary" => calc("Flag summary (0 green, 1 local yellow, 2 FCY/SC, 3 blue, 4 red, 5 chequered)", U::Enum, T::U8, "formula:race_flag_summary_priority").p0().scoring().range(0.0, MAX_FLAG_SUMMARY_CODE);
+    FORMATION_LAP = 0x0B0D, "flags.formation", "Formation" => calc("Formation lap", U::None, T::Bool, "formula:formation_from_game_or_individual_phase").scoring();
     IN_PITS = 0x0B20, "pit.in_pits", "InPits" => sco("In pits", U::None, T::Bool, sp!("mInPits")).p0();
     PIT_STATE = 0x0B21, "pit.state", "PitState" => sco("Pit state", U::Enum, T::U8, sp!("mPitState")).p0().range(0.0, MAX_PIT_STATE);
     IN_GARAGE = 0x0B22, "pit.in_garage_stall", "InGarage" => sco("In garage stall", U::None, T::Bool, sp!("mInGarageStall"));
@@ -1013,6 +1094,7 @@ registry! {
     SRC_DUPLICATE_FRAMES = 0x0D08, "source.duplicate_frames", "SrcDuplicateFrames" => app("Duplicate LMU frames", U::Count, T::U64, "app:duplicate_frame_count").p2();
     SRC_INVALID_SAMPLES = 0x0D09, "source.invalid_samples", "SrcInvalidSamples" => app("Samples rejected by validation", U::Count, T::U64, "app:invalid_sample_count").p2();
     SRC_READ_DURATION = 0x0D0A, "source.read_duration_s", "SrcReadDuration" => app("Shared-memory copy duration", U::Second, T::F32, "app:snapshot_copy_duration").p2().min(0.0);
+    SRC_DISCONTINUITY = 0x0D0B, "source.discontinuity", "SrcDiscontinuity" => calc("Car-state discontinuity (0 none, 1 garage teleport, 2 teleport ET step-back, 3 session-end rewind, 4 realtime entry)", U::Enum, T::U8, "formula:discontinuity_teleport_rewind_entry").p0().range(0.0, MAX_DISCONTINUITY_CODE);
     PIPELINE_LATENCY = 0x0D10, "app.pipeline_latency_s", "AppPipelineLatency" => app("Capture-to-publish latency", U::Second, T::F32, "app:capture_to_publish").p2().min(0.0);
     CALC_ENGINE_VERSION = 0x0D11, "app.calculation_engine_version", "CalcEngineVersion" => app("Calculation engine version (race-engines formulas)", U::Count, T::U32, "app:race_engines_version").stat();
     NORMALIZER_FORMULA_VERSION = 0x0D12, "app.normalizer_formula_version", "NormalizerFormulaVersion" => app("Formula version (lmu-normalizer formulas)", U::Count, T::U32, "app:lmu_normalizer_formula_version").stat();

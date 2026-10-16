@@ -23,7 +23,7 @@ use lmu_reader::{
     TelemetryHeader,
 };
 use serde::{Deserialize, Serialize};
-use telemetry_model::enums::{SessionType, VehicleClass};
+use telemetry_model::enums::{CarDiscontinuity, SessionType, VehicleClass};
 use telemetry_model::events::{EventRecord, EventTime, Severity};
 use telemetry_model::frame::TelemetryFrame;
 use telemetry_model::registry;
@@ -35,6 +35,10 @@ use telemetry_model::validate::{EtStep, FrameValidator, Rejection, classify_et};
 pub const SUSTAINED_REJECTION_FRAMES: u32 = 100;
 /// Fastest plausible motion (m/s) if the registry ever lost the position rate bound (it has one: 200 m/s).
 const FALLBACK_MAX_MOTION_MPS: f64 = 200.0;
+/// Calculated channels the normalizer writes outside [crate::mapping::map_frame] (they need the
+/// step-level state: ET classification and the discontinuity detector). Every published frame carries them.
+pub const DERIVED_PER_STEP: &[telemetry_model::ChannelId] =
+    &[telemetry_model::ch::SRC_DISCONTINUITY];
 use telemetry_model::{ChannelId, Quality, ch};
 
 use crate::capability::{self, VehicleCapabilityTracker};
@@ -275,6 +279,9 @@ pub struct Normalizer {
     /// A garage-teleport ET step-back is in progress: further samples still behind `last_et` (within
     /// [`TELEPORT_ET_STEP_BACK_MAX_S`]) belong to it. Cleared by the next advancing sample.
     teleport_step_back_open: bool,
+    /// Strongest discontinuity seen since the last published frame that the next frame must report: a
+    /// dropped teleport step-back sample or a session-end rewind (source.discontinuity).
+    pending_discontinuity: CarDiscontinuity,
     stats: NormalizerStats,
 }
 
@@ -308,6 +315,7 @@ impl Normalizer {
                 .and_then(|d| d.max_rate_per_s)
                 .unwrap_or(FALLBACK_MAX_MOTION_MPS),
             teleport_step_back_open: false,
+            pending_discontinuity: CarDiscontinuity::None,
             stats: NormalizerStats::default(),
         };
         n.capability_map = n.fresh_capability_map();
@@ -479,6 +487,8 @@ impl Normalizer {
                     );
                     self.pending_restart = None;
                     self.reset_session_context();
+                    // Reported on this sample (after the reset, which clears what the old context left).
+                    self.pending_discontinuity = CarDiscontinuity::SessionEndRewind;
                     out.disposition = TelemetryDisposition::NewSampleAfterRegression;
                     self.publish_sample(input, telemetry, &mut out);
                     return out;
@@ -605,6 +615,7 @@ impl Normalizer {
         self.last_et = None;
         self.last_player_id = None;
         self.teleport_step_back_open = false;
+        self.pending_discontinuity = CarDiscontinuity::None;
         self.rejection_streaks.clear();
         self.discontinuity = DiscontinuityDetector::default();
         self.det = SessionDetectors::default();
@@ -709,8 +720,12 @@ impl Normalizer {
             }
         }
 
-        // Known discontinuities reset the rate history they void, before validation (A-LMU-067).
-        self.apply_discontinuity(telemetry, player_row);
+        // Known discontinuities reset the rate history they void, before validation (A-LMU-067), and are
+        // published in source.discontinuity together with what the dropped samples left pending.
+        let seen = self.apply_discontinuity(telemetry, player_row);
+        let reported = std::mem::replace(&mut self.pending_discontinuity, CarDiscontinuity::None)
+            .strongest(seen);
+        self.write_discontinuity(&mut frame, reported);
         // Registry validation of every value: finiteness, plausible range, plausible rate of change.
         let validation = self.validator.validate(&mut frame);
         out.rejections = validation.rejected;
@@ -746,6 +761,10 @@ impl Normalizer {
         out: &mut NormalizedOutput,
     ) {
         self.stats.teleport_et_step_backs = self.stats.teleport_et_step_backs.saturating_add(1);
+        // The sample is dropped: the next published frame reports the step-back.
+        self.pending_discontinuity = self
+            .pending_discontinuity
+            .strongest(CarDiscontinuity::TeleportStepBack);
         if let Some(how) = opening {
             self.teleport_step_back_open = true;
             if how == StepBackOpening::WithJump {
@@ -775,9 +794,16 @@ impl Normalizer {
     /// Recognises a garage teleport, a realtime entry or a pit service for this sample and resets the rate
     /// history of the channels it voids: everything for a teleport or a realtime entry, the fuel, energy and
     /// tyre channels for a service. Range checks still apply; an uncorroborated jump is still rejected.
-    fn apply_discontinuity(&mut self, t: &RawTelemetry, row: Option<&RawVehicleScoring>) {
+    /// Returns what source.discontinuity reports for this sample (a pit service is not a discontinuity of
+    /// the car's position or time base).
+    fn apply_discontinuity(
+        &mut self,
+        t: &RawTelemetry,
+        row: Option<&RawVehicleScoring>,
+    ) -> CarDiscontinuity {
         let sample = car_sample(t, row);
-        match self.discontinuity.observe(sample, self.max_motion_mps) {
+        let seen = self.discontinuity.observe(sample, self.max_motion_mps);
+        match seen {
             Some(Discontinuity::Teleport) => {
                 self.stats.teleports = self.stats.teleports.saturating_add(1);
                 tracing::debug!(
@@ -796,6 +822,25 @@ impl Normalizer {
                 self.validator.reset_channels(&self.service_channels);
             }
             None => {}
+        }
+        match seen {
+            Some(Discontinuity::Teleport) => CarDiscontinuity::Teleport,
+            Some(Discontinuity::RealtimeEntry) => CarDiscontinuity::RealtimeEntry,
+            Some(Discontinuity::PitService) | None => CarDiscontinuity::None,
+        }
+    }
+
+    /// Writes source.discontinuity (formula discontinuity_teleport_rewind_entry) into a published frame.
+    fn write_discontinuity(&mut self, frame: &mut TelemetryFrame, kind: CarDiscontinuity) {
+        let mut w = FrameWriter::new(frame);
+        w.int(ch::SRC_DISCONTINUITY, i64::from(kind.code()));
+        let errors = w.into_errors();
+        self.stats.mapping_errors = self
+            .stats
+            .mapping_errors
+            .saturating_add(u64::try_from(errors.len()).unwrap_or(u64::MAX));
+        for (id, err) in errors {
+            tracing::error!(component = "lmu-normalizer", channel = id.0, error = %err, "discontinuity channel");
         }
     }
 

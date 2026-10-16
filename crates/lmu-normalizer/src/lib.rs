@@ -49,8 +49,8 @@ pub use detect::{
 pub use discontinuity::{CarSample, Discontinuity, DiscontinuityDetector};
 pub use identity::{IdentityChange, IdentityTracker};
 pub use normalizer::{
-    NormalizedOutput, Normalizer, NormalizerInput, NormalizerStats, SUSTAINED_REJECTION_FRAMES,
-    TelemetryDisposition,
+    DERIVED_PER_STEP, NormalizedOutput, Normalizer, NormalizerInput, NormalizerStats,
+    SUSTAINED_REJECTION_FRAMES, TelemetryDisposition,
 };
 pub use notice::{DiagnosticNotice, NoticeCode};
 pub use tyre::{TyreEdges, edge_indices, lcr_to_edges};

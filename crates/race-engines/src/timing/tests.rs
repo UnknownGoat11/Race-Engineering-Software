@@ -94,6 +94,7 @@ impl Sim {
             lap_invalidated: Some(invalid),
             in_pit_lane: Some(in_pit),
             official_last_lap_s: self.official,
+            discontinuity: None,
         }
     }
 
@@ -823,4 +824,141 @@ fn grid_lap_from_frames_is_before_line() {
     assert!(completed[0].flags.before_line);
     assert!(!completed[0].eligible_for_best());
     assert!(!completed[1].flags.before_line);
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// DEFERRED 19: a lap ended by a garage teleport is never a best or a reference
+// ---------------------------------------------------------------------------------------------------------
+
+/// Real Gate 1 pitstop1 timing of the return to the garage (LMU 1.4.2.0, probe
+/// session-62bdcac0/normfix + vefix): ET 315.7925 and 315.8025 before the jump, the 19.17 m jump at ET
+/// 315.8304 with the lap counter 1 -> 2 on that very sample (lap 1 then measured 105.43 s, so it started
+/// at ET 210.4004), the dropped 0.0104 s step-back to 315.8200, then ET 315.8400 and 315.8600.
+const PITSTOP1_LAP1_START_ET: f64 = 315.8304 - 105.43;
+const PITSTOP1_BEFORE_JUMP_ET: [f64; 2] = [315.7925, 315.8025];
+const PITSTOP1_JUMP_ET: f64 = 315.8304;
+const PITSTOP1_AFTER_STEP_BACK_ET: [f64; 2] = [315.8400, 315.8600];
+
+/// Drives lap 1 of the pitstop1 pattern **on track** (no pit flag anywhere, the hazard DEFERRED 19
+/// describes) and ends it on the teleport sample. `jump` is what `source.discontinuity` says there.
+fn pitstop1_lap_ended_by_teleport(jump: Option<CarDiscontinuity>) -> (TimingEngine, LapRecord) {
+    let mut eng = TimingEngine::new(TimingConfig::default()).expect("config");
+    eng.set_context(key(1));
+    let on_track = |et: f64, lap: i32, start: f64, d: f64| TimingSample {
+        lap_number: Some(lap),
+        lap_start_et_s: Some(start),
+        lap_dist_m: Some(d),
+        track_length_m: Some(L),
+        sector_index: Some(three_sectors(d)),
+        lap_invalidated: Some(false),
+        in_pit_lane: Some(false),
+        discontinuity: Some(CarDiscontinuity::None),
+        ..TimingSample::new(et)
+    };
+    // The end of lap 0 (pitstop1: the pit stop, so an out-lap that is never a best), then lap 1 from the
+    // line (counter, lap start and wrap agree: a trusted start).
+    eng.update(&TimingSample {
+        in_pit_lane: Some(true),
+        ..on_track(PITSTOP1_LAP1_START_ET - 0.01, 0, 100.0, L - 0.6)
+    });
+    let lap_end = PITSTOP1_BEFORE_JUMP_ET[0];
+    let n = 2_000;
+    for k in 0..n {
+        let frac = f64::from(k) / f64::from(n);
+        let et = PITSTOP1_LAP1_START_ET + frac * (lap_end - PITSTOP1_LAP1_START_ET);
+        eng.update(&on_track(et, 1, PITSTOP1_LAP1_START_ET, frac * (L - 300.0)));
+    }
+    for et in PITSTOP1_BEFORE_JUMP_ET {
+        eng.update(&on_track(et, 1, PITSTOP1_LAP1_START_ET, L - 300.0));
+    }
+    // The jump into the garage: counter 1 -> 2 and a new LMU lap start on the same sample, pit area.
+    let teleport = TimingSample {
+        in_pit_lane: Some(true),
+        discontinuity: jump,
+        ..on_track(PITSTOP1_JUMP_ET, 2, PITSTOP1_JUMP_ET, 120.0)
+    };
+    let lap = eng
+        .update(&teleport)
+        .completed_lap
+        .expect("lap 1 completes on the jump");
+    // The step-back sample was dropped by the normalizer; the next frame reports it.
+    let mut after = TimingSample {
+        in_pit_lane: Some(true),
+        discontinuity: jump.map(|_| CarDiscontinuity::TeleportStepBack),
+        ..on_track(PITSTOP1_AFTER_STEP_BACK_ET[0], 2, PITSTOP1_JUMP_ET, 120.0)
+    };
+    eng.update(&after);
+    after.et_s = PITSTOP1_AFTER_STEP_BACK_ET[1];
+    after.discontinuity = Some(CarDiscontinuity::None);
+    eng.update(&after);
+    (eng, lap)
+}
+
+#[test]
+fn real_pitstop1_teleport_ended_lap_is_never_a_best_or_reference() {
+    // Without the signal (before DEFERRED 19): the jump looks like a line crossing and the 105.43 s lap,
+    // which never reached the line, becomes the personal best.
+    let (blind, lap) = pitstop1_lap_ended_by_teleport(None);
+    assert!((lap.time_s.expect("time") - 105.43).abs() < 1e-9);
+    assert!(
+        lap.eligible_for_best(),
+        "the hazard: no pit flag on the lap"
+    );
+    assert_eq!(blind.snapshot().personal_best.value, lap.time_s);
+
+    // With `source.discontinuity`: the lap is flagged and excluded from bests, best sectors and references.
+    let (eng, lap) = pitstop1_lap_ended_by_teleport(Some(CarDiscontinuity::Teleport));
+    assert!(lap.flags.discontinuity);
+    assert!(
+        !lap.flags.pit_in,
+        "the boundary sample belongs to the next lap"
+    );
+    assert!(lap.time_trusted(), "the timing evidence itself is fine");
+    assert!(!lap.eligible_for_best());
+    let snap = eng.snapshot();
+    assert_eq!(snap.personal_best.value, None);
+    assert_eq!(snap.personal_best_lap, None);
+    assert!(snap.best_sectors.iter().all(|s| s.value.is_none()));
+    assert_eq!(snap.reference_lap, None);
+    // The lap started by the jump (out of the garage) is flagged too.
+    assert!(
+        eng.current
+            .as_ref()
+            .is_some_and(|c| c.discontinuity && c.lap_number == Some(2))
+    );
+}
+
+#[test]
+fn a_discontinuity_inside_a_lap_flags_that_lap() {
+    let mut sim = Sim::new(TimingConfig::default());
+    sim.lap_plain(&Profile::uniform(100.0));
+    sim.cross();
+    // A realtime entry in the middle of the next lap (no lap boundary there).
+    let mut s = sim.sample(3_000.0, sim.line_et + 50.0, false, false);
+    s.discontinuity = Some(CarDiscontinuity::RealtimeEntry);
+    sim.eng.update(&s);
+    let mut s = sim.sample(3_010.0, sim.line_et + 50.2, false, false);
+    s.discontinuity = Some(CarDiscontinuity::None);
+    sim.eng.update(&s);
+    sim.line_et += 100.0;
+    let up = sim.cross();
+    let lap = up.completed_lap.expect("lap completes");
+    assert!(lap.flags.discontinuity);
+    assert!(!lap.eligible_for_best());
+    // The clean first lap stays the personal best.
+    assert!((sim.eng.snapshot().personal_best.value.expect("pb") - 100.0).abs() < EPS);
+}
+
+#[test]
+fn discontinuity_is_read_from_the_frame() {
+    let mut f = TelemetryFrame::new(1, 0, Some(315.8304));
+    f.set_valid(
+        ch::SRC_DISCONTINUITY,
+        Value::U8(CarDiscontinuity::Teleport.code()),
+    )
+    .expect("set");
+    let s = TimingSample::from_frame(&f).expect("sample");
+    assert_eq!(s.discontinuity, Some(CarDiscontinuity::Teleport));
+    let none = TimingSample::from_frame(&TelemetryFrame::new(2, 0, Some(1.0))).expect("sample");
+    assert_eq!(none.discontinuity, None, "unknown, not 'none'");
 }

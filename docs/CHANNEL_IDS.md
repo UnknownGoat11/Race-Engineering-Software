@@ -2,7 +2,7 @@
 
 <!-- GENERATED from crates/telemetry-model/src/registry.rs. Do not edit by hand: run `LMURE_BLESS=1 cargo test -p telemetry-model --test registry_docs` to regenerate. -->
 
-Telemetry schema version **1**, **511** channels. Single source of truth: `telemetry-model::registry` (D-017). IDs are append-only and never reused; per-wheel channels use a stride of 4 (`FL, FR, RL, RR` = base + 0..3). Field semantics, raw units and evidence: [LMU_CHANNEL_MAP.md](LMU_CHANNEL_MAP.md).
+Telemetry schema version **1**, **581** channels. Single source of truth: `telemetry-model::registry` (D-017). IDs are append-only and never reused; per-wheel channels use a stride of 4 (`FL, FR, RL, RR` = base + 0..3). Field semantics, raw units and evidence: [LMU_CHANNEL_MAP.md](LMU_CHANNEL_MAP.md).
 
 Canonical names are the map's row names, except the rows below; `cars.<id>.*` rows are per-car standings fields (`scoring::CompetitorEntry`), not channels. `tests/registry_docs.rs` checks this cross-reference in both directions.
 
@@ -27,17 +27,17 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | Vehicle & inputs | 0x0001–0x00FF | 64 |
 | Powertrain | 0x0100–0x01FF | 18 |
 | Fuel | 0x0200–0x02FF | 3 |
-| Tyres | 0x0300–0x03FF | 129 |
-| Brakes | 0x0400–0x04FF | 31 |
+| Tyres | 0x0300–0x03FF | 177 |
+| Brakes | 0x0400–0x04FF | 41 |
 | Dynamics | 0x0500–0x05FF | 81 |
 | Hybrid & energy | 0x0600–0x06FF | 10 |
 | Timing | 0x0700–0x07FF | 29 |
-| Session, race & scoring | 0x0800–0x08FF | 38 |
+| Session, race & scoring | 0x0800–0x08FF | 46 |
 | Weather & track conditions | 0x0900–0x09FF | 15 |
-| Track position & map | 0x0A00–0x0AFF | 18 |
-| Flags & pit | 0x0B00–0x0BFF | 20 |
+| Track position & map | 0x0A00–0x0AFF | 19 |
+| Flags & pit | 0x0B00–0x0BFF | 22 |
 | Derived fuel / stint / energy (engine outputs) | 0x0C00–0x0CFF | 18 |
-| Application, network & recording diagnostics | 0x0D00–0x0DFF | 37 |
+| Application, network & recording diagnostics | 0x0D00–0x0DFF | 38 |
 
 ## 0x0000 Vehicle & inputs
 
@@ -267,11 +267,59 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0379 | `tyres.fr.compound_name` | `TyreCompound_FR` | Tyre compound name FR | text | Str | SM/tel | M | P2 | PHY | D | N |  |  | `unavailable: compound names exist per axle only (tyres.front_compound_name)` |
 | 0x037A | `tyres.rl.compound_name` | `TyreCompound_RL` | Tyre compound name RL | text | Str | SM/tel | M | P2 | PHY | D | N |  |  | `unavailable: compound names exist per axle only (tyres.rear_compound_name)` |
 | 0x037B | `tyres.rr.compound_name` | `TyreCompound_RR` | Tyre compound name RR | text | Str | SM/tel | M | P2 | PHY | D | N |  |  | `unavailable: compound names exist per axle only (tyres.rear_compound_name)` |
+| 0x0380 | `tyres.fl.pressure_delta_pa` | `TyrePressureDelta_FL` | Tyre pressure change since stint start FL | Pa | F32 | CALC | D | P1 | PHY | C | A | -600000 … 600000 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x0381 | `tyres.fr.pressure_delta_pa` | `TyrePressureDelta_FR` | Tyre pressure change since stint start FR | Pa | F32 | CALC | D | P1 | PHY | C | A | -600000 … 600000 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x0382 | `tyres.rl.pressure_delta_pa` | `TyrePressureDelta_RL` | Tyre pressure change since stint start RL | Pa | F32 | CALC | D | P1 | PHY | C | A | -600000 … 600000 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x0383 | `tyres.rr.pressure_delta_pa` | `TyrePressureDelta_RR` | Tyre pressure change since stint start RR | Pa | F32 | CALC | D | P1 | PHY | C | A | -600000 … 600000 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x0384 | `tyres.fl.temp_inner_layer_avg_c` | `TyreLayerTemp_FL_Avg` | Tyre inner-layer temp FL average | °C | F32 | CALC | D | P2 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_layer_temp_mean_of_three` |
+| 0x0385 | `tyres.fr.temp_inner_layer_avg_c` | `TyreLayerTemp_FR_Avg` | Tyre inner-layer temp FR average | °C | F32 | CALC | D | P2 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_layer_temp_mean_of_three` |
+| 0x0386 | `tyres.rl.temp_inner_layer_avg_c` | `TyreLayerTemp_RL_Avg` | Tyre inner-layer temp RL average | °C | F32 | CALC | D | P2 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_layer_temp_mean_of_three` |
+| 0x0387 | `tyres.rr.temp_inner_layer_avg_c` | `TyreLayerTemp_RR_Avg` | Tyre inner-layer temp RR average | °C | F32 | CALC | D | P2 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_layer_temp_mean_of_three` |
+| 0x0388 | `tyres.fl.temp_surface_delta_c` | `TyreTempDelta_FL` | Tyre surface temp FL change since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -500 … 500 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x0389 | `tyres.fr.temp_surface_delta_c` | `TyreTempDelta_FR` | Tyre surface temp FR change since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -500 … 500 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x038A | `tyres.rl.temp_surface_delta_c` | `TyreTempDelta_RL` | Tyre surface temp RL change since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -500 … 500 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x038B | `tyres.rr.temp_surface_delta_c` | `TyreTempDelta_RR` | Tyre surface temp RR change since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -500 … 500 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x038C | `tyres.fl.temp_carcass_delta_c` | `TyreCarcassTempDelta_FL` | Tyre carcass temp FL change since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -500 … 500 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x038D | `tyres.fr.temp_carcass_delta_c` | `TyreCarcassTempDelta_FR` | Tyre carcass temp FR change since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -500 … 500 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x038E | `tyres.rl.temp_carcass_delta_c` | `TyreCarcassTempDelta_RL` | Tyre carcass temp RL change since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -500 … 500 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x038F | `tyres.rr.temp_carcass_delta_c` | `TyreCarcassTempDelta_RR` | Tyre carcass temp RR change since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -500 … 500 |  | `formula:tyre_delta_vs_stint_start` |
+| 0x0390 | `tyres.fl.temp_surface_peak_c` | `TyreTempPeak_FL` | Tyre surface temp FL peak since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_avg_peak_since_stint_start` |
+| 0x0391 | `tyres.fr.temp_surface_peak_c` | `TyreTempPeak_FR` | Tyre surface temp FR peak since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_avg_peak_since_stint_start` |
+| 0x0392 | `tyres.rl.temp_surface_peak_c` | `TyreTempPeak_RL` | Tyre surface temp RL peak since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_avg_peak_since_stint_start` |
+| 0x0393 | `tyres.rr.temp_surface_peak_c` | `TyreTempPeak_RR` | Tyre surface temp RR peak since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_avg_peak_since_stint_start` |
+| 0x0394 | `tyres.fl.temp_surface_rolling_avg_c` | `TyreTempRollingAvg_FL` | Tyre surface temp FL rolling average | °C | F32 | CALC | E | P1 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_avg_time_window_mean` |
+| 0x0395 | `tyres.fr.temp_surface_rolling_avg_c` | `TyreTempRollingAvg_FR` | Tyre surface temp FR rolling average | °C | F32 | CALC | E | P1 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_avg_time_window_mean` |
+| 0x0396 | `tyres.rl.temp_surface_rolling_avg_c` | `TyreTempRollingAvg_RL` | Tyre surface temp RL rolling average | °C | F32 | CALC | E | P1 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_avg_time_window_mean` |
+| 0x0397 | `tyres.rr.temp_surface_rolling_avg_c` | `TyreTempRollingAvg_RR` | Tyre surface temp RR rolling average | °C | F32 | CALC | E | P1 | PHY | C | A | -73.15 … 426.85 |  | `formula:tyre_surface_avg_time_window_mean` |
+| 0x0398 | `tyres.fl.inner_middle_delta_c` | `TyreTempInnerMiddle_FL` | Tyre inner-minus-middle FL | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_inner_minus_middle` |
+| 0x0399 | `tyres.fr.inner_middle_delta_c` | `TyreTempInnerMiddle_FR` | Tyre inner-minus-middle FR | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_inner_minus_middle` |
+| 0x039A | `tyres.rl.inner_middle_delta_c` | `TyreTempInnerMiddle_RL` | Tyre inner-minus-middle RL | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_inner_minus_middle` |
+| 0x039B | `tyres.rr.inner_middle_delta_c` | `TyreTempInnerMiddle_RR` | Tyre inner-minus-middle RR | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_inner_minus_middle` |
+| 0x039C | `tyres.fl.middle_outer_delta_c` | `TyreTempMiddleOuter_FL` | Tyre middle-minus-outer FL | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_middle_minus_outer` |
+| 0x039D | `tyres.fr.middle_outer_delta_c` | `TyreTempMiddleOuter_FR` | Tyre middle-minus-outer FR | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_middle_minus_outer` |
+| 0x039E | `tyres.rl.middle_outer_delta_c` | `TyreTempMiddleOuter_RL` | Tyre middle-minus-outer RL | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_middle_minus_outer` |
+| 0x039F | `tyres.rr.middle_outer_delta_c` | `TyreTempMiddleOuter_RR` | Tyre middle-minus-outer RR | °C | F32 | CALC | D | P2 | PHY | C | A | -500 … 500 |  | `formula:tyre_middle_minus_outer` |
+| 0x03A0 | `tyres.fl.temp_band` | `TyreTempBand_FL` | Tyre surface temp band FL (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03A1 | `tyres.fr.temp_band` | `TyreTempBand_FR` | Tyre surface temp band FR (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03A2 | `tyres.rl.temp_band` | `TyreTempBand_RL` | Tyre surface temp band RL (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03A3 | `tyres.rr.temp_band` | `TyreTempBand_RR` | Tyre surface temp band RR (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03A4 | `tyres.fl.pressure_band` | `TyrePressureBand_FL` | Tyre pressure band FL (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03A5 | `tyres.fr.pressure_band` | `TyrePressureBand_FR` | Tyre pressure band FR (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03A6 | `tyres.rl.pressure_band` | `TyrePressureBand_RL` | Tyre pressure band RL (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03A7 | `tyres.rr.pressure_band` | `TyrePressureBand_RR` | Tyre pressure band RR (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03A8 | `tyres.fl.edge_spread_band` | `TyreEdgeSpreadBand_FL` | Tyre edge spread band FL (1 in range, 2 high) | enum | U8 | CALC | D | P2 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03A9 | `tyres.fr.edge_spread_band` | `TyreEdgeSpreadBand_FR` | Tyre edge spread band FR (1 in range, 2 high) | enum | U8 | CALC | D | P2 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03AA | `tyres.rl.edge_spread_band` | `TyreEdgeSpreadBand_RL` | Tyre edge spread band RL (1 in range, 2 high) | enum | U8 | CALC | D | P2 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
+| 0x03AB | `tyres.rr.edge_spread_band` | `TyreEdgeSpreadBand_RR` | Tyre edge spread band RR (1 in range, 2 high) | enum | U8 | CALC | D | P2 | PHY | D | A | 0 … 2 |  | `formula:tyre_threshold_band` |
 | 0x03E0 | `tyres.front_compound_name` | `TyreCompoundFront` | Front tyre compound | text | Str | SM/tel | M | P1 | STA | D | A |  |  | `telemetry.telemInfo[player].mFrontTireCompoundName` |
 | 0x03E1 | `tyres.rear_compound_name` | `TyreCompoundRear` | Rear tyre compound | text | Str | SM/tel | M | P1 | STA | D | A |  |  | `telemetry.telemInfo[player].mRearTireCompoundName` |
 | 0x03E2 | `tyres.front_compound_index` | `TyreCompoundIndexFront` | Front tyre compound index | count | U8 | SM/tel | M | P2 | STA | D | A |  |  | `telemetry.telemInfo[player].mFrontTireCompoundIndex` |
 | 0x03E3 | `tyres.rear_compound_index` | `TyreCompoundIndexRear` | Rear tyre compound index | count | U8 | SM/tel | M | P2 | STA | D | A |  |  | `telemetry.telemInfo[player].mRearTireCompoundIndex` |
 | 0x03E4 | `tyres.sets_available` | `TyreSetsAvailable` | Tyre sets available | count | U8 | REST | M | P2 | ENV | D | N |  |  | `unavailable: REST pit menu (CLAIMED)` |
+| 0x03F0 | `tyres.balance_front_rear_temp_c` | `TyreTempBalanceFrontRear` | Tyre surface temp front-axle minus rear-axle mean | °C | F32 | CALC | D | P1 | PHY | C | A | -500 … 500 |  | `formula:tyre_front_minus_rear_axle_mean` |
+| 0x03F1 | `tyres.balance_left_right_temp_c` | `TyreTempBalanceLeftRight` | Tyre surface temp left-side minus right-side mean | °C | F32 | CALC | D | P1 | PHY | C | A | -500 … 500 |  | `formula:tyre_left_minus_right_side_mean` |
+| 0x03F2 | `tyres.balance_front_rear_pressure_pa` | `TyrePressureBalanceFrontRear` | Tyre pressure front-axle minus rear-axle mean | Pa | F32 | CALC | D | P1 | PHY | C | A | -600000 … 600000 |  | `formula:tyre_front_minus_rear_axle_mean` |
+| 0x03F3 | `tyres.balance_left_right_pressure_pa` | `TyrePressureBalanceLeftRight` | Tyre pressure left-side minus right-side mean | Pa | F32 | CALC | D | P1 | PHY | C | A | -600000 … 600000 |  | `formula:tyre_left_minus_right_side_mean` |
 
 ## 0x0400 Brakes
 
@@ -305,9 +353,19 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0419 | `brakes.fr.temp_air_c` | `BrakeAirTemp_FR` | Brake air temp FR | °C | F32 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only (Brakes Air Temp)` |
 | 0x041A | `brakes.rl.temp_air_c` | `BrakeAirTemp_RL` | Brake air temp RL | °C | F32 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only (Brakes Air Temp)` |
 | 0x041B | `brakes.rr.temp_air_c` | `BrakeAirTemp_RR` | Brake air temp RR | °C | F32 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only (Brakes Air Temp)` |
+| 0x041C | `brakes.fl.temp_peak_c` | `BrakeTempPeak_FL` | Brake temp FL peak since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -50 … 1500 |  | `formula:brake_temp_peak_since_stint_start` |
+| 0x041D | `brakes.fr.temp_peak_c` | `BrakeTempPeak_FR` | Brake temp FR peak since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -50 … 1500 |  | `formula:brake_temp_peak_since_stint_start` |
+| 0x041E | `brakes.rl.temp_peak_c` | `BrakeTempPeak_RL` | Brake temp RL peak since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -50 … 1500 |  | `formula:brake_temp_peak_since_stint_start` |
+| 0x041F | `brakes.rr.temp_peak_c` | `BrakeTempPeak_RR` | Brake temp RR peak since stint start | °C | F32 | CALC | D | P1 | PHY | C | A | -50 … 1500 |  | `formula:brake_temp_peak_since_stint_start` |
+| 0x0420 | `brakes.fl.temp_band` | `BrakeTempBand_FL` | Brake temp band FL (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:brake_threshold_band` |
+| 0x0421 | `brakes.fr.temp_band` | `BrakeTempBand_FR` | Brake temp band FR (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:brake_threshold_band` |
+| 0x0422 | `brakes.rl.temp_band` | `BrakeTempBand_RL` | Brake temp band RL (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:brake_threshold_band` |
+| 0x0423 | `brakes.rr.temp_band` | `BrakeTempBand_RR` | Brake temp band RR (0 low, 1 in range, 2 high) | enum | U8 | CALC | D | P1 | PHY | D | A | 0 … 2 |  | `formula:brake_threshold_band` |
 | 0x0480 | `brakes.bias_rear_frac` | `BrakeBiasRear` | Brake bias (rear share) | 0..1 | F32 | SM/tel | M | P1 | PHY | C | A | 0.2 … 0.8 |  | `telemetry.telemInfo[player].mRearBrakeBias` |
 | 0x0481 | `brakes.migration` | `BrakeMigration` | Brake migration setting | count | U8 | SM/tel | M | P2 | PHY | D | V |  |  | `telemetry.telemInfo[player].mMigration` |
 | 0x0482 | `brakes.migration_max` | `BrakeMigrationMax` | Brake migration setting max | count | U8 | SM/tel | M | P2 | STA | D | V |  |  | `telemetry.telemInfo[player].mMigrationMax` |
+| 0x0483 | `brakes.temp_front_minus_rear_c` | `BrakeTempFrontRear` | Brake temp front-axle minus rear-axle mean | °C | F32 | CALC | D | P1 | PHY | C | A | -1550 … 1550 |  | `formula:brake_front_minus_rear_axle_mean` |
+| 0x0484 | `brakes.bias_front_frac` | `BrakeBiasFront` | Brake bias (front share, 1 - rear) | 0..1 | F32 | CALC | D | P1 | PHY | C | A | 0.2 … 0.8 |  | `formula:brake_bias_front_one_minus_rear` |
 
 ## 0x0500 Dynamics
 
@@ -486,6 +544,14 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x082D | `race.total_distance_m` | `Distance` | Total distance | m | F64 | CALC | D | P1 | SCO | C | A | -30000 … 100000000 |  | `formula:laps_times_length_plus_lap_dist` |
 | 0x082E | `race.penalty_details` | `PenaltyDetails` | Penalty details | text | Str | SM/sco | M | P2 | SCO | D | N |  |  | `unavailable: only the outstanding count mNumPenalties exists` |
 | 0x082F | `race.safety_car_position` | `SafetyCarPosition` | Safety car lap distance | m | F64 | SM/sco | M | P2 | SCO | C | N |  |  | `unavailable: only mGamePhase == 6 signals a safety car` |
+| 0x0830 | `race.class_gap_ahead_s` | `ClassGapAhead` | Gap to the class car ahead (same lap, race) | s | F64 | CALC | E | P0 | SCO | C | A | 0 … 10000000 |  | `formula:gap_from_time_behind_leader` |
+| 0x0831 | `race.class_gap_behind_s` | `ClassGapBehind` | Gap to the class car behind (same lap, race) | s | F64 | CALC | E | P0 | SCO | C | A | 0 … 10000000 |  | `formula:gap_from_time_behind_leader` |
+| 0x0832 | `race.class_gap_ahead_laps` | `ClassGapAheadLaps` | Laps to the class car ahead (race) | count | I32 | CALC | E | P1 | SCO | D | A | 0 … 100000 |  | `formula:gap_from_time_behind_leader` |
+| 0x0833 | `race.class_gap_behind_laps` | `ClassGapBehindLaps` | Laps to the class car behind (race) | count | I32 | CALC | E | P1 | SCO | D | A | 0 … 100000 |  | `formula:gap_from_time_behind_leader` |
+| 0x0834 | `race.best_lap_gap_ahead_s` | `BestLapGapAhead` | Best-lap gap to the place ahead (practice, qualifying) | s | F64 | CALC | D | P0 | SCO | C | A | 0 … 3600 |  | `formula:gap_best_lap_difference` |
+| 0x0835 | `race.best_lap_gap_behind_s` | `BestLapGapBehind` | Best-lap gap to the place behind (practice, qualifying) | s | F64 | CALC | D | P0 | SCO | C | A | 0 … 3600 |  | `formula:gap_best_lap_difference` |
+| 0x0836 | `race.class_best_lap_gap_ahead_s` | `ClassBestLapGapAhead` | Best-lap gap to the class car ahead (practice, qualifying) | s | F64 | CALC | D | P0 | SCO | C | A | 0 … 3600 |  | `formula:gap_best_lap_difference` |
+| 0x0837 | `race.class_best_lap_gap_behind_s` | `ClassBestLapGapBehind` | Best-lap gap to the class car behind (practice, qualifying) | s | F64 | CALC | D | P0 | SCO | C | A | 0 … 3600 |  | `formula:gap_best_lap_difference` |
 
 ## 0x0900 Weather & track conditions
 
@@ -529,6 +595,7 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0A0F | `track.map_y_m` | `MapY` | Map y (screen up, A-LMU-025) | m | F64 | CALC | D | P0 | PHY | C | A | -100000 … 100000 | 200 | `formula:map_xy_from_world_pos` |
 | 0x0A10 | `vehicle.gps_lat_rad` | `GPSLatitude` | GPS latitude | rad | F64 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only` |
 | 0x0A11 | `vehicle.gps_lon_rad` | `GPSLongitude` | GPS longitude | rad | F64 | DuckDB | M | P2 | PHY | C | N |  |  | `unavailable: DuckDB recordings only` |
+| 0x0A12 | `track.map_lap_dist_m` | `MapLapDistance` | Lap distance projected on the track map | m | F64 | CALC | D | P1 | PHY | D | A | 0 … 30000 |  | `formula:track_projection_nearest_segment` |
 
 ## 0x0B00 Flags & pit
 
@@ -546,6 +613,8 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0B09 | `flags.local_yellow_s1` | `LocalYellowS1` | Local yellow sector 1 (experimental) | — | Bool | CALC | D | P0 | SCO | D | X |  |  | `formula:local_yellow_from_sector_flags` |
 | 0x0B0A | `flags.local_yellow_s2` | `LocalYellowS2` | Local yellow sector 2 (experimental) | — | Bool | CALC | D | P0 | SCO | D | X |  |  | `formula:local_yellow_from_sector_flags` |
 | 0x0B0B | `flags.local_yellow_s3` | `LocalYellowS3` | Local yellow sector 3 (experimental) | — | Bool | CALC | D | P0 | SCO | D | X |  |  | `formula:local_yellow_from_sector_flags` |
+| 0x0B0C | `flags.summary` | `FlagSummary` | Flag summary (0 green, 1 local yellow, 2 FCY/SC, 3 blue, 4 red, 5 chequered) | enum | U8 | CALC | D | P0 | SCO | D | A | 0 … 5 |  | `formula:race_flag_summary_priority` |
+| 0x0B0D | `flags.formation` | `Formation` | Formation lap | — | Bool | CALC | D | P1 | SCO | D | A |  |  | `formula:formation_from_game_or_individual_phase` |
 | 0x0B20 | `pit.in_pits` | `InPits` | In pits | — | Bool | SM/sco | M | P0 | SCO | D | A |  |  | `scoring.vehScoringInfo[player].mInPits` |
 | 0x0B21 | `pit.state` | `PitState` | Pit state | enum | U8 | SM/sco | M | P0 | SCO | D | A | 0 … 5 |  | `scoring.vehScoringInfo[player].mPitState` |
 | 0x0B22 | `pit.in_garage_stall` | `InGarage` | In garage stall | — | Bool | SM/sco | M | P1 | SCO | D | A |  |  | `scoring.vehScoringInfo[player].mInGarageStall` |
@@ -593,6 +662,7 @@ Columns: **Prov** M = measured (LMU, unit conversion only), D = derived, E = est
 | 0x0D08 | `source.duplicate_frames` | `SrcDuplicateFrames` | Duplicate LMU frames | count | U64 | APP | D | P2 | DIA | D | A |  |  | `app:duplicate_frame_count` |
 | 0x0D09 | `source.invalid_samples` | `SrcInvalidSamples` | Samples rejected by validation | count | U64 | APP | D | P2 | DIA | D | A |  |  | `app:invalid_sample_count` |
 | 0x0D0A | `source.read_duration_s` | `SrcReadDuration` | Shared-memory copy duration | s | F32 | APP | D | P2 | DIA | C | A | ≥ 0 |  | `app:snapshot_copy_duration` |
+| 0x0D0B | `source.discontinuity` | `SrcDiscontinuity` | Car-state discontinuity (0 none, 1 garage teleport, 2 teleport ET step-back, 3 session-end rewind, 4 realtime entry) | enum | U8 | CALC | D | P0 | PHY | D | A | 0 … 4 |  | `formula:discontinuity_teleport_rewind_entry` |
 | 0x0D10 | `app.pipeline_latency_s` | `AppPipelineLatency` | Capture-to-publish latency | s | F32 | APP | D | P2 | DIA | C | A | ≥ 0 |  | `app:capture_to_publish` |
 | 0x0D11 | `app.calculation_engine_version` | `CalcEngineVersion` | Calculation engine version (race-engines formulas) | count | U32 | APP | D | P1 | STA | D | A |  |  | `app:race_engines_version` |
 | 0x0D12 | `app.normalizer_formula_version` | `NormalizerFormulaVersion` | Formula version (lmu-normalizer formulas) | count | U32 | APP | D | P1 | STA | D | A |  |  | `app:lmu_normalizer_formula_version` |

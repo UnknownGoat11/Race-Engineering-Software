@@ -303,6 +303,97 @@ lmu_enum! {
     }
 }
 
+/// A known discontinuity of the player car's state, as published in `source.discontinuity` (registry
+/// `ch::SRC_DISCONTINUITY`, written by `lmu-normalizer`, A-LMU-031 / A-LMU-067). Not an LMU field: the code is
+/// this application's own, so there is no `Unknown` variant. One frame carries the strongest kind seen since
+/// the previous published frame ([`CarDiscontinuity::priority`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CarDiscontinuity {
+    /// Nothing unusual: the car moved and the time base advanced normally.
+    None,
+    /// LMU moved the car into or out of the garage in one frame (a garage teleport).
+    Teleport,
+    /// A garage teleport whose elapsed time stepped back a little; the step-back samples were dropped and are
+    /// signalled on the next published frame.
+    TeleportStepBack,
+    /// The finished session's elapsed time was rewound to the session end (time base reset, same session).
+    SessionEndRewind,
+    /// The car was (re)entered into realtime from the monitor.
+    RealtimeEntry,
+}
+
+impl CarDiscontinuity {
+    /// Every kind, in code order.
+    pub const ALL: [CarDiscontinuity; 5] = [
+        CarDiscontinuity::None,
+        CarDiscontinuity::Teleport,
+        CarDiscontinuity::TeleportStepBack,
+        CarDiscontinuity::SessionEndRewind,
+        CarDiscontinuity::RealtimeEntry,
+    ];
+
+    /// The published channel value.
+    pub const fn code(self) -> u8 {
+        match self {
+            CarDiscontinuity::None => 0,
+            CarDiscontinuity::Teleport => 1,
+            CarDiscontinuity::TeleportStepBack => 2,
+            CarDiscontinuity::SessionEndRewind => 3,
+            CarDiscontinuity::RealtimeEntry => 4,
+        }
+    }
+
+    /// Decodes a channel value; `None` for a code this version does not define.
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(CarDiscontinuity::None),
+            1 => Some(CarDiscontinuity::Teleport),
+            2 => Some(CarDiscontinuity::TeleportStepBack),
+            3 => Some(CarDiscontinuity::SessionEndRewind),
+            4 => Some(CarDiscontinuity::RealtimeEntry),
+            _ => None,
+        }
+    }
+
+    /// Which kind a frame reports when several happened since the previous frame (higher wins): a time-base
+    /// reset outranks a position jump, which outranks its step-back and a realtime entry.
+    pub const fn priority(self) -> u8 {
+        match self {
+            CarDiscontinuity::None => 0,
+            CarDiscontinuity::RealtimeEntry => 1,
+            CarDiscontinuity::TeleportStepBack => 2,
+            CarDiscontinuity::Teleport => 3,
+            CarDiscontinuity::SessionEndRewind => 4,
+        }
+    }
+
+    /// The stronger of two kinds ([`CarDiscontinuity::priority`]).
+    pub const fn strongest(self, other: Self) -> Self {
+        if other.priority() > self.priority() {
+            other
+        } else {
+            self
+        }
+    }
+
+    /// True when the car's position or time base did not continue from the previous sample, so a lap
+    /// boundary on this sample is not a line crossing (every kind except [`CarDiscontinuity::None`]).
+    pub const fn breaks_continuity(self) -> bool {
+        !matches!(self, CarDiscontinuity::None)
+    }
+
+    /// Short human-readable label.
+    pub const fn label(self) -> &'static str {
+        match self {
+            CarDiscontinuity::None => "None",
+            CarDiscontinuity::Teleport => "Garage teleport",
+            CarDiscontinuity::TeleportStepBack => "Teleport ET step-back",
+            CarDiscontinuity::SessionEndRewind => "Session-end rewind",
+            CarDiscontinuity::RealtimeEntry => "Realtime entry",
+        }
+    }
+}
+
 /// First raw `mSession` value of the practice block (practice 1).
 const LMU_SESSION_PRACTICE_FIRST: i32 = 1;
 /// Last raw `mSession` value of the practice block (practice 4).
@@ -434,6 +525,31 @@ impl fmt::Display for SessionType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn car_discontinuity_codes_round_trip_and_fit_the_registry_range() {
+        let def = crate::registry::by_id(crate::ch::SRC_DISCONTINUITY).expect("registered");
+        for kind in CarDiscontinuity::ALL {
+            assert_eq!(CarDiscontinuity::from_code(kind.code()), Some(kind));
+            assert_eq!(
+                crate::validate::check_value(def, f64::from(kind.code())),
+                Ok(()),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(CarDiscontinuity::from_code(5), None);
+        assert!(crate::validate::check_value(def, 5.0).is_err());
+        assert_eq!(
+            CarDiscontinuity::TeleportStepBack.strongest(CarDiscontinuity::Teleport),
+            CarDiscontinuity::Teleport
+        );
+        assert_eq!(
+            CarDiscontinuity::Teleport.strongest(CarDiscontinuity::SessionEndRewind),
+            CarDiscontinuity::SessionEndRewind
+        );
+        assert!(!CarDiscontinuity::None.breaks_continuity());
+        assert!(CarDiscontinuity::RealtimeEntry.breaks_continuity());
+    }
 
     #[test]
     fn session_type_mapping_matches_header() {
