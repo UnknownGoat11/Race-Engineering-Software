@@ -116,6 +116,7 @@ dependencies = [
  "race-engines",
  "recorder",
  "serde",
+ "serde_json",
  "synthetic",
  "telemetry-model",
  "thiserror 2.0.21",

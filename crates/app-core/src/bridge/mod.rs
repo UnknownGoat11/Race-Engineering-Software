@@ -7,3 +7,13 @@ pub mod hub;
 pub mod pacer;
 pub mod sink;
 pub mod status;
+
+pub use hub::{
+    MAX_HISTORY_BYTES, MAX_HISTORY_DURATION_NS, MAX_SUB_QUEUE_BLOCKS, MAX_SUB_QUEUE_BYTES, UiHub,
+};
+pub use pacer::{DEFAULT_FLUSH_HZ, DEFAULT_STATUS_HZ, PacerConfig, UiBridgePacer};
+pub use sink::{SinkClosed, SubscriptionId, UiSink};
+pub use status::{
+    AlertDto, AlertLevel, AppMode, CoreStatus, DropsDto, EngineerDto, ErrorDto, LmuSourceStatus,
+    NetworkStatusDto, Origin, RatesDto, RecordingStatusDto, SessionStatusDto, UiEvent,
+};
