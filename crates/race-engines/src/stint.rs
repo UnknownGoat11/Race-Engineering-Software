@@ -160,18 +160,29 @@ struct FuelUse {
     high: Option<f64>,
     low: Option<f64>,
     previous_segments: f64,
+    /// A refuel is still filling: further rises (of any size) raise the segment start, as in
+    /// [`crate::fuel::FuelEngine`]; cleared once consumption takes the level clearly below it.
+    filling: bool,
 }
 
 impl FuelUse {
     fn add(&mut self, fuel: f64) {
         match (self.high, self.low) {
             (Some(high), Some(low)) => {
-                if fuel > low + REFUEL_MIN_INCREASE_L {
+                if fuel > low + REFUEL_MIN_INCREASE_L && !(self.filling && fuel >= high) {
                     self.previous_segments += (high - low).max(0.0);
+                    self.high = Some(fuel);
+                    self.low = Some(fuel);
+                    self.filling = true;
+                } else if fuel >= high {
+                    // Still filling (or level noise at the segment start): it starts at the highest level.
                     self.high = Some(fuel);
                     self.low = Some(fuel);
                 } else if fuel < low {
                     self.low = Some(fuel);
+                    if fuel < high - REFUEL_MIN_INCREASE_L {
+                        self.filling = false;
+                    }
                 }
             }
             _ => {
@@ -682,21 +693,29 @@ impl StintEngine {
     }
 }
 
-/// Stint length limit (laps): the smaller of `capacity / fuel per lap` and `1 / energy per lap` over the
-/// inputs that are known; `None` when neither is (spec §67 "stint duration").
+/// Stint length limit (laps, spec §67 "stint duration").
+///
+/// `ve_applies` says whether the car runs under the virtual-energy rule (from the availability of the
+/// virtual-energy channel). Without virtual energy (`Some(false)`) the limit is `capacity / fuel per lap`.
+/// Under it (`Some(true)`) the limit is the smaller of that and `1 / energy per lap`, and both must be known:
+/// the fuel-only figure would overstate an energy-limited stint. `None` when an input it needs is unknown,
+/// including whether the rule applies.
 pub fn stint_max_laps(
     capacity_l: Option<f64>,
     fuel_per_lap_l: Option<f64>,
     energy_per_lap_frac: Option<f64>,
+    ve_applies: Option<bool>,
 ) -> Metric<f64> {
     let positive = |v: Option<f64>| finite(v).filter(|x| *x > 0.0);
     let fuel = positive(capacity_l)
         .zip(positive(fuel_per_lap_l))
         .map(|(c, f)| c / f);
-    let energy = positive(energy_per_lap_frac).map(|e| 1.0 / e);
-    let value = match (fuel, energy) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
+    let value = match ve_applies {
+        Some(false) => fuel,
+        Some(true) => fuel
+            .zip(positive(energy_per_lap_frac).map(|e| 1.0 / e))
+            .map(|(a, b)| a.min(b)),
+        None => None,
     };
     Metric::estimated(formula::STINT_MAX_LAPS, value)
 }

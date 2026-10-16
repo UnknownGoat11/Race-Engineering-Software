@@ -179,6 +179,7 @@ pub struct BrakeEngine {
     config: BrakeConfig,
     wheels: [WheelState; WHEELS],
     bias_rear: Option<f64>,
+    last_et: Option<f64>,
 }
 
 impl BrakeEngine {
@@ -189,6 +190,7 @@ impl BrakeEngine {
             config,
             wheels: Default::default(),
             bias_rear: None,
+            last_et: None,
         })
     }
 
@@ -207,6 +209,15 @@ impl BrakeEngine {
         if !et.is_finite() {
             return;
         }
+        if self.last_et.is_some_and(|t| et < t) {
+            // A new session (or a rewind): the peak since the stint start belongs to the previous one.
+            debug!(
+                component = COMPONENT,
+                et, "elapsed time regression, stint restarted"
+            );
+            self.start_stint();
+        }
+        self.last_et = Some(et);
         let window = self.config.trend_window_s;
         for (st, t) in self.wheels.iter_mut().zip(sample.temps_c) {
             let t = finite(t);

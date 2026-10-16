@@ -68,6 +68,10 @@ pub const MAX_LAP_TIME_S: f64 = 3_600.0;
 pub const OFFICIAL_LAP_TIME_TOLERANCE_S: f64 = 0.25;
 /// An official last-lap time update is matched to the lap completed at most this long before (s).
 pub const OFFICIAL_LAP_ADOPTION_WINDOW_S: f64 = 10.0;
+/// An official last-lap time that did not change during the adoption window is read as a repeat of the
+/// previous lap's time (two laps with the same `mLastLapTime`) only when it matches the computed time within
+/// this (s); a looser match is more likely a stale value and is not adopted.
+pub const OFFICIAL_LAP_REPEAT_TOLERANCE_S: f64 = 0.02;
 /// Bound of the lap history (a 24-hour race at Le Mans is about 400 laps).
 pub const MAX_LAP_HISTORY: usize = 2_000;
 /// Bound of the stored lap traces (pinned references included).
@@ -118,6 +122,11 @@ pub struct TimingSample {
     pub lap_start_et_s: Option<f64>,
     /// Distance from the start/finish line along the lap (m).
     pub lap_dist_m: Option<f64>,
+    /// Raw scoring lap distance (`mLapDist`, m). Unlike `lap_dist_m` it is never wrapped: a negative value
+    /// means the car is behind the line before its first crossing (A-LMU-070), which marks the lap
+    /// `before_line`. The normalizer's lap progress wraps such a distance into the end of the lap, so this
+    /// is the only place the condition survives.
+    pub scoring_lap_dist_m: Option<f64>,
     /// Track length (m).
     pub track_length_m: Option<f64>,
     /// Zero-based sector index from the source (LMU: 0..=2).
@@ -152,6 +161,7 @@ impl TimingSample {
             lap_number: frame_int(frame, ch::LAP_NUMBER).and_then(|v| i32::try_from(v).ok()),
             lap_start_et_s: frame_f64(frame, ch::LAP_START_TIME),
             lap_dist_m: progress_dist.or_else(|| frame_f64(frame, ch::LAP_DISTANCE)),
+            scoring_lap_dist_m: frame_f64(frame, ch::LAP_DISTANCE),
             track_length_m,
             sector_index: frame_int(frame, ch::SECTOR).and_then(|v| u8::try_from(v).ok()),
             lap_invalidated: frame_bool(frame, ch::LAP_INVALID),
@@ -641,6 +651,9 @@ pub struct TimingEngine {
     wrap_armed: bool,
     pending_official: Option<(LapId, f64)>,
     last_official_s: Option<f64>,
+    /// The official last-lap time changed within the adoption window of the previous completed lap, so LMU
+    /// is known to update it every lap (required before an unchanged value is read as a repeated time).
+    official_tracks_laps: bool,
     external_session_best_s: Option<f64>,
     max_sector_index_seen: Option<usize>,
     track_length_m: Option<f64>,
@@ -673,6 +686,7 @@ impl TimingEngine {
             wrap_armed: false,
             pending_official: None,
             last_official_s: None,
+            official_tracks_laps: false,
             external_session_best_s: None,
             max_sector_index_seen: None,
             track_length_m: None,
@@ -704,6 +718,7 @@ impl TimingEngine {
         self.wrap_armed = false;
         self.pending_official = None;
         self.last_official_s = None;
+        self.official_tracks_laps = false;
         self.max_sector_index_seen = None;
         self.recompute_bests();
         Some(ResetReason::ContextChanged)
@@ -839,6 +854,7 @@ impl TimingEngine {
                 self.last_wrap_et_s = None;
                 self.wrap_armed = false;
                 self.pending_official = None;
+                self.official_tracks_laps = false;
             }
         }
         let prev = self.prev;
@@ -865,6 +881,7 @@ impl TimingEngine {
                 out.reset = Some(ResetReason::LapCounterJump);
                 self.recent = None;
                 self.pending_official = None;
+                self.official_tracks_laps = false;
                 false
             }
             CounterStep::Unavailable => {
@@ -1408,28 +1425,53 @@ impl TimingEngine {
     }
 
     /// Adopts an official LMU last-lap time for the lap just completed when it matches.
+    ///
+    /// A changed value inside the adoption window belongs to that lap. Two consecutive laps can have the
+    /// same official time, so a value that stays unchanged through the whole window is adopted as a repeat
+    /// only when LMU updated the value for the previous lap too and it matches the computed time within
+    /// [`OFFICIAL_LAP_REPEAT_TOLERANCE_S`]; otherwise it is treated as stale and the computed time is kept.
     fn adopt_official(&mut self, s: &TimingSample) {
-        let Some(official) = finite(s.official_last_lap_s).filter(|t| *t > 0.0) else {
-            return;
-        };
-        let is_new = self.last_official_s != Some(official);
-        self.last_official_s = Some(official);
-        if !is_new {
-            return;
+        let official = finite(s.official_last_lap_s).filter(|t| *t > 0.0);
+        let changed = official.is_some() && official != self.last_official_s;
+        if official.is_some() {
+            self.last_official_s = official;
         }
         let Some((id, completed_et)) = self.pending_official else {
             return;
         };
-        if s.et_s - completed_et > OFFICIAL_LAP_ADOPTION_WINDOW_S {
-            self.pending_official = None;
-            return;
+        let expired = s.et_s - completed_et > OFFICIAL_LAP_ADOPTION_WINDOW_S;
+        match official {
+            Some(official) if changed && !expired => {
+                self.pending_official = None;
+                self.official_tracks_laps = true;
+                self.apply_official(id, official, OFFICIAL_LAP_TIME_TOLERANCE_S, true);
+            }
+            _ if expired => {
+                self.pending_official = None;
+                // A change arriving after the window is not this lap's; an unavailable value is no evidence.
+                let repeat = official.filter(|_| !changed && self.official_tracks_laps);
+                self.official_tracks_laps = repeat.is_some_and(|official| {
+                    self.apply_official(id, official, OFFICIAL_LAP_REPEAT_TOLERANCE_S, false)
+                });
+            }
+            _ => {}
         }
-        self.pending_official = None;
+    }
+
+    /// Replaces lap `id`'s computed time with `official` when they agree within `tolerance`; returns whether
+    /// it was adopted. `report_mismatch` records (and logs) a disagreement on the lap.
+    fn apply_official(
+        &mut self,
+        id: LapId,
+        official: f64,
+        tolerance: f64,
+        report_mismatch: bool,
+    ) -> bool {
         let Some(lap) = self.laps.iter_mut().find(|l| l.id == id) else {
-            return;
+            return false;
         };
         match lap.time_s {
-            Some(t) if (t - official).abs() <= OFFICIAL_LAP_TIME_TOLERANCE_S => {
+            Some(t) if (t - official).abs() <= tolerance => {
                 lap.time_s = Some(official);
                 lap.time_source = LapTimeSource::Official;
                 if let Some(trace) = self.traces.get_mut(&id) {
@@ -1444,16 +1486,20 @@ impl TimingEngine {
                     }
                 }
                 self.recompute_bests();
+                true
             }
             other => {
-                warn!(
-                    component = COMPONENT,
-                    lap = id.0,
-                    computed = ?other,
-                    official,
-                    "official lap time disagrees with the computed time; computed time kept"
-                );
-                lap.official_mismatch_s = Some(official);
+                if report_mismatch {
+                    warn!(
+                        component = COMPONENT,
+                        lap = id.0,
+                        computed = ?other,
+                        official,
+                        "official lap time disagrees with the computed time; computed time kept"
+                    );
+                    lap.official_mismatch_s = Some(official);
+                }
+                false
             }
         }
     }
@@ -1480,7 +1526,7 @@ impl TimingEngine {
         let Some(cur) = self.current.as_mut() else {
             return;
         };
-        if dist.is_some_and(|d| d < 0.0) {
+        if dist.is_some_and(|d| d < 0.0) || finite(s.scoring_lap_dist_m).is_some_and(|d| d < 0.0) {
             cur.before_line = true;
         }
         let elapsed = cur.start_et_s.map(|st| s.et_s - st);

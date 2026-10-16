@@ -5,6 +5,10 @@ use telemetry_model::Value;
 
 const DT: f64 = 0.01;
 
+fn clock(t: f64) -> AlertClock {
+    AlertClock::new(t, Some(t))
+}
+
 fn rule(min_duration_s: f64, cooldown_s: f64) -> AlertRule {
     AlertRule {
         id: "brake_hot".into(),
@@ -34,7 +38,7 @@ fn run(eng: &mut AlertEngine, t0: f64, values: &[f64]) -> (Vec<AlertNotice>, f64
     let mut out = Vec::new();
     let mut t = t0;
     for v in values {
-        out.extend(eng.evaluate(t, Some(3), |_| Some(*v)));
+        out.extend(eng.evaluate(clock(t), Some(3), |_| Some(*v)));
         t += DT;
     }
     (out, t)
@@ -104,13 +108,13 @@ fn clear_then_cooldown_suppresses_reraise() {
 fn missing_value_holds_active_and_drops_pending() {
     let mut eng = engine_with(vec![rule(0.0, 0.0)]);
     run(&mut eng, 0.0, &[850.0]);
-    let n = eng.evaluate(1.0, None, |_| None);
+    let n = eng.evaluate(clock(1.0), None, |_| None);
     assert!(n.is_empty());
     assert_eq!(eng.active().len(), 1);
 
     let mut eng = engine_with(vec![rule(1.0, 0.0)]);
     run(&mut eng, 0.0, &[850.0; 50]);
-    eng.evaluate(0.6, None, |_| None);
+    eng.evaluate(clock(0.6), None, |_| None);
     let (n, _) = run(&mut eng, 0.7, &[850.0; 50]);
     assert!(n.is_empty(), "pending restarted after the missing value");
 }
@@ -143,12 +147,14 @@ fn several_rules_clear_independently() {
     r2.id = "other".into();
     r2.channel = "y".into();
     let mut eng = engine_with(vec![rule(0.0, 0.0), r2]);
-    eng.evaluate(0.0, None, |_| Some(900.0));
+    eng.evaluate(clock(0.0), None, |_| Some(900.0));
     assert_eq!(eng.active().len(), 2);
-    let n = eng.evaluate(0.1, None, |c| Some(if c == "y" { 900.0 } else { 700.0 }));
+    let n = eng.evaluate(clock(0.1), None, |c| {
+        Some(if c == "y" { 900.0 } else { 700.0 })
+    });
     assert_eq!(count(&n, AlertState::Cleared), 1);
     assert_eq!(eng.active()[0].rule_id, "other");
-    let n = eng.evaluate(0.2, None, |_| Some(700.0));
+    let n = eng.evaluate(clock(0.2), None, |_| Some(700.0));
     assert_eq!(n[0].alert.rule_id, "other");
 }
 
@@ -163,8 +169,8 @@ fn default_rules_and_frame_evaluation() {
     let mut f = TelemetryFrame::new(1, 0, Some(10.0));
     f.set_valid(ch::FUEL_LAPS_REMAINING, Value::F32(1.5))
         .expect("set");
-    assert!(eng.evaluate_frame(10.0, Some(5), &f).is_empty());
-    let n = eng.evaluate_frame(11.0, Some(5), &f);
+    assert!(eng.evaluate_frame(clock(10.0), Some(5), &f).is_empty());
+    let n = eng.evaluate_frame(clock(11.0), Some(5), &f);
     assert_eq!(n.len(), 1);
     assert_eq!(n[0].alert.category, AlertCategory::Fuel);
 }
@@ -214,4 +220,53 @@ fn every_default_rule_watches_a_registry_channel() {
             r.channel
         );
     }
+}
+
+/// Regression: durations ran on LMU elapsed time, which freezes while the stream is stale, so the Critical
+/// stream_stale rule could never fire. They now run on the evaluation clock.
+#[test]
+fn stream_stale_fires_while_lmu_elapsed_time_is_frozen() {
+    let mut eng = AlertEngine::new(&AlertConfig::default()).expect("defaults");
+    let mut f = TelemetryFrame::new(1, 0, Some(1_234.5));
+    let frozen_et = Some(1_234.5);
+    let mut raised = Vec::new();
+    // The engineer's timer re-evaluates every 100 ms; the last frame's elapsed time never advances.
+    for i in 0..60_u16 {
+        let now = 100.0 + 0.1 * f64::from(i);
+        let age = 0.1 * f32::from(i);
+        f.set_valid(ch::NET_STREAM_AGE, Value::F32(age))
+            .expect("set");
+        raised.extend(eng.evaluate_frame(AlertClock::new(now, frozen_et), None, &f));
+    }
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    let a = &raised[0].alert;
+    assert_eq!(a.rule_id, "stream_stale");
+    assert_eq!(a.severity, Severity::Critical);
+    assert_eq!(a.raised_et_s, frozen_et);
+    let rec = eng.anomalies().next().expect("anomaly");
+    assert_eq!(rec.et_s, frozen_et);
+    assert!((rec.mono_s - a.raised_s).abs() < 1e-12);
+}
+
+#[test]
+fn cooldown_expires_on_the_clock_while_elapsed_time_is_frozen() {
+    let mut eng = engine_with(vec![rule(0.0, 1.0)]);
+    let at = |t: f64| AlertClock::new(t, Some(50.0));
+    eng.evaluate(at(0.0), None, |_| Some(900.0));
+    let n = eng.evaluate(at(0.1), None, |_| Some(700.0));
+    assert_eq!(count(&n, AlertState::Cleared), 1);
+    assert!(eng.evaluate(at(0.5), None, |_| Some(900.0)).is_empty());
+    let n = eng.evaluate(at(1.2), None, |_| Some(900.0));
+    assert_eq!(count(&n, AlertState::Raised), 1);
+}
+
+#[test]
+fn unknown_elapsed_time_still_evaluates() {
+    let mut eng = engine_with(vec![rule(0.0, 0.0)]);
+    let n = eng.evaluate(AlertClock::from_mono_ns(2_000_000_000, None), None, |_| {
+        Some(900.0)
+    });
+    assert_eq!(count(&n, AlertState::Raised), 1);
+    assert_eq!(n[0].alert.raised_et_s, None);
+    assert!((n[0].alert.raised_s - 2.0).abs() < 1e-12);
 }

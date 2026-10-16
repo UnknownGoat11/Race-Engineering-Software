@@ -346,3 +346,141 @@ fn no_fuel_data_gives_no_values() {
     assert_eq!(e.laps_remaining.value, None);
     assert_eq!(e.reserve.litres, Some(0.0));
 }
+
+#[test]
+fn fuel_dropout_makes_current_dependent_outputs_unavailable_not_stale() {
+    let ctx = FuelContext {
+        race_finish: RaceFinish::Laps {
+            laps_remaining: 15.0,
+        },
+        lap_progress: Some(0.0),
+        ..FuelContext::default()
+    };
+    let mut r = Run::new(FuelConfig::default(), 60.0);
+    r.laps(5, 4.0);
+    let e = r.eng.estimate(&ctx);
+    assert!((e.laps_remaining.value.expect("laps") - 10.0).abs() < EPS);
+    // The level channel drops out (garage / spectator view / rejected value).
+    r.sample(None);
+    let e = r.eng.estimate(&ctx);
+    assert_eq!(e.current_fuel.value, None);
+    assert_eq!(e.laps_remaining.value, None);
+    assert_eq!(e.time_remaining.value, None);
+    assert_eq!(e.fuel_to_add.value, None);
+    assert_eq!(e.projected_finish_fuel.value, None);
+    assert_eq!(e.margin_laps.value, None);
+    assert_eq!(e.fuel_at_pit_entry.value, None);
+    assert_eq!(e.fuel_used_this_lap.value, None);
+    // History-only outputs survive the dropout.
+    assert!((e.fuel_per_lap.value.expect("fpl") - 4.0).abs() < EPS);
+    // A lap completing during the dropout has unknown consumption, never an older value.
+    let lap = r.eng.lap_completed(info(99));
+    assert_eq!(lap.used_l, None);
+    assert_eq!(lap.exclusion, Some(ExclusionReason::NoFuelData));
+}
+
+#[test]
+fn short_dropout_mid_lap_keeps_the_lap_measurement() {
+    let mut r = Run::new(FuelConfig::default(), 60.0);
+    r.laps(2, 4.0);
+    r.sample(None);
+    let lap = r.lap(4.0, |_| {});
+    assert!((lap.used_l.expect("used") - 4.0).abs() < 1e-9);
+    assert_eq!(lap.exclusion, None);
+}
+
+#[test]
+fn refuel_spanning_a_lap_boundary_taints_both_laps() {
+    let mut r = Run::new(FuelConfig::default(), 40.0);
+    r.laps(5, 4.0); // 20 L left
+    // Refuel starts before the line: 20 -> 35 L, then the lap completes mid-fill.
+    for f in [25.0, 30.0, 35.0] {
+        r.sample(Some(f));
+    }
+    let a = r.eng.lap_completed(info(50));
+    assert_eq!(a.exclusion, Some(ExclusionReason::Refuelled));
+    // The fill continues on the new lap to 60 L, then the car uses 4 L.
+    for f in [45.0, 55.0, 60.0] {
+        r.sample(Some(f));
+    }
+    r.fuel = 60.0;
+    let b = r.lap(4.0, |_| {});
+    assert_eq!(b.exclusion, Some(ExclusionReason::Refuelled));
+    assert_eq!(b.used_l, None);
+    // The following clean lap is measured normally.
+    let c = r.lap(4.0, |_| {});
+    assert_eq!(c.exclusion, None);
+    assert!((c.used_l.expect("used") - 4.0).abs() < 1e-9);
+}
+
+/// Gate 1 pitstop1 return to the garage (real values): the level falls from 99.04 L to 22.26 L in 28 ms
+/// (ET 315.8025 -> 315.8304) on the very sample on which the lap counter went up. That is LMU setting the
+/// level, not 76.8 L of consumption: the lap is excluded as a fuel reset, a new fuel stint starts at the
+/// reset level, and the consumption before the reset is kept in the session total.
+#[test]
+fn garage_return_fuel_reset_is_not_consumption() {
+    let mut eng = FuelEngine::new(FuelConfig::default());
+    let sample = |et: f64, fuel: f64| FuelSample {
+        et_s: et,
+        fuel_l: Some(fuel),
+        capacity_l: Some(110.0),
+    };
+    // Full lap 0: 105.0 -> 102.0 L, then lap 1 starts at 102.0 L.
+    eng.update(&sample(200.0, 105.0));
+    eng.lap_completed(info(0));
+    eng.update(&sample(300.0, 102.0));
+    let lap0 = eng.lap_completed(info(1));
+    assert_eq!(lap0.exclusion, None);
+    assert!((lap0.used_l.unwrap_or(f64::NAN) - 3.0).abs() < EPS);
+    let stint_before = eng.fuel_stint();
+    // Lap 1 is driven down to 99.04 L, then the garage reset on the counter-increment sample.
+    eng.update(&sample(315.8025, 99.04));
+    eng.update(&sample(315.8304, 22.26));
+    let lap1 = eng.lap_completed(info(2));
+    assert_eq!(lap1.exclusion, Some(ExclusionReason::FuelReset));
+    assert_eq!(lap1.used_l, None);
+    assert_eq!(eng.fuel_stint(), stint_before + 1);
+    let e = eng.estimate(&FuelContext::default());
+    // 105.0 -> 99.04 L were burnt before the reset; nothing since.
+    assert!((e.fuel_used_since_start.value.unwrap_or(f64::NAN) - 5.96).abs() < 1e-6);
+    assert_eq!(e.fuel_used_this_stint.value, Some(0.0));
+    // The next lap is measured from the reset level again.
+    eng.update(&sample(415.8, 19.26));
+    let lap2 = eng.lap_completed(info(3));
+    assert_eq!(lap2.exclusion, None);
+    assert!((lap2.used_l.unwrap_or(f64::NAN) - 3.0).abs() < 1e-6);
+}
+
+/// Consumption is never a reset: a large drop over a long time (a data gap while driving) and a drop at
+/// the fastest real burn rate are consumption; only a drop faster than [`MAX_FUEL_BURN_L_PER_S`] (and
+/// larger than [`FUEL_RESET_MIN_DROP_L`]) is a reset.
+#[test]
+fn fuel_reset_needs_a_drop_faster_than_any_burn() {
+    let mut eng = FuelEngine::new(FuelConfig::default());
+    let sample = |et: f64, fuel: f64| FuelSample {
+        et_s: et,
+        fuel_l: Some(fuel),
+        capacity_l: Some(110.0),
+    };
+    eng.update(&sample(0.0, 80.0));
+    eng.lap_completed(info(0));
+    // 10 L over a 60 s gap (0.17 L/s) and 0.4 L in 0.01 s (below the minimum drop): consumption.
+    eng.update(&sample(60.0, 70.0));
+    eng.update(&sample(60.01, 69.6));
+    let lap = eng.lap_completed(info(1));
+    assert_eq!(lap.exclusion, None);
+    assert!((lap.used_l.unwrap_or(f64::NAN) - 10.4).abs() < 1e-9);
+    // A missing value in between does not hide a reset: the rate is judged from the last valid sample.
+    eng.update(&FuelSample {
+        et_s: 60.02,
+        fuel_l: None,
+        capacity_l: Some(110.0),
+    });
+    eng.update(&sample(60.03, 30.0));
+    let lap = eng.lap_completed(info(2));
+    assert_eq!(lap.exclusion, Some(ExclusionReason::FuelReset));
+    // A refuel afterwards is still a refuel.
+    eng.update(&sample(70.0, 90.0));
+    let lap = eng.lap_completed(info(3));
+    assert_eq!(lap.exclusion, Some(ExclusionReason::Refuelled));
+}

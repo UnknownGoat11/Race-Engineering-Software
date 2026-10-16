@@ -8,7 +8,8 @@
 //! [`FuelEngine::lap_completed`] right after the sample on which the timing engine completed it).
 //!
 //! # Exclusion rules (spec §26)
-//! Always excluded (the consumption value itself is not meaningful): a refuel during the lap, missing fuel
+//! Always excluded (the consumption value itself is not meaningful): a refuel or a fuel reset (LMU setting
+//! the level, e.g. on a return to the garage; see [`FuelEngine::update`]) during the lap, missing fuel
 //! data at either boundary, zero or negative consumption, consumption above
 //! [`MAX_PLAUSIBLE_FUEL_PER_LAP_L`]. Excluded by default and configurable in [`ExclusionRules`]: in-laps,
 //! out-laps, incomplete laps (start not observed or untrusted timing), formation laps, caution laps
@@ -41,6 +42,16 @@ const COMPONENT: &str = "race_engines::fuel";
 
 /// A rise above the lowest level since the last refuel larger than this (L) is a refuel.
 pub const REFUEL_MIN_INCREASE_L: f64 = 0.5;
+/// While a detected refuel is still filling, a rise of more than this above the current lap's start level
+/// marks that lap as refuelled too (a fill spanning a lap boundary). Small enough that the residual error
+/// on a lap it misses stays negligible, large enough to ignore float noise at a full tank.
+pub const REFUEL_CONTINUE_MIN_INCREASE_L: f64 = 0.05;
+/// Fastest plausible fuel burn (L/s). Real engines burn well below 0.2 L/s at full throttle; a drop faster
+/// than this is not consumption but a reset of the level by LMU (see [`FuelEngine::update`]).
+pub const MAX_FUEL_BURN_L_PER_S: f64 = 2.0;
+/// A fuel reset must also drop the level by more than this (L), so float noise between two samples with
+/// (almost) the same time is never a reset.
+pub const FUEL_RESET_MIN_DROP_L: f64 = 0.5;
 /// Largest plausible consumption in one lap (L), matching the registry range of `fuel.used_per_lap_l`.
 pub const MAX_PLAUSIBLE_FUEL_PER_LAP_L: f64 = 50.0;
 /// Laps kept for windows and the stint table (a 24-hour race is about 400 laps).
@@ -148,6 +159,9 @@ impl Default for ExclusionRules {
 pub enum ExclusionReason {
     /// Fuel was added during the lap (always excluded).
     Refuelled,
+    /// The level dropped faster than any engine burns fuel during the lap: LMU reset it (return to the
+    /// garage, see [`FuelEngine::update`]). Always excluded.
+    FuelReset,
     /// No fuel value at one of the lap boundaries (always excluded).
     NoFuelData,
     /// Zero or negative consumption (always excluded).
@@ -489,6 +503,11 @@ pub struct FuelEngine {
     capacity: Option<f64>,
     lap_start_fuel: Option<f64>,
     refuelled_this_lap: bool,
+    /// LMU reset the level during the current lap (a drop faster than [`MAX_FUEL_BURN_L_PER_S`]).
+    reset_this_lap: bool,
+    /// Time and level of the last valid fuel sample (survives a dropout, so the burn rate across it is
+    /// still judged against the real elapsed time).
+    last_valid: Option<(f64, f64)>,
     stint_start_fuel: Option<f64>,
     stint_min_fuel: Option<f64>,
     filling: bool,
@@ -506,6 +525,8 @@ impl FuelEngine {
             capacity: None,
             lap_start_fuel: None,
             refuelled_this_lap: false,
+            reset_this_lap: false,
+            last_valid: None,
             stint_start_fuel: None,
             stint_min_fuel: None,
             filling: false,
@@ -539,14 +560,53 @@ impl FuelEngine {
         self.fuel_stint
     }
 
-    /// Feeds one sample. Missing or non-finite fuel values are ignored (never read as 0).
+    /// Feeds one sample. Missing or non-finite fuel values are never read as 0: the current level becomes
+    /// unknown (every output built on it turns `None`) until a valid value arrives, while the lap-start
+    /// level and the fuel-stint state are kept so a short dropout mid-lap loses nothing.
+    ///
+    /// A **fuel reset** is a drop of more than [`FUEL_RESET_MIN_DROP_L`] faster than
+    /// [`MAX_FUEL_BURN_L_PER_S`] since the last valid sample: LMU set the level (Gate 1 pitstop1, return to
+    /// the garage: 99.04 L -> 22.26 L in 28 ms). It is not consumption: the lap in progress is excluded
+    /// ([`ExclusionReason::FuelReset`]) and a new fuel stint starts at the reset level, with the
+    /// consumption up to the reset kept in the session total.
     pub fn update(&mut self, s: &FuelSample) {
         if let Some(c) = finite(s.capacity_l).filter(|c| *c > 0.0) {
             self.capacity = Some(c);
         }
         let Some(fuel) = finite(s.fuel_l).filter(|f| *f >= 0.0) else {
+            self.current_fuel = None;
             return;
         };
+        let reset = self.last_valid.is_some_and(|(et, level)| {
+            let drop = level - fuel;
+            let dt = if s.et_s.is_finite() {
+                (s.et_s - et).max(0.0)
+            } else {
+                0.0
+            };
+            drop > FUEL_RESET_MIN_DROP_L && drop > MAX_FUEL_BURN_L_PER_S * dt
+        });
+        if s.et_s.is_finite() {
+            self.last_valid = Some((s.et_s, fuel));
+        }
+        if reset {
+            debug!(
+                component = COMPONENT,
+                et = s.et_s,
+                to = fuel,
+                "fuel reset (faster than any burn): lap excluded, new fuel stint"
+            );
+            if let (Some(start), Some(min)) = (self.stint_start_fuel, self.stint_min_fuel) {
+                self.consumed_previous_stints += (start - min).max(0.0);
+            }
+            self.fuel_stint = self.fuel_stint.saturating_add(1);
+            self.reset_this_lap = true;
+            self.filling = false;
+            self.stint_start_fuel = Some(fuel);
+            self.stint_min_fuel = Some(fuel);
+            self.current_fuel = Some(fuel);
+            return;
+        }
         match (self.stint_start_fuel, self.stint_min_fuel) {
             (Some(start), Some(min)) => {
                 if fuel > min + REFUEL_MIN_INCREASE_L && !(self.filling && fuel >= start) {
@@ -565,6 +625,15 @@ impl FuelEngine {
                     self.stint_min_fuel = Some(fuel);
                 } else if fuel >= start {
                     // Still filling (or level noise at the stint start): the stint starts at the highest level.
+                    // A fill that continues past a lap boundary also taints the new lap, otherwise its
+                    // `lap_start - current` would be understated (or negative) by the residual fill.
+                    if self.filling
+                        && self
+                            .lap_start_fuel
+                            .is_some_and(|ls| fuel > ls + REFUEL_CONTINUE_MIN_INCREASE_L)
+                    {
+                        self.refuelled_this_lap = true;
+                    }
                     self.stint_start_fuel = Some(fuel);
                     self.stint_min_fuel = Some(fuel);
                 } else if fuel < min {
@@ -587,17 +656,13 @@ impl FuelEngine {
 
     /// Reports a completed lap (call right after the sample on which it completed).
     pub fn lap_completed(&mut self, info: FuelLapInfo) -> FuelLap {
-        let used = if self.refuelled_this_lap {
+        let base = self.level_change_this_lap();
+        let used = if base.is_some() {
             None
         } else {
             self.lap_start_fuel
                 .zip(self.current_fuel)
                 .map(|(a, b)| a - b)
-        };
-        let base = if self.refuelled_this_lap {
-            Some(ExclusionReason::Refuelled)
-        } else {
-            None
         };
         let exclusion = classify(&info, used, base, &self.config.exclusions);
         let lap = FuelLap {
@@ -612,6 +677,7 @@ impl FuelEngine {
         }
         self.lap_start_fuel = self.current_fuel;
         self.refuelled_this_lap = false;
+        self.reset_this_lap = false;
         lap
     }
 
@@ -619,6 +685,18 @@ impl FuelEngine {
     pub fn lap_abandoned(&mut self) {
         self.lap_start_fuel = self.current_fuel;
         self.refuelled_this_lap = false;
+        self.reset_this_lap = false;
+    }
+
+    /// Why the current lap's `start − current` is not consumption: a refuel or a fuel reset during it.
+    fn level_change_this_lap(&self) -> Option<ExclusionReason> {
+        if self.reset_this_lap {
+            Some(ExclusionReason::FuelReset)
+        } else if self.refuelled_this_lap {
+            Some(ExclusionReason::Refuelled)
+        } else {
+            None
+        }
     }
 
     /// Fuel per lap over `window` with its trace.
@@ -719,7 +797,7 @@ impl FuelEngine {
             .map(|((c, f), n)| c - f * n.max(0.0));
 
         let last = self.laps.back();
-        let used_this_lap = if self.refuelled_this_lap {
+        let used_this_lap = if self.level_change_this_lap().is_some() {
             None
         } else {
             self.lap_start_fuel.zip(current).map(|(a, b)| a - b)
@@ -767,14 +845,18 @@ impl FuelEngine {
 }
 
 /// Applies the exclusion rules in a fixed order: data-invalid reasons first, then the configurable ones.
-/// `base` carries a reason decided when the lap completed (a refuel), which no configuration can lift.
+/// `base` carries a reason decided when the lap completed (a refuel or a fuel reset), which no configuration
+/// can lift.
 fn classify(
     info: &FuelLapInfo,
     used: Option<f64>,
     base: Option<ExclusionReason>,
     rules: &ExclusionRules,
 ) -> Option<ExclusionReason> {
-    if base == Some(ExclusionReason::Refuelled) {
+    if matches!(
+        base,
+        Some(ExclusionReason::Refuelled | ExclusionReason::FuelReset)
+    ) {
         return base;
     }
     let Some(u) = used.filter(|u| u.is_finite()) else {

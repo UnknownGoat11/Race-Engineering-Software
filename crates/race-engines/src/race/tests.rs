@@ -519,3 +519,24 @@ fn rewound_session_clock_is_never_negative() {
         }
     );
 }
+
+/// LMU's class place can disagree with the local ranking (scoring lag, a row without a place). The class
+/// neighbours must be found from the player's rank in the same local ranking.
+#[test]
+fn class_neighbours_use_the_local_rank_when_lmu_class_place_disagrees() {
+    let mut f = field();
+    for v in &mut f.vehicles {
+        if v.is_player {
+            v.class_place = Some(3); // locally 2nd of the Hypercars
+        }
+    }
+    let mut eng = RaceEngine::new();
+    eng.update(&f, &sample(1_200.0, 0.5));
+    let s = eng.snapshot().expect("snapshot");
+    // The displayed class position stays LMU's value.
+    assert_eq!(s.class_position.value, Some(3));
+    assert_eq!(s.class_gap_ahead.other_slot_id, Some(1));
+    assert_eq!(s.class_gap_ahead.seconds, Some(5.5));
+    assert_eq!(s.class_gap_behind.other_slot_id, Some(4));
+    assert_eq!(s.class_gap_behind.laps, Some(1));
+}

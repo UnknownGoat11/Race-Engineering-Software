@@ -268,13 +268,45 @@ fn energy_and_max_laps() {
     assert_eq!(e.snapshot().energy_per_lap.value, Some(0.08));
     // 100 L at 4 L/lap = 25 laps; energy 1 / 0.08 = 12.5 laps: the limit is energy.
     assert_eq!(
-        stint_max_laps(Some(100.0), Some(4.0), Some(0.08)).value,
+        stint_max_laps(Some(100.0), Some(4.0), Some(0.08), Some(true)).value,
         Some(12.5)
     );
     assert_eq!(
-        stint_max_laps(Some(100.0), Some(4.0), None).value,
+        stint_max_laps(Some(100.0), Some(4.0), None, Some(false)).value,
         Some(25.0)
     );
-    assert_eq!(stint_max_laps(None, Some(4.0), None).value, None);
-    assert_eq!(stint_max_laps(Some(100.0), Some(0.0), None).value, None);
+    assert_eq!(
+        stint_max_laps(None, Some(4.0), None, Some(false)).value,
+        None
+    );
+    assert_eq!(
+        stint_max_laps(Some(100.0), Some(0.0), None, Some(false)).value,
+        None
+    );
+    // Regression: an energy-limited car with VE per lap not known yet must not show the fuel-only limit.
+    assert_eq!(
+        stint_max_laps(Some(100.0), Some(4.0), None, Some(true)).value,
+        None
+    );
+    // Unknown whether the rule applies: no limit.
+    assert_eq!(
+        stint_max_laps(Some(100.0), Some(4.0), Some(0.08), None).value,
+        None
+    );
+}
+
+/// Regression: after a refuel was detected, a further gradual rise below the refuel threshold was not taken
+/// as the new segment start, understating the stint fuel by up to that rise.
+#[test]
+fn gradual_refuel_inside_a_stint_counts_the_full_fill() {
+    let mut e = StintEngine::new();
+    e.update(&s(0.0, PitPhase::OnTrack, Some(100.0), W));
+    e.update(&s(10.0, PitPhase::OnTrack, Some(50.0), W));
+    // Refuel detected at 60.0 L, then the level settles at 60.4 L in small steps.
+    for (et, f) in [(11.0, 60.0), (12.0, 60.2), (13.0, 60.4)] {
+        e.update(&s(et, PitPhase::OnTrack, Some(f), W));
+    }
+    e.update(&s(20.0, PitPhase::OnTrack, Some(50.0), W));
+    let used = e.snapshot().fuel_used.value.expect("used");
+    assert!((used - 60.4).abs() < 1e-9, "{used}");
 }

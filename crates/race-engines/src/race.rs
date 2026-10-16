@@ -994,7 +994,15 @@ fn class_gap(
     } else {
         Gap::none(Provenance::Estimated, formula::GAP_FROM_LEADER_TIMES)
     };
-    let (Some(p), Some(cp)) = (player, class_position) else {
+    let Some(p) = player else {
+        return none;
+    };
+    // The neighbour is looked up by rank in the local ranking, so the player's rank must come from the
+    // same ranking: LMU's class place can disagree with it (scoring lag, a row without class or place) and
+    // would then point at the player's own rank or at the wrong car. Without a local rank (the player's
+    // own row lacks class or place) LMU's class place is the only reference.
+    let local_rank = ranks.iter().find(|(id, _)| *id == p.slot_id).map(|r| r.1);
+    let Some(cp) = local_rank.or(class_position) else {
         return none;
     };
     let target = if ahead {

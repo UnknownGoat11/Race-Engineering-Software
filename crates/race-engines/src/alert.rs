@@ -17,7 +17,9 @@
 //! until the value crosses the *clear* threshold, so a value flapping around the trigger inside the
 //! hysteresis band produces no new alerts; after clearing, the cooldown suppresses immediate re-raising.
 //! A missing value never raises or clears an alert: a pending condition is dropped (it cannot be confirmed)
-//! and an active alert is held. An elapsed-time regression (session restart) drops pending conditions and
+//! and an active alert is held. Minimum durations and cooldowns run on the evaluation clock
+//! ([`AlertClock::mono_s`], wall time), never on LMU elapsed time, which freezes while the stream is stale or
+//! LMU is paused. A clock or elapsed-time regression (session restart) drops pending conditions and
 //! cooldowns.
 //!
 //! Every raise records an [`AnomalyRecord`] (time, lap, channel, measured value, threshold, severity).
@@ -403,14 +405,18 @@ pub struct Alert {
     pub state: AlertState,
     /// Engineer acknowledged it.
     pub acknowledged: bool,
-    /// Time the condition started (s, LMU elapsed time).
+    /// Time the condition started (s, evaluation clock [`AlertClock::mono_s`]).
     pub condition_since_s: f64,
-    /// Time raised (s).
+    /// Time raised (s, evaluation clock).
     pub raised_s: f64,
+    /// LMU elapsed time when raised (s), `None` when unknown.
+    pub raised_et_s: Option<f64>,
     /// Lap when raised.
     pub raised_lap: Option<i32>,
-    /// Time cleared (s).
+    /// Time cleared (s, evaluation clock).
     pub cleared_s: Option<f64>,
+    /// LMU elapsed time when cleared (s), `None` when unknown or not cleared.
+    pub cleared_et_s: Option<f64>,
     /// Value when raised.
     pub raised_value: f64,
     /// Most extreme value while active (highest for Above, lowest for Below).
@@ -430,8 +436,10 @@ pub struct AnomalyRecord {
     pub category: AlertCategory,
     /// Severity.
     pub severity: Severity,
-    /// Time (s, LMU elapsed time).
-    pub et_s: f64,
+    /// LMU elapsed time (s), `None` when unknown (e.g. the stream is stale).
+    pub et_s: Option<f64>,
+    /// Evaluation clock time (s, [`AlertClock::mono_s`]).
+    pub mono_s: f64,
     /// Lap.
     pub lap: Option<i32>,
     /// Channel.
@@ -451,6 +459,41 @@ pub struct AlertNotice {
     pub alert: Alert,
 }
 
+/// Time of one evaluation.
+///
+/// Minimum durations and cooldowns run on `mono_s`, a monotonic clock of the evaluating process (wall
+/// time), so they keep running while the stream is stale or LMU is paused: the LMU elapsed time freezes
+/// exactly when the stale-stream alert must fire. `et_s` only stamps the records.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AlertClock {
+    /// Monotonic time of the evaluating process (s), e.g. a local `Instant` or a frame's capture time.
+    pub mono_s: f64,
+    /// LMU elapsed time (s), `None` when unknown.
+    pub et_s: Option<f64>,
+}
+
+impl AlertClock {
+    /// A clock reading.
+    pub fn new(mono_s: f64, et_s: Option<f64>) -> Self {
+        Self { mono_s, et_s }
+    }
+
+    /// A clock reading from a monotonic time in nanoseconds (e.g. `TelemetryFrame::capture_mono_ns`).
+    pub fn from_mono_ns(mono_ns: u64, et_s: Option<f64>) -> Self {
+        // Precision loss above 2^53 ns (~104 days of uptime) is far below the alert time resolution.
+        #[allow(clippy::cast_precision_loss)]
+        let mono_s = mono_ns as f64 / NANOS_PER_SECOND;
+        Self { mono_s, et_s }
+    }
+
+    fn with_et(self, et_s: Option<f64>) -> Self {
+        Self { et_s, ..self }
+    }
+}
+
+/// Nanoseconds per second.
+const NANOS_PER_SECOND: f64 = 1e9;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Phase {
     Idle,
@@ -468,6 +511,7 @@ pub struct AlertEngine {
     history: VecDeque<Alert>,
     anomalies: VecDeque<AnomalyRecord>,
     next_id: u64,
+    last_mono: Option<f64>,
     last_et: Option<f64>,
 }
 
@@ -483,6 +527,7 @@ impl AlertEngine {
             history: VecDeque::new(),
             anomalies: VecDeque::new(),
             next_id: 1,
+            last_mono: None,
             last_et: None,
         })
     }
@@ -521,33 +566,44 @@ impl AlertEngine {
 
     /// Evaluates every rule against a canonical frame (channels resolved by registry name; unknown names
     /// or invalid samples are missing values).
+    ///
+    /// Network rules (stale stream) must also be evaluated on a timer while no frame arrives, with the
+    /// last frame (whose stream-age channel the caller refreshes) and the current clock.
     pub fn evaluate_frame(
         &mut self,
-        et_s: f64,
+        clock: AlertClock,
         lap: Option<i32>,
         frame: &TelemetryFrame,
     ) -> Vec<AlertNotice> {
-        self.evaluate(et_s, lap, |name| {
+        self.evaluate(clock, lap, |name| {
             registry::by_name(name).and_then(|d| frame_f64(frame, d.id))
         })
     }
 
-    /// Evaluates every rule at time `et_s`. `value_of` returns the current value of a channel, `None` when
+    /// Evaluates every rule at `clock`. `value_of` returns the current value of a channel, `None` when
     /// unavailable. Returns the alerts raised or cleared by this evaluation.
     pub fn evaluate(
         &mut self,
-        et_s: f64,
+        clock: AlertClock,
         lap: Option<i32>,
         value_of: impl Fn(&str) -> Option<f64>,
     ) -> Vec<AlertNotice> {
         let mut notices = Vec::new();
-        if !et_s.is_finite() {
+        let now = clock.mono_s;
+        if !now.is_finite() {
             return notices;
         }
-        if self.last_et.is_some_and(|t| et_s < t) {
+        let et_s = clock.et_s.filter(|t| t.is_finite());
+        // A clock reset or an LMU elapsed-time regression (session restart) invalidates pending conditions
+        // and cooldowns measured before it.
+        let mono_regressed = self.last_mono.is_some_and(|t| now < t);
+        let et_regressed = self.last_et.zip(et_s).is_some_and(|(last, t)| t < last);
+        if mono_regressed || et_regressed {
             debug!(
                 component = COMPONENT,
-                et_s, "time regression: pending and cooldowns dropped"
+                now,
+                ?et_s,
+                "time regression: pending and cooldowns dropped"
             );
             for p in &mut self.phases {
                 if matches!(p, Phase::Pending { .. } | Phase::Cooldown { .. }) {
@@ -555,7 +611,10 @@ impl AlertEngine {
                 }
             }
         }
-        self.last_et = Some(et_s);
+        self.last_mono = Some(now);
+        if et_s.is_some() {
+            self.last_et = et_s;
+        }
         // Alerts raised on the previous evaluation become Active.
         for a in &mut self.active {
             if a.state == AlertState::Raised {
@@ -566,14 +625,14 @@ impl AlertEngine {
         for i in 0..self.rules.len() {
             let value = value_of(&self.rules[i].channel).filter(|v| v.is_finite());
             if let Phase::Cooldown { until } = self.phases[i]
-                && et_s >= until
+                && now >= until
             {
                 self.phases[i] = Phase::Idle;
             }
             let rule = &self.rules[i];
             match (self.phases[i], value) {
                 (Phase::Idle, Some(v)) if rule.triggered(v) => {
-                    self.phases[i] = Phase::Pending { since: et_s };
+                    self.phases[i] = Phase::Pending { since: now };
                 }
                 (Phase::Pending { .. }, Some(v)) if !rule.triggered(v) => {
                     self.phases[i] = Phase::Idle;
@@ -593,9 +652,9 @@ impl AlertEngine {
                 _ => {}
             }
             if let (Phase::Pending { since }, Some(v)) = (self.phases[i], value)
-                && et_s - since >= self.rules[i].min_duration_s
+                && now - since >= self.rules[i].min_duration_s
             {
-                let index = self.raise(i, since, et_s, lap, v);
+                let index = self.raise(i, since, clock.with_et(et_s), lap, v);
                 self.phases[i] = Phase::Active { index };
                 notices.push(AlertNotice {
                     state: AlertState::Raised,
@@ -604,14 +663,21 @@ impl AlertEngine {
             }
         }
         for i in to_clear {
-            if let Some(n) = self.clear(i, et_s) {
+            if let Some(n) = self.clear(i, clock.with_et(et_s)) {
                 notices.push(n);
             }
         }
         notices
     }
 
-    fn raise(&mut self, rule_idx: usize, since: f64, et_s: f64, lap: Option<i32>, v: f64) -> usize {
+    fn raise(
+        &mut self,
+        rule_idx: usize,
+        since: f64,
+        clock: AlertClock,
+        lap: Option<i32>,
+        v: f64,
+    ) -> usize {
         let r = &self.rules[rule_idx];
         let id = self.next_id;
         self.next_id += 1;
@@ -626,9 +692,11 @@ impl AlertEngine {
             state: AlertState::Raised,
             acknowledged: false,
             condition_since_s: since,
-            raised_s: et_s,
+            raised_s: clock.mono_s,
+            raised_et_s: clock.et_s,
             raised_lap: lap,
             cleared_s: None,
+            cleared_et_s: None,
             raised_value: v,
             worst_value: v,
             threshold: r.trigger,
@@ -638,7 +706,8 @@ impl AlertEngine {
             rule_id: r.id.clone(),
             category: r.category,
             severity: r.severity,
-            et_s,
+            et_s: clock.et_s,
+            mono_s: clock.mono_s,
             lap,
             channel: r.channel.clone(),
             measured: v,
@@ -650,7 +719,7 @@ impl AlertEngine {
         self.active.len() - 1
     }
 
-    fn clear(&mut self, rule_idx: usize, et_s: f64) -> Option<AlertNotice> {
+    fn clear(&mut self, rule_idx: usize, clock: AlertClock) -> Option<AlertNotice> {
         let Phase::Active { index } = self.phases[rule_idx] else {
             return None;
         };
@@ -668,10 +737,11 @@ impl AlertEngine {
             }
         }
         alert.state = AlertState::Cleared;
-        alert.cleared_s = Some(et_s);
+        alert.cleared_s = Some(clock.mono_s);
+        alert.cleared_et_s = clock.et_s;
         info!(component = COMPONENT, rule = %alert.rule_id, alert_id = alert.id, "alert cleared");
         self.phases[rule_idx] = Phase::Cooldown {
-            until: et_s + self.rules[rule_idx].cooldown_s,
+            until: clock.mono_s + self.rules[rule_idx].cooldown_s,
         };
         self.history.push_back(alert.clone());
         while self.history.len() > MAX_HISTORY {

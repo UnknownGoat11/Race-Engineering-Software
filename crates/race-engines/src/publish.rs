@@ -7,8 +7,9 @@
 //! - a metric without a value (missing or `Unavailable` input) is written `Unavailable`, never 0;
 //! - a value outside the channel's registry range is written `Invalid` (never clamped);
 //! - the metric's formula must be the channel's registry origin (`formula:<id>`) and its provenance the
-//!   channel's provenance; a mismatch is a programming error, logged and reported but the value is still
-//!   published (the registry stays the contract, the report surfaces the drift);
+//!   channel's provenance; a mismatch is a programming error: the value is written `Invalid` (the drift is
+//!   visible on the wire, never presented as a valid value under the wrong contract) and reported in
+//!   [`PublishReport::errors`], logged at debug level only (this runs at the frame rate);
 //! - `app.calculation_engine_version` carries [`CALCULATION_ENGINE_VERSION`].
 //!
 //! Engines whose outputs are not passed (`None`) get all their channels written `Unavailable`. Energy (VE),
@@ -262,12 +263,14 @@ fn write<T: ChannelNumber>(
             Sample::unavailable()
         }
         Some(v) => {
-            check_contract(def, &metric, r);
+            let contract_ok = check_contract(def, &metric, r);
             let x = v.to_f64();
             let in_range = def
                 .valid_range
                 .is_none_or(|(lo, hi)| x.is_finite() && x >= lo && x <= hi);
-            if !in_range {
+            if !contract_ok {
+                Sample::invalid()
+            } else if !in_range {
                 debug!(
                     component = COMPONENT,
                     channel = def.name,
@@ -297,13 +300,22 @@ fn write<T: ChannelNumber>(
     }
 }
 
-fn check_contract<T>(def: &ChannelDef, metric: &Metric<T>, r: &mut PublishReport) {
+/// Checks a metric's formula and provenance against the registry contract of its channel. A mismatch is a
+/// build defect (a renamed formula id): the value is published `Invalid` so the drift is visible on the wire,
+/// and the error goes to [`PublishReport::errors`] for the caller to surface. It is logged at debug level
+/// only, because this runs at the frame rate and a warning per frame would flood the log.
+pub(crate) fn check_contract<T>(
+    def: &ChannelDef,
+    metric: &Metric<T>,
+    r: &mut PublishReport,
+) -> bool {
     let origin_ok = def
         .origin
         .strip_prefix(FORMULA_ORIGIN_PREFIX)
         .is_some_and(|f| f == metric.formula);
-    if !origin_ok || def.provenance != metric.provenance {
-        warn!(
+    let ok = origin_ok && def.provenance == metric.provenance;
+    if !ok {
+        debug!(
             component = COMPONENT,
             channel = def.name,
             formula = metric.formula,
@@ -317,6 +329,7 @@ fn check_contract<T>(def: &ChannelDef, metric: &Metric<T>, r: &mut PublishReport
             origin: def.origin,
         });
     }
+    ok
 }
 
 #[cfg(test)]

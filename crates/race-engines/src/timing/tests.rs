@@ -88,6 +88,7 @@ impl Sim {
             lap_number: Some(self.lap),
             lap_start_et_s: self.with_lap_start.then_some(self.lap_start),
             lap_dist_m: Some(d),
+            scoring_lap_dist_m: None,
             track_length_m: Some(L),
             sector_index: Some(three_sectors(d)),
             lap_invalidated: Some(invalid),
@@ -725,4 +726,101 @@ fn grid_rebase_and_session_end_rewind_count_no_fake_lap() {
         let t = eng.snapshot().current_lap_time.value;
         assert!(t.is_none_or(|t| t >= 0.0), "negative lap time {t:?}");
     }
+}
+
+#[test]
+fn repeated_official_lap_time_is_adopted_but_stale_value_is_not() {
+    let mut sim = Sim::new(TimingConfig::default());
+    sim.lap_plain(&Profile::uniform(100.0)); // lap A
+    sim.official = Some(100.0);
+    sim.lap_plain(&Profile::uniform(100.0)); // A completes with a new official value; lap B
+    sim.lap_plain(&Profile::uniform(99.9)); // B completes, official unchanged (same time); lap C
+    sim.lap_plain(&Profile::uniform(100.0)); // C completes, official unchanged (stale for C)
+    let laps: Vec<_> = sim.eng.laps().cloned().collect();
+    let [a, b, c] = &laps[laps.len() - 3..] else {
+        panic!("three laps expected: {laps:?}");
+    };
+    assert_eq!(a.time_source, LapTimeSource::Official);
+    assert_eq!(b.time_source, LapTimeSource::Official, "repeat adopted");
+    assert_eq!(b.time_s, Some(100.0));
+    assert_ne!(
+        c.time_source,
+        LapTimeSource::Official,
+        "stale value kept out"
+    );
+    assert_eq!(c.official_mismatch_s, None);
+    assert!((c.time_s.expect("time") - 99.9).abs() < EPS);
+}
+
+#[test]
+fn unchanged_official_value_is_not_a_repeat_without_a_per_lap_update() {
+    let mut sim = Sim::new(TimingConfig::default());
+    sim.lap_plain(&Profile::uniform(100.0)); // lap A
+    sim.official = Some(100.0);
+    sim.lap_plain(&Profile::uniform(99.9)); // A completes with a new official value; lap B
+    sim.lap_plain(&Profile::uniform(100.0)); // B: value unchanged and 0.1 s off -> stale, not adopted
+    sim.lap_plain(&Profile::uniform(100.0)); // C: unchanged, matches, but LMU skipped B's update
+    let laps: Vec<_> = sim.eng.laps().cloned().collect();
+    let [a, b, c] = &laps[laps.len() - 3..] else {
+        panic!("three laps expected: {laps:?}");
+    };
+    assert_eq!(a.time_source, LapTimeSource::Official);
+    assert_ne!(b.time_source, LapTimeSource::Official);
+    assert_ne!(c.time_source, LapTimeSource::Official);
+}
+
+/// The production path (`TimingSample::from_frame`) must keep the grid lap's `before_line` flag even though
+/// the normalizer wraps the negative scoring distance into the lap progress (A-LMU-070).
+#[test]
+fn grid_lap_from_frames_is_before_line() {
+    let frame = |et: f64, lap: i32, start: f64, scoring_d: f64, progress: f64| {
+        let mut f = TelemetryFrame::new(1, 0, Some(et));
+        f.set_valid(ch::LAP_NUMBER, Value::I32(lap)).expect("set");
+        f.set_valid(ch::LAP_START_TIME, Value::F64(start))
+            .expect("set");
+        f.set_valid(ch::LAP_DISTANCE, Value::F64(scoring_d))
+            .expect("set");
+        #[allow(clippy::cast_possible_truncation)]
+        f.set_valid(ch::LAP_PROGRESS, Value::F32(progress as f32))
+            .expect("set");
+        f.set_valid(ch::TRACK_LENGTH, Value::F64(L)).expect("set");
+        f.set_valid(ch::IN_PIT_LANE, Value::Bool(false))
+            .expect("set");
+        TimingSample::from_frame(&f).expect("sample")
+    };
+    let mut eng = TimingEngine::new(TimingConfig::default()).expect("engine");
+    eng.set_context(key(1));
+    let mut completed = Vec::new();
+    // Grid: 150 m behind the line. Scoring says -150 m, the progress is wrapped to (L - 150) / L.
+    for i in 0..50 {
+        let s = frame(50.0 + 0.1 * f64::from(i), 0, 0.0, -150.0, (L - 150.0) / L);
+        assert!(s.lap_dist_m.is_some_and(|d| d > 0.0), "progress is wrapped");
+        completed.extend(eng.update(&s).completed_lap);
+    }
+    // Race start: scoring re-bases to L - 150, the car rolls to the line.
+    for i in 0..50 {
+        let d = L - 150.0 + 3.0 * f64::from(i);
+        completed.extend(
+            eng.update(&frame(60.0 + 0.1 * f64::from(i), 0, 0.0, d, d / L))
+                .completed_lap,
+        );
+    }
+    let line = 65.0;
+    let lap_time = 100.0;
+    let mut et = line;
+    while et < line + lap_time {
+        let d = L * (et - line) / lap_time;
+        completed.extend(eng.update(&frame(et, 1, line, d, d / L)).completed_lap);
+        et += 0.1;
+    }
+    let line2 = line + lap_time;
+    for i in 0..30 {
+        let et = line2 + 0.1 * f64::from(i);
+        let d = L * (et - line2) / lap_time;
+        completed.extend(eng.update(&frame(et, 2, line2, d, d / L)).completed_lap);
+    }
+    assert_eq!(completed.len(), 2, "{completed:?}");
+    assert!(completed[0].flags.before_line);
+    assert!(!completed[0].eligible_for_best());
+    assert!(!completed[1].flags.before_line);
 }

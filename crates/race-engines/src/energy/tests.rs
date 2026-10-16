@@ -1,4 +1,4 @@
-//! Energy engine tests (spec §291, §314: unavailable on non-hybrid, no battery substitution).
+//! Energy engine tests (spec Â§291, Â§314: unavailable on non-hybrid, no battery substitution).
 
 use super::*;
 use telemetry_model::{Provenance, Value};
@@ -120,7 +120,7 @@ fn refill_never_makes_consumption_negative() {
 #[test]
 fn motor_deploy_and_harvest_split_by_sign() {
     let mut eng = engine();
-    // +100 N·m for 1 s then −100 N·m for 1 s at 6000 rpm.
+    // +100 NÂ·m for 1 s then âˆ’100 NÂ·m for 1 s at 6000 rpm.
     let omega = 6_000.0 * 2.0 * PI / 60.0;
     for i in 0..=10 {
         eng.update(&hybrid(f64::from(i) * DT, 1.0, 0.5, 100.0, 0.0));
@@ -131,7 +131,7 @@ fn motor_deploy_and_harvest_split_by_sign() {
     let s = eng.snapshot();
     let dep = s.deployed_this_lap_j.value.expect("dep");
     let har = s.harvested_this_lap_j.value.expect("har");
-    // The 10→11 interval is split half/half by the trapezoid.
+    // The 10â†’11 interval is split half/half by the trapezoid.
     let expected = 100.0 * omega * (1.0 + DT / 2.0);
     assert!((dep - expected).abs() < 1e-6, "{dep} vs {expected}");
     assert!(
@@ -168,7 +168,7 @@ fn gap_makes_lap_incomplete_and_excluded_from_average() {
 fn excluded_laps_do_not_feed_average() {
     let mut eng = engine();
     eng.update(&hybrid(0.0, 1.0, 0.5, 0.0, 0.0));
-    eng.update(&hybrid(0.1, 0.9, 0.5, 0.0, 1.0));
+    eng.update(&hybrid(0.1, 0.96, 0.5, 0.0, 1.0));
     eng.lap_completed(false);
     assert!(!eng.snapshot().ve_per_lap.is_available());
     assert!(eng.snapshot().ve_used_last_lap.is_available());
@@ -328,7 +328,7 @@ fn publish_energy_writes_ve_channels_and_unavailable_never_zero() {
 
 #[test]
 fn energy_low_default_alert_fires_end_to_end() {
-    use crate::alert::{AlertConfig, AlertEngine, AlertState};
+    use crate::alert::{AlertClock, AlertConfig, AlertEngine, AlertState};
     // 0.1 VE per lap from 0.6: 0.1 left = 1 lap, below the default 2-lap reserve.
     let mut eng = engine();
     eng.update(&hybrid(0.0, 0.6, 0.5, 0.0, 0.0));
@@ -342,11 +342,141 @@ fn energy_low_default_alert_fires_end_to_end() {
         publish_energy(&mut f, Some(&snap));
         raised.extend(
             alerts
-                .evaluate_frame(t, Some(5), &f)
+                .evaluate_frame(AlertClock::new(t, Some(t)), Some(5), &f)
                 .into_iter()
                 .filter(|n| n.state == AlertState::Raised),
         );
     }
     assert_eq!(raised.len(), 1, "{raised:?}");
     assert_eq!(raised[0].alert.rule_id, "energy_low");
+}
+
+/// Regression: a gradual refill (every per-sample step below `VE_REFILL_STEP_FRAC`) never cleared the
+/// window, so the VE rate read negative during the refill and for a window afterwards.
+#[test]
+fn gradual_ve_refill_never_reports_a_negative_rate() {
+    let mut eng = engine();
+    let mut et = 0.0;
+    let mut ve = 0.12;
+    for _ in 0..20 {
+        eng.update(&hybrid(et, ve, 0.5, 0.0, 0.0));
+        et += DT;
+        ve -= 0.001;
+    }
+    // 0.88 VE over 30 s at 100 Hz: about 0.0003 per sample.
+    let steps = 3_000_u32;
+    let start = ve;
+    for i in 1..=steps {
+        et += 0.01;
+        ve = start + (1.0 - start) * f64::from(i) / f64::from(steps);
+        eng.update(&hybrid(et, ve, 0.5, 0.0, 0.0));
+        let rate = eng.snapshot().ve_rate_per_s.value;
+        assert!(
+            rate.is_none_or(|r| r >= 0.0),
+            "negative rate {rate:?} at step {i}"
+        );
+    }
+    // Stationary at the top: still no rate.
+    eng.update(&hybrid(et + 0.01, 1.0, 0.5, 0.0, 0.0));
+    assert!(!eng.snapshot().ve_rate_per_s.is_available());
+    // Consumption resumes: a clean rate from the new window only.
+    et += 0.01;
+    for i in 1..=5 {
+        eng.update(&hybrid(
+            et + f64::from(i) * DT,
+            1.0 - 0.001 * f64::from(i),
+            0.5,
+            0.0,
+            0.0,
+        ));
+    }
+    let rate = eng.snapshot().ve_rate_per_s.value.expect("rate");
+    assert!((rate - 0.01).abs() < 1e-6, "{rate}");
+}
+
+/// Gate 1 pitstop1 return to the garage (real values): VE falls from 0.9392 to 0.2100 in 28 ms (ET
+/// 315.8025 -> 315.8304) on the sample on which the lap counter went up, then holds at rest in the garage.
+/// That is LMU resetting the allowance, not 73 % of use: the lap is incomplete for VE (no last-lap value,
+/// no average), and the use-rate window never reads the reset as consumption.
+#[test]
+fn garage_return_ve_reset_is_not_use() {
+    let mut eng = engine();
+    let et = drive(&mut eng, 0.0, 1.0, 0.06, 2);
+    assert!((eng.snapshot().ve_used_last_lap.value.unwrap_or(f64::NAN) - 0.06).abs() < 1e-9);
+    let average_before = eng.snapshot().ve_per_lap.value;
+    assert!(average_before.is_some());
+    // Lap 3: driven down to 0.9392 (the real pre-return level), then the reset sample.
+    let mut ve = 1.0 - 0.12;
+    let mut t = et;
+    for i in 0..SAMPLES_PER_LAP / 2 {
+        t += DT;
+        ve -= 0.0006;
+        eng.update(&hybrid(
+            t,
+            ve,
+            0.5,
+            100.0,
+            (i + 1) as f64 / SAMPLES_PER_LAP as f64,
+        ));
+    }
+    eng.update(&hybrid(t + 0.0279, 0.21, 0.5, 0.0, 0.92));
+    let rec = eng.lap_completed(true);
+    assert_eq!(
+        rec.ve_used, None,
+        "a lap containing a VE reset has no VE use"
+    );
+    let s = eng.snapshot();
+    assert_eq!(s.ve_used_last_lap.value, None);
+    // Window average: still the two real laps only.
+    assert_eq!(s.ve_per_lap.value, average_before);
+    // At rest in the garage after the reset: no consumption rate from the reset.
+    let mut g = t + 0.0279;
+    for _ in 0..10 {
+        g += 0.02;
+        eng.update(&hybrid(g, 0.21, 0.5, 0.0, 0.92));
+        let rate = eng.snapshot().ve_rate_per_s.value;
+        assert!(
+            rate.is_none_or(|r| r.abs() < 1e-9),
+            "rate after the reset: {rate:?}"
+        );
+    }
+    // The next full lap is measured normally from the reset level.
+    for i in 0..SAMPLES_PER_LAP {
+        g += DT;
+        eng.update(&hybrid(
+            g,
+            0.21 - 0.0006 * (i + 1) as f64,
+            0.5,
+            100.0,
+            (i + 1) as f64 / SAMPLES_PER_LAP as f64,
+        ));
+    }
+    let rec = eng.lap_completed(true);
+    assert!((rec.ve_used.unwrap_or(f64::NAN) - 0.06).abs() < 1e-9);
+}
+
+/// Normal use, however fast, is never a reset: the steepest real use per sample is far below
+/// [`VE_RESET_STEP_FRAC`], so a drop just under it still counts as use.
+#[test]
+fn ve_drop_below_the_reset_step_is_use() {
+    const DROP: f64 = 0.049;
+    let mut eng = engine();
+    eng.update(&hybrid(0.0, 0.8, 0.5, 100.0, 0.0));
+    eng.update(&hybrid(0.1, 0.8 - DROP, 0.5, 100.0, 0.5));
+    let rec = eng.lap_completed(true);
+    assert!((rec.ve_used.unwrap_or(f64::NAN) - DROP).abs() < 1e-9);
+}
+
+/// A SoC jump (reset / refill) is neither deployment nor harvest: the lap is incomplete for SoC, VE stays
+/// complete.
+#[test]
+fn soc_jump_makes_the_lap_incomplete_for_soc_only() {
+    let mut eng = engine();
+    eng.update(&hybrid(0.0, 0.8, 0.5, 100.0, 0.0));
+    eng.update(&hybrid(0.1, 0.79, 0.49, 100.0, 0.3));
+    eng.update(&hybrid(0.2, 0.78, 0.9, 100.0, 0.6));
+    let rec = eng.lap_completed(true);
+    assert_eq!(rec.soc_deployed, None);
+    assert_eq!(rec.soc_harvested, None);
+    assert!((rec.ve_used.unwrap_or(f64::NAN) - 0.02).abs() < 1e-9);
 }

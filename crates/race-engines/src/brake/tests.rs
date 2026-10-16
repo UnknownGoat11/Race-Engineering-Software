@@ -95,3 +95,18 @@ fn snapshot_has_no_unit_dependent_temperature_ratio() {
     );
     assert_eq!(eng.snapshot().front_rear_delta_c.value, Some(200.0));
 }
+
+/// Regression: the peak since the stint start survived a session restart (elapsed-time regression).
+#[test]
+fn time_regression_restarts_the_stint_peak() {
+    let mut eng = BrakeEngine::new(BrakeConfig::default()).expect("config");
+    eng.update(&sample(500.0, [950.0, 900.0, 700.0, 700.0], None));
+    eng.update(&sample(501.0, [600.0, 600.0, 500.0, 500.0], None));
+    assert_eq!(eng.snapshot().wheels[0].peak_c.value, Some(950.0));
+    // Next session: elapsed time restarts, no pit exit (start_stint) yet.
+    eng.update(&sample(10.0, [300.0, 310.0, 280.0, 290.0], None));
+    let s = eng.snapshot();
+    assert_eq!(s.wheels[0].peak_c.value, Some(300.0));
+    assert_eq!(s.wheels[1].peak_c.value, Some(310.0));
+    assert_eq!(s.wheels[0].trend_c_per_s.value, None);
+}

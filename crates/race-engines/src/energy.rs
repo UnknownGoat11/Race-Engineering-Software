@@ -11,7 +11,9 @@
 //! # Per-lap accounting
 //! The caller marks lap boundaries with [`EnergyEngine::lap_completed`]. Within a lap:
 //! - VE used and SoC deployed are the **sum of decreases**, SoC harvested the sum of increases, so a pit
-//!   refill (a VE step up) never makes consumption negative;
+//!   refill (a VE step up) never makes consumption negative; a VE drop of more than
+//!   [`VE_RESET_STEP_FRAC`] or a SoC change of more than [`SOC_JUMP_STEP_FRAC`] in one sample is a reset by
+//!   LMU (return to the garage), not use, and makes the lap incomplete for that quantity;
 //! - motor deployment / harvest energy is the trapezoidal integral of the mechanical motor power
 //!   `P = τ · ω` (ω = rpm · 2π / 60), split by sign (positive drives, negative regenerates);
 //! - regeneration energy is the trapezoidal integral of `|mRegen|` (W). The sign convention of `mRegen`
@@ -27,9 +29,10 @@
 //! value is never shown).
 //!
 //! # Rates
-//! The VE and SoC rate windows are cleared on a step that is not driving: a VE increase above
-//! [`VE_REFILL_STEP_FRAC`] (pit refill) or a SoC change above [`SOC_JUMP_STEP_FRAC`] in one sample, so a
-//! refill never appears as a huge consumption or harvest rate.
+//! The VE and SoC rate windows are cleared on a change that is not driving: a VE reset (above), a VE rise
+//! of more than [`VE_REFILL_STEP_FRAC`] above the lowest level since the last clear (pit refill, in one step or gradual;
+//! no VE rate is reported until consumption resumes) or a SoC change above [`SOC_JUMP_STEP_FRAC`] in one
+//! sample, so a refill never appears as a huge (or negative) consumption or harvest rate.
 //!
 //! # Publication
 //! [`publish_energy`] writes the VE outputs that have registry channels (`energy.ve_*`), so rules such as
@@ -45,7 +48,7 @@ use thiserror::Error;
 use tracing::{debug, warn};
 
 use crate::common::{Metric, finite, frame_f64};
-use crate::publish::{PublishError, PublishReport};
+use crate::publish::{PublishError, PublishReport, check_contract};
 use crate::tyre::{TimeWindow, valid_window};
 
 /// Tracing component name.
@@ -96,12 +99,15 @@ const RPM_TO_RAD_PER_S: f64 = 2.0 * PI / 60.0;
 /// Largest lap progress (0..1) at the first observed sample for which the first lap counts as observed
 /// from its start.
 pub const LAP_START_PROGRESS_TOLERANCE: f64 = 0.02;
-/// VE increase in one sample treated as a refill (VE never rises while driving).
+/// VE rise above the lowest level since the last refill treated as a refill (VE never rises while
+/// driving), whether it arrives in one sample or gradually.
 pub const VE_REFILL_STEP_FRAC: f64 = 0.005;
+/// VE drop in one sample treated as a reset by LMU rather than use (Gate 1 pitstop1, return to the
+/// garage: 0.9392 -> 0.2100 in 28 ms). A whole lap uses at most about a quarter of the allowance, so even
+/// across the longest integrated step ([`MAX_INTEGRATION_GAP_S`]) real use stays far below this.
+pub const VE_RESET_STEP_FRAC: f64 = 0.05;
 /// SoC change in one sample treated as a reset / refill rather than deployment or harvest.
 pub const SOC_JUMP_STEP_FRAC: f64 = 0.05;
-/// Prefix of a formula origin in the registry.
-const FORMULA_ORIGIN_PREFIX: &str = "formula:";
 
 /// One energy sample.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -363,6 +369,10 @@ pub struct EnergyEngine {
     prev: Option<EnergySample>,
     last: EnergySample,
     ve_rate: TimeWindow,
+    /// Lowest VE since the rate window was last cleared by a refill.
+    ve_window_min: Option<f64>,
+    /// Highest VE of a refill in progress; `Some` until consumption resumes.
+    ve_refill_top: Option<f64>,
     soc_rate: TimeWindow,
     history: VecDeque<EnergyLapRecord>,
     laps: u64,
@@ -378,6 +388,8 @@ impl EnergyEngine {
             prev: None,
             last: EnergySample::default(),
             ve_rate: TimeWindow::default(),
+            ve_window_min: None,
+            ve_refill_top: None,
             soc_rate: TimeWindow::default(),
             history: VecDeque::new(),
             laps: 0,
@@ -432,28 +444,39 @@ impl EnergyEngine {
             );
             self.lap.all_missing();
         }
-        if let Some(p) = self.prev {
-            // A refill / reset step would dominate the least-squares slope for a whole window.
-            if let (Some(a), Some(b)) = (finite(p.virtual_energy), finite(s.virtual_energy))
-                && b - a > VE_REFILL_STEP_FRAC
-            {
+        let ve_reset = self.prev.is_some_and(|p| {
+            finite(p.virtual_energy)
+                .zip(finite(s.virtual_energy))
+                .is_some_and(|(a, b)| a - b > VE_RESET_STEP_FRAC)
+        });
+        if let Some(v) = finite(s.virtual_energy) {
+            if ve_reset {
+                // Not use: the lap's VE total and the rate window would read the reset as consumption.
                 debug!(
                     component = COMPONENT,
                     et = s.et_s,
-                    "VE step up: rate window cleared"
+                    "VE reset: lap incomplete for VE, rate window cleared"
                 );
+                self.lap.ve.missing();
                 self.ve_rate.clear();
+                self.ve_window_min = Some(v);
+                self.ve_refill_top = None;
+            } else {
+                self.track_ve_refill(s.et_s, v);
             }
-            if let (Some(a), Some(b)) = (finite(p.soc), finite(s.soc))
-                && (b - a).abs() > SOC_JUMP_STEP_FRAC
-            {
-                debug!(
-                    component = COMPONENT,
-                    et = s.et_s,
-                    "SoC jump: rate window cleared"
-                );
-                self.soc_rate.clear();
-            }
+        }
+        if let Some(p) = self.prev
+            && let (Some(a), Some(b)) = (finite(p.soc), finite(s.soc))
+            && (b - a).abs() > SOC_JUMP_STEP_FRAC
+        {
+            debug!(
+                component = COMPONENT,
+                et = s.et_s,
+                "SoC jump: lap incomplete for SoC, rate window cleared"
+            );
+            // A reset / refill is neither deployment nor harvest.
+            self.lap.soc.missing();
+            self.soc_rate.clear();
         }
         let w = self.config.rate_window_s;
         match finite(s.virtual_energy) {
@@ -466,6 +489,42 @@ impl EnergyEngine {
         }
         self.prev = Some(*s);
         self.last = *s;
+    }
+
+    /// Keeps a VE refill out of the use-rate window. Virtual energy only falls while driving, so a rise of
+    /// more than [`VE_REFILL_STEP_FRAC`] above the lowest level since the window was last cleared is a
+    /// refill, whether LMU applies it in one step or gradually over the stop. From then on the window is
+    /// cleared on every sample (no rate is reported) while the level keeps rising or holds at its top;
+    /// the first sample below the top (consumption resumed) starts a fresh window.
+    fn track_ve_refill(&mut self, et_s: f64, v: f64) {
+        let clear = if let Some(top) = self.ve_refill_top {
+            if v < top {
+                self.ve_refill_top = None;
+                false
+            } else {
+                self.ve_refill_top = Some(v);
+                true
+            }
+        } else if self
+            .ve_window_min
+            .is_some_and(|m| v > m + VE_REFILL_STEP_FRAC)
+        {
+            debug!(
+                component = COMPONENT,
+                et = et_s,
+                "VE refill: rate window cleared until consumption resumes"
+            );
+            self.ve_refill_top = Some(v);
+            true
+        } else {
+            false
+        };
+        if clear {
+            self.ve_rate.clear();
+            self.ve_window_min = Some(v);
+        } else {
+            self.ve_window_min = Some(self.ve_window_min.map_or(v, |m| m.min(v)));
+        }
     }
 
     /// Closes the current lap. `included` is false for laps that must not feed averages (pit in/out,
@@ -594,7 +653,8 @@ pub const PUBLISHED_CHANNELS: &[ChannelId] = &[
 /// Writes the VE outputs of `snapshot` into their registry channels ([`PUBLISHED_CHANNELS`]) with the
 /// same rules as [`crate::publish::publish`]: every channel is written on every call; a missing value (or
 /// `snapshot == None`) is written `Unavailable`, never 0; a value outside the registry range is written
-/// `Invalid` (never clamped); a formula / provenance that differs from the registry is reported.
+/// `Invalid` (never clamped); a formula / provenance that differs from the registry is written `Invalid`
+/// and reported.
 pub fn publish_energy(
     frame: &mut TelemetryFrame,
     snapshot: Option<&EnergySnapshot>,
@@ -634,25 +694,7 @@ fn write_metric(frame: &mut TelemetryFrame, id: ChannelId, m: Metric<f64>, r: &m
             Sample::unavailable()
         }
         Some(x) => {
-            let origin_ok = def
-                .origin
-                .strip_prefix(FORMULA_ORIGIN_PREFIX)
-                .is_some_and(|f| f == m.formula);
-            if !origin_ok || def.provenance != m.provenance {
-                warn!(
-                    component = COMPONENT,
-                    channel = def.name,
-                    formula = m.formula,
-                    origin = def.origin,
-                    "metric does not match the registry contract"
-                );
-                r.errors.push(PublishError::ContractMismatch {
-                    channel: id.0,
-                    formula: m.formula,
-                    provenance: m.provenance,
-                    origin: def.origin,
-                });
-            }
+            let contract_ok = check_contract(def, &m, r);
             let in_range = def.valid_range.is_none_or(|(lo, hi)| x >= lo && x <= hi);
             let value = match def.value_type {
                 // The registry checks that its f32 bounds are representable; a range-checked value fits.
@@ -662,6 +704,7 @@ fn write_metric(frame: &mut TelemetryFrame, id: ChannelId, m: Metric<f64>, r: &m
                 _ => None,
             };
             match value {
+                _ if !contract_ok => Sample::invalid(),
                 _ if !in_range => {
                     debug!(
                         component = COMPONENT,

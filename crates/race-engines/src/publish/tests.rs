@@ -112,7 +112,7 @@ fn engine_values_are_written_with_registry_types() {
     let timing = TimingEngine::new(TimingConfig::default())
         .expect("timing")
         .snapshot();
-    let max = stint_max_laps(Some(100.0), fuel.fuel_per_lap.value, None);
+    let max = stint_max_laps(Some(100.0), fuel.fuel_per_lap.value, None, Some(false));
     let mut f = frame();
     let r = publish(
         &mut f,
@@ -156,7 +156,7 @@ fn out_of_range_values_are_invalid_not_clamped() {
     let r = publish(
         &mut f,
         &EngineOutputs {
-            stint_max_laps: Some(stint_max_laps(Some(100.0), Some(1e-9), None)),
+            stint_max_laps: Some(stint_max_laps(Some(100.0), Some(1e-9), None, Some(false))),
             ..EngineOutputs::default()
         },
     );
@@ -180,6 +180,8 @@ fn a_formula_that_differs_from_the_registry_is_reported() {
         r.errors[..],
         [PublishError::ContractMismatch { channel, .. }] if channel == ch::STINT_MAX_LAPS.0
     ));
+    // Never a Valid value under the wrong contract: the drift is visible on the wire.
+    assert_eq!(quality(&f, ch::STINT_MAX_LAPS), Quality::Invalid);
 }
 
 /// Every owned calculated channel: the engine metric's formula is the registry origin and the provenance
@@ -259,8 +261,8 @@ fn engine_metrics_match_the_registry_contract() {
         ),
         (
             ch::STINT_MAX_LAPS,
-            stint_max_laps(None, None, None).formula,
-            stint_max_laps(None, None, None).provenance,
+            stint_max_laps(None, None, None, None).formula,
+            stint_max_laps(None, None, None, None).provenance,
         ),
         (
             ch::RACE_LAPS_REMAINING,
@@ -274,5 +276,75 @@ fn engine_metrics_match_the_registry_contract() {
         let def = registry::by_id(id).expect("registered");
         assert_eq!(def.origin, format!("formula:{formula}"), "{}", def.name);
         assert_eq!(def.provenance, provenance, "{}", def.name);
+    }
+}
+
+#[test]
+fn fuel_dropout_publishes_fuel_outputs_unavailable() {
+    let mut e = FuelEngine::new(FuelConfig::default());
+    let mut fuel = 52.0;
+    let mut et = 0.0;
+    for lap in 0..5_u32 {
+        for _ in 0..10 {
+            fuel -= 0.3;
+            et += 10.0;
+            e.update(&FuelSample {
+                et_s: et,
+                fuel_l: Some(fuel),
+                capacity_l: Some(100.0),
+            });
+        }
+        e.lap_completed(FuelLapInfo {
+            lap_id: LapId(lap),
+            lap_number: i32::try_from(lap).ok(),
+            lap_time_s: Some(100.0),
+            complete: lap > 0,
+            pit_in: false,
+            pit_out: false,
+            formation: false,
+            caution: false,
+            invalidated: false,
+        });
+    }
+    let ctx = FuelContext {
+        race_finish: RaceFinish::Laps {
+            laps_remaining: 10.0,
+        },
+        lap_progress: Some(0.0),
+        ..FuelContext::default()
+    };
+    let live = e.estimate(&ctx);
+    let mut f = frame();
+    publish(
+        &mut f,
+        &EngineOutputs {
+            fuel: Some(&live),
+            ..EngineOutputs::default()
+        },
+    );
+    assert_eq!(quality(&f, ch::FUEL_LAPS_REMAINING), Quality::Valid);
+    e.update(&FuelSample {
+        et_s: et + 1.0,
+        fuel_l: None,
+        capacity_l: Some(100.0),
+    });
+    let stale = e.estimate(&ctx);
+    let mut f = frame();
+    publish(
+        &mut f,
+        &EngineOutputs {
+            fuel: Some(&stale),
+            ..EngineOutputs::default()
+        },
+    );
+    for id in [
+        ch::FUEL_LAPS_REMAINING,
+        ch::FUEL_TIME_REMAINING,
+        ch::FUEL_TO_ADD,
+        ch::FUEL_MARGIN_LAPS,
+        ch::FUEL_USED_THIS_LAP,
+    ] {
+        assert_eq!(quality(&f, id), Quality::Unavailable, "0x{:04X}", id.0);
+        assert_eq!(f.get(id).value, Value::None);
     }
 }
