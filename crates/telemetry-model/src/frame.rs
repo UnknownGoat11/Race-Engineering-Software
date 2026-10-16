@@ -12,7 +12,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use crate::TELEMETRY_SCHEMA_VERSION;
-use crate::channel::{ChannelDef, ChannelId};
+use crate::channel::{Availability, ChannelDef, ChannelId};
 use crate::codec::{self, CodecError, TlvEncoder, TlvHeader};
 use crate::registry;
 use crate::value::{MAX_STR_VALUE_BYTES, Quality, Sample, Value, ValueType};
@@ -45,6 +45,13 @@ pub enum FrameError {
     NonFinite(&'static str),
     #[error("channel {channel}: string value is {len} bytes, maximum is {MAX_STR_VALUE_BYTES}")]
     StringTooLong { channel: &'static str, len: usize },
+    /// A VALID sample for a channel the registry marks `NotProvided` (no live source) or `Experimental`
+    /// (not publishable until verified live); publishing it would fabricate a measurement.
+    #[error("channel {channel}: availability {availability:?} forbids a VALID sample")]
+    NotPublishable {
+        channel: &'static str,
+        availability: Availability,
+    },
     #[error("TLV codec error: {0}")]
     Codec(#[from] CodecError),
     #[error(
@@ -64,7 +71,8 @@ pub struct DecodeReport {
     /// Records skipped because the channel id is unknown to this build.
     pub unknown_skipped: usize,
     /// Records whose value contradicted the registry (wrong type, non-finite float, valid without value);
-    /// they are stored as `Invalid`, never dropped silently.
+    /// they are stored as `Invalid`, never dropped silently. VALID records for `NotProvided`/`Experimental`
+    /// channels are also counted here and stored as the channel's default "no data" sample.
     pub invalidated: usize,
 }
 
@@ -291,6 +299,11 @@ impl TelemetryFrame {
             let def = &registry::CHANNELS[index];
             let sample = match check_sample(def, record.sample) {
                 Ok(sample) => sample,
+                Err(FrameError::NotPublishable { .. }) => {
+                    // The registry says no valid value can exist: keep the channel's "no data" state.
+                    report.invalidated += 1;
+                    def.default_sample()
+                }
                 Err(_) => {
                     report.invalidated += 1;
                     Sample::invalid()
@@ -316,6 +329,15 @@ fn check_sample(def: &ChannelDef, sample: Sample) -> Result<Sample, FrameError> 
         return Ok(Sample {
             value: Value::None,
             quality: sample.quality,
+        });
+    }
+    if matches!(
+        def.availability,
+        Availability::NotProvided | Availability::Experimental
+    ) {
+        return Err(FrameError::NotPublishable {
+            channel: def.name,
+            availability: def.availability,
         });
     }
     let actual = sample.value.value_type();
@@ -503,6 +525,51 @@ mod tests {
         assert_eq!(f.f64(ch::RPM), Some(7_000.0));
         assert_eq!(f.source_et_s, None);
         assert_eq!(f.capture_mono_ns, 5);
+    }
+
+    /// Second review: a VALID value on a NotProvided or Experimental channel was accepted, so a fabricated
+    /// channel could be shown as a measurement.
+    #[test]
+    fn not_provided_and_experimental_channels_never_hold_valid_values() {
+        let mut f = TelemetryFrame::new(1, 0, None);
+        assert!(matches!(
+            f.set_valid(ch::TC_INTERVENTION, Value::F32(0.5)),
+            Err(FrameError::NotPublishable {
+                availability: Availability::NotProvided,
+                ..
+            })
+        ));
+        assert!(matches!(
+            f.set_valid(ch::LOCAL_YELLOW_S1, Value::Bool(true)),
+            Err(FrameError::NotPublishable {
+                availability: Availability::Experimental,
+                ..
+            })
+        ));
+        // Non-valid samples are still accepted (stored without value).
+        f.set(ch::LOCAL_YELLOW_S1, Sample::unavailable())
+            .expect("unavailable is allowed");
+        assert_eq!(f.get(ch::TC_INTERVENTION), &Sample::not_supported());
+
+        // A peer's block carrying such values is applied as the channel's "no data" state and counted.
+        let mut buf = Vec::new();
+        let header = TlvHeader {
+            schema_version: TELEMETRY_SCHEMA_VERSION,
+            capture_mono_ns: 1,
+            capture_relay_ns_est: 0,
+            source_et_s: 1.0,
+        };
+        let mut enc = TlvEncoder::begin(&mut buf, &header);
+        enc.push(ch::TC_INTERVENTION, &Sample::valid(Value::F32(0.5)))
+            .expect("push");
+        enc.push(ch::SLIP_RATIO_FL, &Sample::valid(Value::F32(0.1)))
+            .expect("push");
+        enc.finish();
+        let (g, report) = TelemetryFrame::from_snapshot(2, &buf).expect("decode");
+        assert_eq!(report.invalidated, 2);
+        assert_eq!(report.applied, 2);
+        assert_eq!(g.get(ch::TC_INTERVENTION), &Sample::not_supported());
+        assert_eq!(g.get(ch::SLIP_RATIO_FL), &Sample::unavailable());
     }
 
     /// A block announcing another telemetry schema is not applied unless the caller explicitly accepts that

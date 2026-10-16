@@ -183,6 +183,10 @@ fn record_capacity(count: usize, body_bytes: usize) -> usize {
 
 /// Decodes a complete TLV block. Unknown channel ids are returned as-is (the caller decides whether to
 /// skip them); unknown value types or qualities are errors because the record length would be unknown.
+///
+/// Raw-record contract (PROTOCOL.md §4, pinned by the gen-ts golden vectors): value bytes on a non-VALID
+/// record are returned as-is, so callers MUST ignore `sample.value` unless `sample.quality` is VALID
+/// ([`crate::frame::TelemetryFrame::apply_tlv`] does this). A BOOL byte other than 0 decodes as true.
 pub fn decode(data: &[u8]) -> Result<(TlvHeader, Vec<TlvRecord>), CodecError> {
     let mut c = Cursor { data, pos: 0 };
     let header = TlvHeader {

@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::channel::{ChannelDef, ChannelId};
 use crate::frame::TelemetryFrame;
 use crate::registry;
-use crate::value::{Quality, Sample, Value};
+use crate::value::{Quality, Sample, Value, ValueType};
 
 /// Why a value was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Error)]
@@ -27,21 +27,64 @@ pub enum Rejection {
 }
 
 /// Checks one numeric value against the channel's finiteness and `valid_range` (inclusive).
+///
+/// For `F32` channels the bounds are first widened to the nearest enclosing f32 values: a registry bound
+/// such as `PI` or `deg_to_rad(1440)` is not representable in f32, and a real boundary value narrowed to
+/// f32 for storage would otherwise land just outside it and be rejected (by at most one f32 ulp). The
+/// reported `min`/`max` are the registry's own bounds.
 pub fn check_value(def: &ChannelDef, value: f64) -> Result<(), Rejection> {
     if !value.is_finite() {
         return Err(Rejection::NonFinite);
     }
-    match def.valid_range {
-        Some((min, max)) if value < min || value > max => {
-            Err(Rejection::OutOfRange { value, min, max })
-        }
-        _ => Ok(()),
+    let Some((min, max)) = def.valid_range else {
+        return Ok(());
+    };
+    let (lo, hi) = if def.value_type == ValueType::F32 {
+        (f32_enclosing_lo(min), f32_enclosing_hi(max))
+    } else {
+        (min, max)
+    };
+    if value < lo || value > hi {
+        Err(Rejection::OutOfRange { value, min, max })
+    } else {
+        Ok(())
     }
 }
 
+/// The largest f32 value (as f64) that is `<= lo`; infinities and NaN pass through.
+fn f32_enclosing_lo(lo: f64) -> f64 {
+    if !lo.is_finite() {
+        return lo;
+    }
+    // `as` rounds to nearest (overflowing to an infinity, which still encloses).
+    let narrowed = lo as f32;
+    let narrowed = if f64::from(narrowed) > lo {
+        narrowed.next_down()
+    } else {
+        narrowed
+    };
+    f64::from(narrowed)
+}
+
+/// The smallest f32 value (as f64) that is `>= hi`; infinities and NaN pass through.
+fn f32_enclosing_hi(hi: f64) -> f64 {
+    if !hi.is_finite() {
+        return hi;
+    }
+    let narrowed = hi as f32;
+    let narrowed = if f64::from(narrowed) < hi {
+        narrowed.next_up()
+    } else {
+        narrowed
+    };
+    f64::from(narrowed)
+}
+
 /// Checks the change from (`prev_value` at `prev_t_s`) to (`value` at `t_s`) against `max_rate_per_s`.
-/// Passes when the channel has no rate limit or when the time step is not positive and finite (a rate
-/// cannot be assessed; time regressions are reported separately by [`classify_et`]).
+/// Passes when the channel has no rate limit, or when the time step is negative or not finite (a rate
+/// cannot be assessed; time regressions are reported separately by [`classify_et`]). A zero time step is
+/// assessable: any change at all is an infinite rate and is rejected as [`Rejection::RateExceeded`] with
+/// `dt_s == 0` (a torn read or a repeated source time with a different value).
 pub fn check_rate(
     def: &ChannelDef,
     prev_value: f64,
@@ -53,7 +96,7 @@ pub fn check_rate(
         return Ok(());
     };
     let dt_s = t_s - prev_t_s;
-    if !(dt_s.is_finite() && dt_s > 0.0) {
+    if !(dt_s.is_finite() && dt_s >= 0.0) {
         return Ok(());
     }
     let delta = (value - prev_value).abs();
@@ -83,14 +126,30 @@ pub struct RateGuard {
 
 impl RateGuard {
     /// Checks `value` at `t_s` and records it.
+    ///
+    /// Time semantics: a sample whose time is not finite, or earlier than the latest recorded reference,
+    /// cannot be rate-assessed; it passes (callers detect ET regressions with [`classify_et`] and reset) but
+    /// is NOT recorded, so it can never become the reference for later checks. A sample at exactly the
+    /// latest raw time is checked (any change is rejected) but does not replace the raw reference: a new
+    /// level must be confirmed over a positive time step before it is accepted.
     pub fn check(&mut self, def: &ChannelDef, value: f64, t_s: f64) -> Result<(), Rejection> {
+        let latest_t = match (self.last_accepted, self.last_raw) {
+            (Some((_, a)), Some((_, r))) => Some(a.max(r)),
+            (Some((_, t)), None) | (None, Some((_, t))) => Some(t),
+            (None, None) => None,
+        };
+        if !t_s.is_finite() || latest_t.is_some_and(|t| t_s < t) {
+            return Ok(());
+        }
         let vs_accepted = self
             .last_accepted
             .map(|(v, t)| check_rate(def, v, t, value, t_s));
         let vs_raw = self
             .last_raw
             .map(|(v, t)| check_rate(def, v, t, value, t_s));
-        self.last_raw = Some((value, t_s));
+        if self.last_raw.is_none_or(|(_, t)| t_s > t) {
+            self.last_raw = Some((value, t_s));
+        }
         let result = match (vs_accepted, vs_raw) {
             (None, None) | (Some(Ok(())), _) | (_, Some(Ok(()))) => Ok(()),
             (Some(Err(e)), _) | (None, Some(Err(e))) => Err(e),
@@ -313,8 +372,15 @@ mod tests {
         ));
         // A 5 g braking step is fine.
         assert_eq!(check_rate(fwd, 78.0, 1.00, 77.5, 1.01), Ok(()));
-        // No positive time step: rate cannot be assessed.
-        assert_eq!(check_rate(fwd, 78.0, 1.00, -100.0, 1.00), Ok(()));
+        // Zero time step: any change is an infinite rate (regression: used to pass).
+        assert!(matches!(
+            check_rate(fwd, 78.0, 1.00, -100.0, 1.00),
+            Err(Rejection::RateExceeded { dt_s, .. }) if dt_s == 0.0
+        ));
+        assert_eq!(check_rate(fwd, 78.0, 1.00, 78.0, 1.00), Ok(()));
+        // Negative or non-finite time step: rate cannot be assessed.
+        assert_eq!(check_rate(fwd, 78.0, 1.00, -100.0, 0.99), Ok(()));
+        assert_eq!(check_rate(fwd, 78.0, 1.00, -100.0, f64::NAN), Ok(()));
         // Channels without a rate limit always pass.
         assert_eq!(check_rate(def(ch::GEAR), 1.0, 0.0, 6.0, 0.001), Ok(()));
     }
@@ -345,6 +411,31 @@ mod tests {
         );
         g.reset();
         assert_eq!(g, RateGuard::default());
+    }
+
+    #[test]
+    fn rate_guard_zero_and_negative_time_steps_never_become_references() {
+        let fwd = def(ch::SPEED_FORWARD);
+        let mut g = RateGuard::default();
+        assert_eq!(g.check(fwd, 78.0, 1.00), Ok(()));
+        // Same source time, different value: rejected, and not adopted as the raw reference.
+        assert!(matches!(
+            g.check(fwd, -100.0, 1.00),
+            Err(Rejection::RateExceeded { .. })
+        ));
+        // So the same garbage 10 ms later is still a spike (the reviewer's probe accepted it).
+        assert!(g.check(fwd, -100.0, 1.01).is_err());
+        // Earlier source time: passes unassessed, but is not recorded.
+        let before = g;
+        assert_eq!(g.check(fwd, -100.0, 0.50), Ok(()));
+        assert_eq!(g, before, "regressed sample must not update the guard");
+        assert_eq!(g.check(fwd, 5.0, f64::NAN), Ok(()));
+        assert_eq!(g, before, "non-finite time must not update the guard");
+        // Normal motion continues against the real reference.
+        assert_eq!(g.check(fwd, 77.9, 1.02), Ok(()));
+        // A genuine level change confirmed over a positive step is still accepted on its second sample.
+        assert!(g.check(fwd, 10.0, 1.03).is_err());
+        assert_eq!(g.check(fwd, 10.0, 1.04), Ok(()));
     }
 
     #[test]

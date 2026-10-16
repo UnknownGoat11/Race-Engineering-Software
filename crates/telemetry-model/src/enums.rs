@@ -250,8 +250,10 @@ lmu_enum! {
 }
 
 lmu_enum! {
-    /// Electric boost motor state (`telemInfo[p].mElectricBoostMotorState`). `Unavailable` means the car
-    /// has no hybrid system: every hybrid channel is NOT_SUPPORTED.
+    /// Electric boost motor state (`telemInfo[p].mElectricBoostMotorState`), range 0..=4 (4 observed after a
+    /// garage release, A-LMU-064). `Unavailable` (0) only means no hybrid activity in this sample: hybrid
+    /// channels stay UNAVAILABLE while the hybrid capability is undecided and become NOT_SUPPORTED only once
+    /// the capability is decided absent (A-LMU-057), never on the first 0 sample.
     HybridMotorState: u8 {
         Unavailable = 0 => "Unavailable",
         Inactive = 1 => "Inactive",

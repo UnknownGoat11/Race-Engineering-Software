@@ -97,16 +97,20 @@ impl Value {
 /// schema version and every exhaustive `match` on `Quality` in other crates, so it is deferred to one
 /// coordinated change. Until then such values must never be published as `Valid`: lmu-normalizer withholds
 /// brake temperatures of undecided unit as `Unavailable` and marks out-of-range samples `Invalid`.
+///
+/// `Quality::default()` is `Unavailable`: "no data" must never default to valid (a derived `Default` on a
+/// struct holding a `Quality` would otherwise publish a fabricated valid 0). Wire codes are the explicit
+/// discriminants and do not depend on the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[repr(u8)]
 pub enum Quality {
-    #[default]
     Valid = 0,
     /// Value was read but failed validation (NaN, out of range, impossible jump…).
     Invalid = 1,
     /// Previously valid, not refreshed within its staleness budget.
     Stale = 2,
     /// Source exists in principle but provides no value right now (e.g. hybrid on a GT3 car).
+    #[default]
     Unavailable = 3,
     /// The current source can never provide this channel.
     NotSupported = 4,
@@ -167,5 +171,19 @@ impl Sample {
     }
     pub fn is_valid(&self) -> bool {
         self.quality == Quality::Valid && self.value != Value::None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quality_default_is_never_valid() {
+        assert_eq!(Quality::default(), Quality::Unavailable);
+        // Wire codes are the explicit discriminants, unaffected by the default.
+        assert_eq!(Quality::Valid as u8, 0);
+        assert_eq!(Quality::Unavailable as u8, 3);
+        assert_eq!(Quality::from_u8(0), Some(Quality::Valid));
     }
 }

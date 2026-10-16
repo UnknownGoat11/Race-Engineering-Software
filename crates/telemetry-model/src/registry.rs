@@ -1984,24 +1984,76 @@ mod tests {
     /// negative upper bound round down, or an in-range boundary value would be rejected.
     #[test]
     fn f32_range_bounds_survive_narrowing() {
+        use crate::validate::{Rejection, check_value};
+        // Every F32 bound, upper and lower, positive and negative: the boundary value narrowed to f32 (as a
+        // producer stores it) must pass validation. Regression: only lo > 0 and hi < 0 were checked, so
+        // PI, deg_to_rad(1440) and FRAC_PI_2 bounds rounded outward and rejected real boundary values.
+        let mut checked = 0;
         for d in CHANNELS.iter().filter(|d| d.value_type == T::F32) {
             let Some((lo, hi)) = d.valid_range else {
                 continue;
             };
-            if lo > 0.0 {
+            for bound in [lo, hi].into_iter().filter(|b| b.is_finite()) {
+                let stored = f64::from(bound as f32);
+                assert_eq!(
+                    check_value(d, stored),
+                    Ok(()),
+                    "{}: boundary {bound} stored as f32 {stored} is rejected",
+                    d.name
+                );
+                checked += 1;
+            }
+            // The widening is at most one f32 ulp: a value clearly outside is still rejected.
+            if hi.is_finite() {
+                let outside = f64::from((hi as f32).next_up().next_up());
                 assert!(
-                    f64::from(lo as f32) >= lo,
-                    "{}: lower bound {lo} rounds down in f32",
+                    matches!(check_value(d, outside), Err(Rejection::OutOfRange { .. })),
+                    "{}: {outside} above {hi} accepted",
                     d.name
                 );
             }
-            if hi < 0.0 {
+            if lo.is_finite() {
+                let outside = f64::from((lo as f32).next_down().next_down());
                 assert!(
-                    f64::from(hi as f32) <= hi,
-                    "{}: upper bound {hi} rounds up in f32",
+                    matches!(check_value(d, outside), Err(Rejection::OutOfRange { .. })),
+                    "{}: {outside} below {lo} accepted",
                     d.name
                 );
             }
+        }
+        assert!(checked > 100, "only {checked} f32 bounds checked");
+    }
+
+    /// The reviewer's reachable cases, through the frame validator.
+    #[test]
+    fn exact_f32_boundary_values_are_valid() {
+        use crate::frame::TelemetryFrame;
+        use crate::units::convert::deg_to_rad;
+        use crate::validate::FrameValidator;
+        use crate::value::Value;
+        let range_1440 = deg_to_rad(1440.0);
+        let cases = [
+            (ch::STEERING_RANGE_PHYSICAL, range_1440),
+            (ch::STEERING_ANGLE, range_1440 / 2.0),
+            (ch::STEERING_ANGLE, -range_1440 / 2.0),
+            (ch::HEADING, 0.0_f64.atan2(-1.0)),
+            (ch::HEADING, -PI),
+        ];
+        for (id, v) in cases {
+            let mut f = TelemetryFrame::new(1, 0, Some(1.0));
+            f.set_valid(id, Value::F32(v as f32)).expect("set");
+            let report = FrameValidator::new().validate(&mut f);
+            assert!(report.rejected.is_empty(), "{id:?} = {v}: {report:?}");
+            assert!(f.get(id).is_valid());
+        }
+        // Slip angle is Experimental (a frame refuses VALID values until it is verified live), so its range
+        // is checked directly: atan2(lat, 0) = ±π/2 stored as f32 must stay in range.
+        let slip = by_id(ch::SLIP_ANGLE_FL).expect("slip angle");
+        for v in [1.0_f64.atan2(0.0), (-1.0_f64).atan2(0.0)] {
+            assert_eq!(
+                crate::validate::check_value(slip, f64::from(v as f32)),
+                Ok(())
+            );
         }
     }
 
