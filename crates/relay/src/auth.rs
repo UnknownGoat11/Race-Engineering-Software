@@ -448,7 +448,10 @@ impl AuthService {
         // No refresh token is issued and nothing is written: the client keeps the refresh token
         // it holds, which stays the family's live one. A lost AUTH_OK, or one the client applies
         // after that of an overlapping AUTH, can then never leave it holding a superseded token.
-        let access = self.sign_access_token(&account, family, now)?;
+        // The new token keeps the presented token's expiry (D-008): an access token can never
+        // renew itself, so a login lasting past it must use the refresh token, which keeps
+        // rotation, sliding expiry and reuse detection in force (D-020).
+        let access = self.sign_access_token(&account, family, now, Some(claims.exp))?;
         Ok(Self::login_ok(
             account,
             AuthMethod::AccessToken,
@@ -486,7 +489,7 @@ impl AuthService {
         let keep = self.settings.max_active_refresh_per_family;
         let successor = self.new_refresh_token(&account, record.family_id, now)?;
         // Signed before anything is written: a signing or RNG failure leaves the store unchanged.
-        let access = self.sign_access_token(&account, record.family_id, now)?;
+        let access = self.sign_access_token(&account, record.family_id, now, None)?;
         let grace =
             TimeDelta::from_std(self.settings.refresh_reuse_grace).unwrap_or(TimeDelta::MAX);
         match record.rotated_at {
@@ -615,7 +618,7 @@ impl AuthService {
         self.store.record_login(account.id, now).await?;
         let family = Uuid::new_v4();
         let refresh = self.new_refresh_token(&account, family, now)?;
-        let access = self.sign_access_token(&account, family, now)?;
+        let access = self.sign_access_token(&account, family, now, None)?;
         self.store
             .create_token_family(family, account.id, now)
             .await?;
@@ -655,15 +658,18 @@ impl AuthService {
         })
     }
 
-    /// A fresh access token for `account` in login `family`, valid `access_token_ttl` from `now`.
+    /// A fresh access token for `account` in login `family`, valid `access_token_ttl` from `now`,
+    /// but never past `exp_cap` (Unix seconds) when one is given.
     fn sign_access_token(
         &self,
         account: &Account,
         family: Uuid,
         now: DateTime<Utc>,
+        exp_cap: Option<u64>,
     ) -> Result<SignedAccess, AuthError> {
         let iat = u64::try_from(now.timestamp()).unwrap_or(0);
-        let exp = iat.saturating_add(self.settings.access_token_ttl.as_secs().max(1));
+        let full = iat.saturating_add(self.settings.access_token_ttl.as_secs().max(1));
+        let exp = exp_cap.map_or(full, |cap| full.min(cap));
         let claims = AccessClaims {
             iss: JWT_ISSUER.to_owned(),
             sub: account.id.to_string(),
@@ -892,11 +898,13 @@ mod tests {
         assert_eq!(via_access.method, AuthMethod::AccessToken);
         assert_eq!(via_access.family, login.family);
         assert!(via_access.refresh.is_none(), "no refresh token is issued");
-        // A fresh access token, 15 minutes from this AUTH.
+        // A new access token that keeps the presented token's expiry (15 minutes from the
+        // password login, not from this AUTH): an access token never renews itself.
         assert_ne!(via_access.access_token, login.access_token);
+        assert_eq!(via_access.access_expires_at_ns, login.access_expires_at_ns);
         assert_eq!(
             via_access.access_expires_at_ns,
-            T0_NS + (60 + 15 * 60) * NANOS_PER_SEC
+            T0_NS + 15 * 60 * NANOS_PER_SEC
         );
         assert!(
             svc.login_access_token(&via_access.access_token)
@@ -915,6 +923,41 @@ mod tests {
             .await
             .expect("the held refresh token is still live");
         assert_eq!(next.family, login.family);
+    }
+
+    /// Second review of relay2, major finding: chaining access-token AUTHs can never extend a
+    /// login past the expiry of the access token the password / refresh login issued (D-008);
+    /// past it only the refresh token (rotation, sliding expiry, reuse detection) works.
+    #[tokio::test]
+    async fn chained_access_token_logins_never_outlive_the_original_expiry() {
+        let (svc, clock) = service(false).await;
+        let login = logged_in(&svc, "chain").await;
+        let mut held = login.access_token.clone();
+        // Renew every 4 minutes: 4 renewals stay inside the original 15 minutes.
+        for _ in 0..3 {
+            advance(&clock, Duration::from_secs(4 * 60));
+            let next = svc
+                .login_access_token(&held)
+                .await
+                .expect("inside the original lifetime");
+            assert_eq!(next.access_expires_at_ns, login.access_expires_at_ns);
+            held = next.access_token;
+        }
+        // 12 min elapsed; 4 more passes the original 15-minute expiry.
+        advance(&clock, Duration::from_secs(4 * 60));
+        assert!(matches!(
+            svc.login_access_token(&held).await,
+            Err(AuthError::TokenExpired)
+        ));
+        // The refresh path still works and issues a full-lifetime access token.
+        let refreshed = svc
+            .login_refresh_token(refresh(&login))
+            .await
+            .expect("refresh token still live");
+        assert_eq!(
+            refreshed.access_expires_at_ns,
+            T0_NS + (16 * 60 + 15 * 60) * NANOS_PER_SEC
+        );
     }
 
     /// Review findings F1/F2 (relay2): overlapping access-token AUTHs whose AUTH_OKs the app

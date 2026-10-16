@@ -368,6 +368,7 @@ async fn sessions(store: &Store, suffix: &str) {
         close_reason: None,
         last_activity: t(0),
         ended_at: None,
+        max_connection_id: 0,
     };
     store.insert_session(&record).await.expect("insert");
     assert!(matches!(
@@ -463,6 +464,7 @@ fn open_session(id: u64, driver: Uuid, last_activity: i64) -> SessionRecord {
         close_reason: None,
         last_activity: t(last_activity),
         ended_at: None,
+        max_connection_id: 0,
     }
 }
 
@@ -532,6 +534,15 @@ async fn engineer_slots(store: &Store, suffix: &str) {
         store.engineer_slots(id).await.expect("q"),
         vec![slot(erin.id, 1, Some(7))]
     );
+    // The connection-id high-water mark survives the deletion of the slot that set it, and a
+    // put of a lower id never lowers it.
+    let high_water = |record: Option<SessionRecord>| record.expect("record").max_connection_id;
+    assert_eq!(high_water(store.session(id).await.expect("q")), 3);
+    store
+        .put_engineer_slot(&slot(erin.id, 1, None))
+        .await
+        .expect("put");
+    assert_eq!(high_water(store.session(id).await.expect("q")), 3);
     // Closing the session deletes its slots, and a later put is ignored.
     store
         .close_session(id, super::CLOSE_REASON_DRIVER_STOPPED, t(20))

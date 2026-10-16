@@ -132,6 +132,7 @@ fn session_from_row(row: &PgRow) -> Result<SessionRecord, StoreError> {
     let status: String = row.try_get("status")?;
     let schema_version: i32 = row.try_get("schema_version")?;
     let resume: Option<Vec<u8>> = row.try_get("resume_hash")?;
+    let max_connection_id: i64 = row.try_get("max_connection_id")?;
     let resume_hash = match resume {
         Some(bytes) => Some(
             TokenHash::from_slice(&bytes)
@@ -159,6 +160,8 @@ fn session_from_row(row: &PgRow) -> Result<SessionRecord, StoreError> {
         close_reason: row.try_get("close_reason")?,
         last_activity: row.try_get("last_activity")?,
         ended_at: row.try_get("ended_at")?,
+        max_connection_id: u64::try_from(max_connection_id)
+            .map_err(|_| StoreError::Corrupt(format!("max_connection_id {max_connection_id}")))?,
     })
 }
 
@@ -215,7 +218,8 @@ macro_rules! token_columns {
 macro_rules! session_columns {
     () => {
         "id, driver_account, resume_hash, car, vehicle_class, track, session_type, lmu_version, \
-         app_version, schema_version, started_at, status, close_reason, last_activity, ended_at"
+         app_version, schema_version, started_at, status, close_reason, last_activity, ended_at, \
+         max_connection_id"
     };
 }
 
@@ -481,7 +485,7 @@ impl SessionStore for PgStore {
         sqlx::query(concat!(
             "INSERT INTO sessions (",
             session_columns!(),
-            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
+            ") VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)"
         ))
         .bind(session_id_param(record.id)?)
         .bind(record.driver_account)
@@ -498,6 +502,7 @@ impl SessionStore for PgStore {
         .bind(&record.close_reason)
         .bind(record.last_activity)
         .bind(record.ended_at)
+        .bind(connection_id_param(record.max_connection_id)?)
         .execute(&self.pool)
         .await
         .map_err(|e| {
@@ -626,12 +631,16 @@ impl SessionStore for PgStore {
     }
 
     async fn put_engineer_slot(&self, slot: &EngineerSlotRecord) -> Result<(), StoreError> {
-        // Only for an open session: a write that lands after the session closed is dropped.
+        // Only for an open session: a write that lands after the session closed is dropped. The
+        // session's connection-id high-water mark is raised in the same statement, so every
+        // stored slot id is covered by it.
         sqlx::query(
-            "INSERT INTO session_engineers \
+            "WITH open_session AS ( \
+                 UPDATE sessions SET max_connection_id = GREATEST(max_connection_id, $3) \
+                 WHERE id = $1 AND status <> 'closed' RETURNING id) \
+             INSERT INTO session_engineers \
                  (session_id, account_id, connection_id, connected_since, dropped_at) \
-             SELECT $1, $2, $3, $4, $5 \
-             WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1 AND status <> 'closed') \
+             SELECT $1, $2, $3, $4, $5 FROM open_session \
              ON CONFLICT (session_id, account_id) DO UPDATE SET \
                  connection_id = EXCLUDED.connection_id, \
                  connected_since = EXCLUDED.connected_since, \

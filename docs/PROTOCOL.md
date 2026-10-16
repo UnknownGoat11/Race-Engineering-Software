@@ -68,20 +68,25 @@ any flag bit (RELAY_TRAILER, PAYLOAD_ZSTD), or whose type the connection's authe
 never forwarded, cached or acted on. Implementation: `frame::check_session_binding`,
 `frame::check_client_frame` (all relay-side header rules in one call).
 
-Decoded frames are zero-copy views of the read buffer. Any frame kept beyond the current dispatch (join cache,
-latest-wins slots, reorder buffers) MUST be copied with `Frame::detach`, otherwise it pins the whole read
-buffer (up to ~512 KiB) for its lifetime.
+Decoded frames are zero-copy views of the read buffer, and so is every `Bytes` taken from one
+(`Frame::payload_bytes`, the `TelemetryPayload` of a `Message::from_frame`). Anything kept beyond the current
+dispatch (join cache, latest-wins slots, reorder buffers, a last applied snapshot, a recorder queue) MUST be
+copied with `Frame::detach` / `TelemetryPayload::detach`, otherwise it pins the whole read buffer (up to
+~512 KiB) for its lifetime.
 
 ## 2. Priorities & queues
 
 * P0: vehicle-critical state, timing, fuel, position, race status. P1: tyres, brakes, energy. P2: detail.
-* Control frames (`priority = 0xFF`) go through a small reliable queue and are never dropped. A writer serves
+* Control frames (`priority = 0xFF`) go through a small reliable queue and are never dropped by the relay
+  while the receiver's connection is up (frames for a receiver whose link is down are not queued: see §6
+  "Events during a reconnect"). A writer serves
   the reliable queue before the latest-wins slots, so a reliable frame is never overtaken by telemetry the
   relay received after it (low event/PONG latency; keeps §5 restart detection sound).
 * Priority per type: TELEMETRY_DELTA, TELEMETRY_SNAPSHOT, SCORING_UPDATE, WEATHER_UPDATE, DRIVER_STATUS and
   RECORDING_STATUS are latest-wins and MUST use P0–P2 (defaults: WEATHER_UPDATE P2, the others P0; deltas are
-  split into one frame per channel priority class). Every other type — including the stream-class
-  SCHEMA_NEGOTIATE, SESSION_EVENT and SNAPSHOT_REQUEST, which must never be dropped — MUST use 0xFF.
+  split into one frame per channel priority class; every other latest-wins type carries its whole state
+  whatever its priority, which is why receivers gate it across priorities, §5). Every other type —
+  including the stream-class SCHEMA_NEGOTIATE, SESSION_EVENT and SNAPSHOT_REQUEST, which must never be dropped — MUST use 0xFF.
 * Live telemetry frames go through a per-receiver **latest-wins** slot per priority. When a newer frame of the
   same `msg_type`+priority arrives before the old one was written, the old one is dropped and counted in
   `relay_dropped`. Snapshots are never superseded by deltas (a pending snapshot is sent first).
@@ -120,6 +125,10 @@ buffer (up to ~512 KiB) for its lifetime.
 | 0x3E | DISCONNECT         | any            | postcard `Disconnect { reason, message }` | graceful close |
 | 0x3F | ERROR              | any            | postcard `ErrorMsg { code, message, fatal }` | |
 
+Id ranges (major 1): 0x01–0x1F and 0x30–0x3F are control types (sequence 0), **0x20–0x2F is reserved for
+stream types** (per-sender sequence ≥ 1, §5). A type added by a later minor keeps to its class's range, so a
+receiver that does not know a type still knows whether it consumed a sequence number (§5, §10).
+
 There is deliberately **no** message type that can carry commands to LMU, the vehicle, inputs, or the
 driver's operating system (spec §140, §200). Engineer→driver messages are limited to SNAPSHOT_REQUEST
 and session control; the driver app ignores any other message type from the engineer direction.
@@ -147,13 +156,27 @@ record_count × record:
 ```
 Value types: 0 NONE (no bytes) · 1 F32 · 2 F64 · 3 I32 · 4 U32 · 5 BOOL(u8) · 6 U8 · 7 I8 · 8 STR (u8 len +
 UTF-8, ≤ 64 bytes) · 9 U64. Quality: 0 VALID · 1 INVALID (failed validation) · 2 STALE · 3 UNAVAILABLE ·
-4 NOT_SUPPORTED. A record with quality ≠ VALID normally has type NONE. Unknown channel ids MUST be skipped
-(forward compatibility) using the type's size; unknown value types are a decode error.
+4 NOT_SUPPORTED; 5–7 are reserved. A record with quality ≠ VALID normally has type NONE. Unknown channel ids
+MUST be skipped (forward compatibility) using the type's size; unknown value types and unknown (reserved)
+quality values are a decode error of the whole TLV block (`telemetry_model::codec::CodecError::UnknownQuality`).
+Adding a value type or a quality value therefore requires a new `TELEMETRY_SCHEMA_VERSION`, which a sender uses
+only when `select_schema_version` picked it for the session (every engineer must support it, §6); it is never
+introduced by a protocol minor alone.
+
+Current decoder contract (pinned by the gen-ts golden vectors and mirrored by the TypeScript decoder): unknown
+quality codes 5..7 fail the whole block (`UnknownQuality`); a BOOL byte other than 0 decodes as true; value
+bytes on a non-VALID record are decoded as-is. Consumers of raw records (`codec::decode`,
+`TelemetryPayload::decode`) MUST therefore ignore the value of every non-VALID record — `TelemetryFrame` and the
+store already drop it. Introducing a new quality code (e.g. SUSPECT) requires first changing every decoder to
+map unknown qualities to INVALID per record (open item from the second telemetry-model review), otherwise
+older builds drop whole blocks.
 
 ## 5. Sequences
 
 * Every frame a sender emits within a session carries a sequence number that increases by exactly 1 per frame
-  of the telemetry class (0x20–0x28), per sender. Control frames use sequence 0.
+  of the telemetry class (0x20–0x2F, §3), per sender, starting at 1 in every sequence space. Control frames use
+  sequence 0. The first stream frame of a sequence space SHOULD be SCHEMA_NEGOTIATE (reliable, so it is never
+  dropped or overtaken; the driver sends it right after the session is bound).
 * **Loss accounting** (`SequenceTracker`): receivers track `expected`, `received`, `lost` (gaps),
   `duplicated` (already seen), `out_of_order` (seq < highest but not seen), `too_old`, `restarts`.
   `observe(seq)` classifies First / InOrder / Gap{missing} / Late / Duplicate / TooOld / Restart. "Seen" is
@@ -161,9 +184,12 @@ UTF-8, ≤ 64 bytes) · 9 U64. Quality: 0 VALID · 1 INVALID (failed validation)
   (counted separately). `lost` is the number of currently missing sequences (a late frame decrements it).
   Example: 501, 502, 504 → lost = 1 (503); 100, 101, 103, 102, 104 → out_of_order = 1, lost = 0. This view
   does **not** decide what is displayed.
-* **Live state** (`LiveGate`): "accept only if newer" applies **per latest-wins key** `(msg_type, priority)`
-  (§2), not against one global highest sequence. A frame is applied iff its sequence is above the last one
-  applied for its key. Reliable stream types (SCHEMA_NEGOTIATE, SESSION_EVENT) travel in the FIFO control
+* **Live state** (`LiveGate`): "accept only if newer" applies **per live key**, not against one global highest
+  sequence. The live key of TELEMETRY_DELTA is `(msg_type, priority)`: its frames of different priorities carry
+  different channels. Every other stream type carries its whole state at any priority, so its live key is the
+  type alone (all priorities share it): a P1 TELEMETRY_SNAPSHOT 250 arriving after a P0 snapshot 300 (the relay
+  serves P0 first) is not applied, nor is an older SCORING_UPDATE / WEATHER_UPDATE / status at another priority.
+  A frame is applied iff its sequence is above the last one applied for its key. Reliable stream types (SCHEMA_NEGOTIATE, SESSION_EVENT) travel in the FIFO control
   queue, so the same rule delivers each of them exactly once and never drops one for being overtaken by
   telemetry. An applied TELEMETRY_SNAPSHOT carries every channel (weather included), so it supersedes every
   TELEMETRY_DELTA (any priority) and WEATHER_UPDATE with a sequence ≤ its own; a snapshot older than an already
@@ -176,10 +202,19 @@ UTF-8, ≤ 64 bytes) · 9 U64. Quality: 0 VALID · 1 INVALID (failed validation)
   sender continues its sequence space; a driver restart starts a new one (seq 1, 2, …) announced with
   `SESSION_RESUME{new_sequence_space: true}`, and the relay then sends SESSION_INFO to every engineer of the
   session **before** forwarding any frame of the new space (§6). Defence in depth: the tracker reports
-  `Restart` (and resets) after `RESTART_DETECT_RUN` = 36 consecutive stale (Duplicate/TooOld) frames with
-  strictly increasing sequences. A conforming relay never produces such a run: reliable frames go first (§2),
-  and between two fresh frames at most one frame per other latest-wins key arrives (18 keys = 6 latest-wins
-  types × P0–P2; the threshold is twice that).
+  `Restart` (and resets tracking and the live gate) when
+  1. a non-replayed frame with sequence 1 does not advance the highest sequence (it would be Late, Duplicate or
+     TooOld): a sender emits sequence 1 once per space, and with SCHEMA_NEGOTIATE as the first frame (above) it
+     is always the first frame of its space to arrive, so it can only start a new space. This catches a restart
+     after only a few frames, which the run rule below cannot (the new space's frames 1..H would be read as
+     duplicates of the old space's, H+1 as in order, and new SCHEMA_NEGOTIATE / SESSION_EVENTs dropped);
+  2. or after `RESTART_DETECT_RUN` = 36 consecutive stale (Duplicate/TooOld) frames with strictly increasing
+     sequences (a restart whose first frame this receiver never saw). A conforming relay never produces such a
+     run: reliable frames go first (§2), and between two fresh frames at most one frame per other latest-wins
+     key arrives (18 keys = 6 latest-wins types × P0–P2; the threshold is twice that).
+* **Unknown stream types**: a frame with an unknown type id in 0x20–0x2F (a stream type of a later minor) is
+  skipped but its sequence is still observed (`StreamReceiver::observe_unknown`; `receive_frame` does it), so
+  it causes no false loss. Unknown ids outside that range are control types and are skipped without tracking.
 * **SNAPSHOT_REQUEST** reaches the driver from several sequence spaces (each engineer's own, plus the relay's
   on join), so the driver neither sequence-tracks nor live-gates it. The driver serves at most one
   request-triggered snapshot per `SNAPSHOT_REQUEST_MIN_INTERVAL_MS` (any snapshot sent, periodic included,
@@ -189,7 +224,8 @@ UTF-8, ≤ 64 bytes) · 9 U64. Quality: 0 VALID · 1 INVALID (failed validation)
 * Implementation (`protocol::sequence`): `StreamReceiver::receive_frame` combines all of the above for one
   inbound stream (`Reception { arrival, live }`); `SnapshotRequestLimiter` implements the request rate rule.
   `ReorderBuffer` releases frames in order for archival use and gives up on a missing sequence once the
-  buffered span reaches 64 frames (counted as `skipped`).
+  buffered span reaches 64 frames (counted as `skipped`). On SESSION_INFO or `Arrival::Restart` its owner MUST call
+  `ReorderBuffer::reset` (releases what is buffered, then accepts a new sequence space from any sequence).
 
 ## 6. Handshake
 
@@ -222,11 +258,16 @@ Login tokens (D-008, D-020, normative):
 * AUTH{Password} (and ACCOUNT_REGISTER) starts a login family and its AUTH_OK carries the family's first
   refresh token. AUTH{RefreshToken} rotates the presented token: it becomes used, and its successor is in
   the AUTH_OK. Clients keep the refresh token of the newest AUTH_OK that carries one.
-* **AUTH{AccessToken} issues no refresh token** (2026-10-11): its AUTH_OK has a fresh access token, an
-  empty `refresh_token` and `refresh_expires_at_ns = 0` ("none issued"). The client keeps the refresh token
-  it holds and never overwrites it with the empty one. The relay writes nothing for this AUTH, so a lost
-  AUTH_OK, or overlapping AUTHs whose replies the client applies in any order, can never leave the client
-  holding a superseded token (D-020: log in once).
+* **AUTH{AccessToken} issues no refresh token** (2026-10-11): its AUTH_OK has a new access token (with
+  the presented token's expiry, below), an empty `refresh_token` and `refresh_expires_at_ns = 0` ("none
+  issued"). The client keeps the refresh token it holds and never overwrites it with the empty one. The
+  relay writes nothing for this AUTH, so a lost AUTH_OK, or overlapping AUTHs whose replies the client
+  applies in any order, can never leave the client holding a superseded token (D-020: log in once).
+* **An access token never renews itself** (2026-10-15): the access token in an AUTH{AccessToken} AUTH_OK
+  keeps the presented token's expiry (`access_expires_at_ns` is unchanged), so chaining access-token AUTHs
+  never extends a login past `access_token_ttl` (default 15 min) after the last password or refresh-token
+  AUTH. Past it the relay answers ERROR{TokenExpired} and the client uses its refresh token, which keeps
+  rotation, the sliding refresh expiry and reuse detection in force for every login (D-008).
 * **One live refresh token per login family, confirmed before anything is killed** (2026-10-11). Rotating
   a *live* refresh token (the client provably holds it) also supersedes every other live token of the
   family; a superseded token is treated exactly like a used one. A used token tolerated within the grace
@@ -302,6 +343,12 @@ Engineer access (D-022, normative):
   known (none is stored): until the slot's first successful resume, **any** ticket issued for that slot
   (same session, engineer account and connection id) is recognised by its HMAC tag, including tickets that
   had died by grace or by use. Such a ticket can only resume the same engineer account into its own slot.
+  Connection ids are never reused within a session, across relay restarts too: the store keeps a
+  per-session high-water mark of every connection id it stored, and a restored session assigns new ids
+  above it, so the tickets of a slot that ended before a restart never match a later slot. A slot whose
+  engineer was connected when the relay died is charged, as time out of its ticket window, only the time
+  since the new relay process started (a lower bound of its real absence; the store does not record the
+  crash instant), never the session's last-activity lag or the driver's absence.
 * **Driver controls.** ENGINEER_LIST lists every engineer holding a slot (connection id, display name,
   username, connected since, link state `Healthy | Degraded | Reconnecting`) and is sent whenever it
   changes. ENGINEER_KICK{connection_id} (also for a `Reconnecting` entry, to free a dead slot) makes the
@@ -317,6 +364,15 @@ Stream lifecycle:
   every engineer of the session **before** forwarding any frame of the new space. Without this, every
   engineer would discard the new space's frames as stale. A SESSION_INFO for the session an engineer already
   confirmed needs no new confirmation.
+* Events during a reconnect (1.0, normative limitation): the relay queues nothing for an engineer whose link
+  is down, and the join replay carries only the cached SCHEMA_NEGOTIATE, TELEMETRY_SNAPSHOT and SCORING_UPDATE.
+  SESSION_EVENTs (lap, sector, pit, flag, LMU lost, recording) the driver sent while the engineer was
+  disconnected are therefore **not delivered**, and because SESSION_INFO resets the stream (§5) the gap is not
+  counted in `lost` either. The current state is restored by the replayed snapshot and scoring. The engineer
+  app MUST NOT present its event log as complete across a reconnect: it marks the interval from the link drop
+  to the resume's SESSION_INFO as "events may be missing" (it knows both instants locally). A bounded relay
+  event cache replayed on resume is a candidate for a later minor (appended REPLAYED SESSION_EVENTs need no
+  wire change, only receiver de-duplication by event content).
 
 Environment separation: `ServerHello.env` ∈ {development, staging, production}. A client built/configured for
 production refuses a relay that announces a different environment.
@@ -386,6 +442,14 @@ Version evolution within major 1 (normative):
   path for the older layouts).
 * New enum variants cannot be decoded by older peers: a sender never uses fields/variants newer than the
   negotiated minor (`min(own, peer)`).
+* Driver→relay→engineer frames are forwarded unchanged, and the driver negotiates only with the relay: it
+  encodes them at its session minor `min(driver, relay)` and never learns the engineers' minors. So the relay
+  MUST refuse SESSION_JOIN and `SESSION_RESUME::Engineer` from an engineer whose negotiated minor is below the
+  driver's session minor (`version::check_engineer_join_minor` → `ERROR{Incompatible}`; the engineer app asks
+  the user to update). The forwarded SNAPSHOT_REQUEST of a newer engineer reaches an older driver as "sender
+  minor newer" (trailing bytes ignored, above), and `SnapshotReason` gains no new variants within major 1.
+* A new message type takes an id from its class's range (§3): stream types 0x29–0x2F, control types from the
+  free control ids. Older receivers skip unknown types, and still sequence-observe unknown stream-class ids (§5).
 * **Frozen for major 1** (exchanged before or without negotiation): `HelloPayload`, `Hello`, `ServerHello`,
   `ProtocolVersion`, `ClientRole`, `ServerLimits`, `Environment`, `ErrorMsg`, `ErrorCode` (including the
   D-022 codes 13–15, which are part of 1.0), `Disconnect`, `DisconnectReason`. Extending any of them requires

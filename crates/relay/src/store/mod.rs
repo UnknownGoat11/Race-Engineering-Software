@@ -251,6 +251,10 @@ pub struct SessionRecord {
     pub close_reason: Option<String>,
     pub last_activity: DateTime<Utc>,
     pub ended_at: Option<DateTime<Utc>>,
+    /// Highest engineer connection id ever stored for this session (0: none). Raised by
+    /// [`SessionStore::put_engineer_slot`] and never lowered, so a session rebuilt after a relay
+    /// restart never reuses the id of a slot that ended before it (that slot's tickets stay dead).
+    pub max_connection_id: u64,
 }
 
 /// Accounts and refresh tokens.
@@ -404,8 +408,9 @@ pub trait SessionStore: Send + Sync {
         ended_before: DateTime<Utc>,
     ) -> impl Future<Output = Result<u64, StoreError>> + Send;
 
-    /// Inserts or replaces the slot of `slot.account_id` in `slot.session_id`. Does nothing if
-    /// that session is closed or unknown.
+    /// Inserts or replaces the slot of `slot.account_id` in `slot.session_id` and raises the
+    /// session's `max_connection_id` to at least `slot.connection_id` (atomically). Does nothing
+    /// if that session is closed or unknown.
     fn put_engineer_slot(
         &self,
         slot: &EngineerSlotRecord,

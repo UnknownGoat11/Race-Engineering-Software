@@ -87,6 +87,10 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
     unexpired one-time connection code that the driver issued for that live session, with a free engineer
     slot (maximum 2).
   - Unauthorized joins are rejected and rate-limited.
+- **Clarification (2026-10-15):** an access token never renews itself. AUTH{AccessToken} returns an access
+  token with the presented token's expiry, so a login lasts at most 15 min past its last password or
+  refresh-token AUTH unless the refresh token (rotation, sliding expiry, reuse detection) is used
+  (PROTOCOL.md §6 "Login tokens").
 - **Date:** 2026-09-30 (authorization rule revised 2026-10-02 → D-022)
 
 ## D-009 Live queue policy: bounded, latest-wins for live data; lossless only for recording
@@ -295,7 +299,11 @@ Entries marked *(provisional)* must be re-confirmed by measurement (see docs/TES
   connection id) is recognised by its HMAC tag, including ones that had died by grace or by use. Accepted
   because such a ticket only resumes the same engineer account into its own slot; per-slot ticket epochs
   that would keep dead tickets dead are deferred (they need a persisted counter and a store write per
-  SESSION_INFO).
+  SESSION_INFO). Connection ids are never reused within a session, also across relay restarts (revised
+  2026-10-15, second review relay2): the store keeps a per-session high-water mark of the connection ids
+  it stored (`sessions.max_connection_id`, raised with each slot write) and a restored session continues
+  above it, so an ended slot's tickets and a stale ENGINEER_KICK never hit a later slot. A slot whose
+  engineer was connected when the relay died is charged only the time since the new relay process started.
 - **Clarification (2026-10-07): the connection code survives a driver resume.** At rest (database, logs) a
   code exists only as its keyed digest, but the relay may hold the plaintext of the session's single unused
   code in memory only (never persisted or logged, redacted, wiped on redemption, rotation, expiry, session

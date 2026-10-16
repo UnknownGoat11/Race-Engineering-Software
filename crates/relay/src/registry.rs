@@ -1234,8 +1234,10 @@ impl Registry {
 
     /// A session rebuilt from its store record and engineer slots after a relay restart: the
     /// driver is away (since `driver_away_for` before `now`), every slot is `Reconnecting` with
-    /// the drop time from the store (or the session's last activity if the relay died while the
-    /// engineer was connected) and knows no ticket digest.
+    /// the drop time from the store (or, if the relay died while the engineer was connected, the
+    /// time since this relay process started) and knows no ticket digest. New connection ids
+    /// continue above the session's stored high-water mark, so an id of a slot that ended before
+    /// the restart is never reused.
     fn rebuilt_session(
         &self,
         stored: &StoredSession,
@@ -1247,14 +1249,26 @@ impl Registry {
             return Err(ResumeError::Closed);
         };
         let now_ns = unix_now_ns();
+        let since_relay_start = now.saturating_duration_since(self.epoch);
         let engineers: Vec<EngineerSlot> = stored
             .slots
             .iter()
             .filter(|slot| slot.record.session_id == record.id)
             .map(|slot| {
-                let dropped_ns =
-                    datetime_to_ns(slot.record.dropped_at.unwrap_or(record.last_activity));
-                let dropped_for = Duration::from_nanos(now_ns.saturating_sub(dropped_ns));
+                let dropped_for = match slot.record.dropped_at {
+                    Some(dropped_at) => {
+                        Duration::from_nanos(now_ns.saturating_sub(datetime_to_ns(dropped_at)))
+                    }
+                    // Connected when the relay died: the connection ended with the old relay
+                    // process, at an instant the store does not record. `last_activity` is no
+                    // proxy for it (it lags by up to a touch interval and stops while the driver
+                    // is away). The crash happened no later than this process started, so the
+                    // time since then is a lower bound of the engineer's absence; the session
+                    // itself is still bounded by the driver grace (checked by the caller).
+                    None => since_relay_start.min(Duration::from_nanos(
+                        now_ns.saturating_sub(datetime_to_ns(record.last_activity)),
+                    )),
+                };
                 EngineerSlot {
                     connection_id: slot.record.connection_id,
                     engineer: slot.engineer.clone(),
@@ -1273,11 +1287,14 @@ impl Registry {
                 }
             })
             .collect();
+        // Continue above every id this session ever stored, not only the surviving slots: an
+        // ended slot's id must never be handed out again (its tickets stay dead, and a stale
+        // ENGINEER_KICK cannot hit a different engineer).
         let next_connection_id = engineers
             .iter()
             .map(|e| e.connection_id)
-            .max()
-            .map_or(1, |max| max.saturating_add(1));
+            .fold(record.max_connection_id, u64::max)
+            .saturating_add(1);
         Ok(Arc::new(SessionCell {
             id: record.id,
             inner: Mutex::new(Session {
@@ -1674,10 +1691,13 @@ impl Registry {
         Ok(cell)
     }
 
-    /// SESSION_RESUME::Engineer{session_id, ticket} after a network blip. The ticket must be the
-    /// current ticket of the slot the authenticated `account` holds in the session (for a slot
-    /// restored after a relay restart: carry a valid tag for it), and a dropped slot must be
-    /// inside the ticket window. `NotInMemory` sends the caller to the store (relay restart).
+    /// SESSION_RESUME::Engineer{session_id, ticket} after a network blip. The ticket must belong
+    /// to the slot the authenticated `account` holds in the session: the slot's current ticket,
+    /// or one of its earlier tickets still within `previous_ticket_grace`
+    /// (`EngineerSlot::ticket_matches`, D-022 clarification: a lost SESSION_OK must not strand
+    /// the engineer); for a slot restored after a relay restart, any ticket carrying a valid tag
+    /// for it. A dropped slot must be inside the ticket window. `NotInMemory` sends the caller
+    /// to the store (relay restart).
     pub fn resume_engineer(
         &self,
         session_id: u64,
@@ -3453,6 +3473,8 @@ mod tests {
                 close_reason: None,
                 last_activity: dropped_at,
                 ended_at: None,
+                // What the store's high-water mark holds once every slot write landed.
+                max_connection_id: s.next_connection_id.saturating_sub(1),
             },
             driver: s.driver.clone(),
             slots: s
@@ -3660,6 +3682,129 @@ mod tests {
             msgs.iter()
                 .any(|m| matches!(m, Message::SnapshotRequest(_)))
         );
+    }
+
+    /// The connection id of the single slot Put queued on `cell`.
+    fn put_connection_id(cell: &SessionCell) -> u64 {
+        let writes = cell.take_slot_writes();
+        let [SlotWrite::Put(slot)] = writes.as_slice() else {
+            panic!("one Put expected, got {writes:?}");
+        };
+        slot.connection_id
+    }
+
+    #[test]
+    fn ended_slot_ids_are_never_reused_after_a_relay_restart() {
+        let mut old = World::new();
+        let t0 = old.epoch;
+        let (cell, driver, token, code) = old.session(t0);
+        let erin = old.conn();
+        old.registry
+            .join(&code, World::identity("erin"), &erin, t0)
+            .expect("joined");
+        assert_eq!(put_connection_id(&cell), 1);
+        let second = last_code(&drain(&driver)).expect("second code");
+        let eddie_identity = World::identity("eddie");
+        let eddie = old.conn();
+        old.registry
+            .join(&second, eddie_identity.clone(), &eddie, t0)
+            .expect("joined");
+        assert_eq!(put_connection_id(&cell), 2);
+        let kicked_ticket = ticket_of(&drain(&eddie));
+        // Eddie is kicked: his row is deleted, only Erin's slot (id 1) survives in the store.
+        assert!(old.registry.kick(&cell, driver.id, 2, t0));
+        cell.take_slot_writes();
+        let stored = stored_session(&cell, wall_now());
+        assert_eq!(stored.slots.len(), 1);
+        assert_eq!(stored.record.max_connection_id, 2);
+
+        // Restart: the driver restores the session and Eddie rejoins with a new code.
+        let mut mid = World::new();
+        let now = mid.epoch;
+        let driver2 = mid.conn();
+        let cell2 = mid
+            .registry
+            .restore_session(&stored, &token, false, &driver2, now)
+            .expect("restored");
+        let code = last_code(&drain(&driver2)).expect("a slot is free");
+        let eddie2 = mid.conn();
+        mid.registry
+            .join(&code, eddie_identity.clone(), &eddie2, now)
+            .expect("rejoined");
+        assert_eq!(
+            put_connection_id(&cell2),
+            3,
+            "the kicked slot's id 2 is not handed out again"
+        );
+        let stored2 = stored_session(&cell2, wall_now());
+
+        // Second restart: the kicked slot's ticket does not verify for Eddie's new slot.
+        let mut new = World::new();
+        let later = new.epoch;
+        let intruder = new.conn();
+        assert!(matches!(
+            new.registry.restore_for_engineer(
+                &stored2,
+                Duration::ZERO,
+                &kicked_ticket,
+                eddie_identity.account,
+                &intruder,
+                later
+            ),
+            Err(ResumeError::NotAuthorized)
+        ));
+        assert!(!new.registry.contains(7), "nothing restored");
+    }
+
+    #[test]
+    fn a_slot_connected_at_the_crash_is_charged_only_the_time_since_the_restart() {
+        const TTL: Duration = Duration::from_secs(5);
+        let mut old = World::with(|c| c.engineer_ticket_ttl = TTL);
+        let t0 = old.epoch;
+        let (cell, _driver, _token, code) = old.session(t0);
+        let erin_identity = World::identity("erin");
+        let erin = old.conn();
+        old.registry
+            .join(&code, erin_identity.clone(), &erin, t0)
+            .expect("joined");
+        let ticket = ticket_of(&drain(&erin));
+        // Erin was connected when the relay died; the session's last activity is far older than
+        // the ticket lifetime (the driver had been away, so it was not touched).
+        let mut stored = stored_session(&cell, wall_now());
+        stored.slots[0].record.dropped_at = None;
+        let long_ago = unix_now_ns().saturating_sub(duration_ns(TTL * 20));
+        stored.record.last_activity = ns_to_datetime(long_ago);
+
+        // Right after the restart Erin is not charged the stale last activity.
+        let mut new = World::with(|c| c.engineer_ticket_ttl = TTL);
+        let now = new.epoch;
+        let erin2 = new.conn();
+        new.registry
+            .restore_for_engineer(
+                &stored,
+                Duration::ZERO,
+                &ticket,
+                erin_identity.account,
+                &erin2,
+                now,
+            )
+            .expect("resumed right after the restart");
+
+        // The time since the restart does count: past the ticket lifetime the window is over.
+        let mut late = World::with(|c| c.engineer_ticket_ttl = TTL);
+        let too_late = late.epoch + TTL + Duration::from_secs(1);
+        let erin3 = late.conn();
+        assert!(matches!(
+            late.registry.restore_for_engineer(
+                &stored,
+                Duration::ZERO,
+                &ticket,
+                erin_identity.account,
+                &erin3,
+                too_late,
+            ),
+            Err(ResumeError::NotAuthorized)
+        ));
     }
 
     #[test]

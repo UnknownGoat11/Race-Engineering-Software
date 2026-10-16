@@ -388,10 +388,13 @@ impl SessionStore for MemoryStore {
 
     async fn put_engineer_slot(&self, slot: &EngineerSlotRecord) -> Result<(), StoreError> {
         let mut inner = self.inner.lock();
-        let open = inner
-            .sessions
-            .get(&slot.session_id)
-            .is_some_and(|s| s.status != SessionStatus::Closed);
+        let open = match inner.sessions.get_mut(&slot.session_id) {
+            Some(session) if session.status != SessionStatus::Closed => {
+                session.max_connection_id = session.max_connection_id.max(slot.connection_id);
+                true
+            }
+            _ => false,
+        };
         if open {
             inner
                 .slots

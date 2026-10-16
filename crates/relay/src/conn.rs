@@ -859,6 +859,7 @@ impl Connection {
                 close_reason: None,
                 last_activity: started_at,
                 ended_at: None,
+                max_connection_id: 0,
             };
             match self.state.store.insert_session(&record).await {
                 Ok(()) => {
