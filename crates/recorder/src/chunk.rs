@@ -19,6 +19,11 @@ pub(crate) struct ChunkBuilder {
     note_count: u32,
     min_ns: u64,
     max_ns: u64,
+    /// Latest capture time the chunk header must cover beyond its records: the end of the gaps described by
+    /// gap notes in this chunk (a note is stamped at the start of its gap). Only widens the sealed header's
+    /// `max_capture_ns`, so a range read starting inside a gap still reaches the note; record times, span
+    /// checks and [`Discarded::range`] use the records alone.
+    covered_max_ns: Option<u64>,
     opened_at: Option<Instant>,
 }
 
@@ -111,6 +116,18 @@ impl ChunkBuilder {
         Ok(())
     }
 
+    /// Makes the sealed header's capture range reach `capture_ns` (see `covered_max_ns`). Ignored on an
+    /// empty chunk: call it after pushing the gap note it belongs to.
+    pub(crate) fn cover_capture_ns(&mut self, capture_ns: u64) {
+        if self.is_empty() {
+            return;
+        }
+        self.covered_max_ns = Some(
+            self.covered_max_ns
+                .map_or(capture_ns, |v| v.max(capture_ns)),
+        );
+    }
+
     /// Drops the pending records (used when they cannot be written) and reports what was dropped.
     pub(crate) fn discard(&mut self) -> Discarded {
         let discarded = Discarded {
@@ -128,6 +145,7 @@ impl ChunkBuilder {
         self.note_count = 0;
         self.min_ns = 0;
         self.max_ns = 0;
+        self.covered_max_ns = None;
         self.opened_at = None;
     }
 
@@ -164,7 +182,9 @@ impl ChunkBuilder {
             record_count: self.record_count,
             chunk_seq: seq,
             min_capture_ns: self.min_ns,
-            max_capture_ns: self.max_ns,
+            max_capture_ns: self
+                .covered_max_ns
+                .map_or(self.max_ns, |c| c.max(self.max_ns)),
             raw_len,
             body_crc32c: crc32c::crc32c(&body),
             codec,

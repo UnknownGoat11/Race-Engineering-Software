@@ -113,4 +113,7 @@ pub enum AppendError {
     CaptureTimeOutOfRange { capture_ns: u64, max: u64 },
     #[error("recorder control queue full")]
     ControlQueueFull,
+    /// A JSON field of a lap, stint or metadata update is not valid JSON; nothing was queued.
+    #[error("{field} is not valid JSON: {reason}")]
+    InvalidJson { field: &'static str, reason: String },
 }

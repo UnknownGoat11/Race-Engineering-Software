@@ -22,7 +22,7 @@ use crate::config::{
     segment_file_name,
 };
 use crate::error::RecorderError;
-use crate::format::{FILE_HEADER_LEN, FileHeader, FormatError};
+use crate::format::{FILE_HEADER_LEN, FILE_MAGIC, FileHeader, FormatError};
 use crate::index::{ChunkEntry, ChunkRows, Index, SegmentInfo, SessionEnd, SessionInfo};
 use crate::scan::{ScanError, ScanStop, SegmentScan, read_full, validate_segment_file};
 use crate::types::{
@@ -91,6 +91,13 @@ pub(crate) fn assess_segment(path: &Path, session: SessionId, segment_index: u32
                 "file ends inside its header ({available} of {FILE_HEADER_LEN} bytes): created but never written"
             )),
         ),
+        Err(ScanError::Header(e)) if header_never_persisted(path) => (
+            Outcome::Unusable,
+            IntegrityStatus::Truncated,
+            Some(format!(
+                "file holds only an unpersisted {FILE_HEADER_LEN}-byte header ({e}): created but never written"
+            )),
+        ),
         Err(ScanError::Header(e)) => (
             Outcome::Unusable,
             IntegrityStatus::Damaged,
@@ -115,14 +122,33 @@ pub(crate) fn assess_segment(path: &Path, session: SessionId, segment_index: u32
                 stop @ ScanStop::TornTail { .. } => {
                     (IntegrityStatus::Truncated, Some(stop.describe()))
                 }
-                stop @ ScanStop::Corrupt { offset, .. } => (
-                    IntegrityStatus::Damaged,
-                    Some(format!(
-                        "{}; {} bytes after it are not readable",
-                        stop.describe(),
-                        scan.file_len.saturating_sub(*offset)
-                    )),
-                ),
+                stop @ ScanStop::Corrupt { offset, .. } => {
+                    let detail = match &scan.beyond_damage {
+                        Some(b) => {
+                            let end = b.end().unwrap_or(*offset);
+                            let mut d = format!(
+                                "{}; {} damaged chunk(s) at byte(s) {:?}, {} intact chunk(s) after the damage are still readable",
+                                stop.describe(),
+                                b.damaged.len(),
+                                b.damaged.iter().map(|(o, _)| *o).collect::<Vec<_>>(),
+                                b.intact_chunks()
+                            );
+                            let unreachable = scan.file_len.saturating_sub(end);
+                            if unreachable > 0 {
+                                d.push_str(&format!(
+                                    "; {unreachable} bytes after byte {end} are not readable"
+                                ));
+                            }
+                            d
+                        }
+                        None => format!(
+                            "{}; {} bytes after it are not readable",
+                            stop.describe(),
+                            scan.file_len.saturating_sub(*offset)
+                        ),
+                    };
+                    (IntegrityStatus::Damaged, Some(detail))
+                }
             };
             (Outcome::Scanned(Box::new(scan)), integrity, detail)
         }
@@ -135,6 +161,33 @@ pub(crate) fn assess_segment(path: &Path, session: SessionId, segment_index: u32
     }
 }
 
+/// Size of the header CRC field, the last field of the file header.
+const HEADER_CRC_BYTES: usize = 4;
+
+/// Whether a segment file whose header does not decode is the trace of a crash right after the file was
+/// created: it is exactly one header long (no chunk was ever written) and the header was never (fully)
+/// persisted, i.e. it is all zeros, or it starts with the file magic and ends in zeros covering at least
+/// the header CRC (after a power loss NTFS can keep the extended length with zero or partial data).
+/// Anything else (including any read error) is not assumed to be harmless.
+fn header_never_persisted(path: &Path) -> bool {
+    let Ok(mut file) = File::open(path) else {
+        return false;
+    };
+    if !file
+        .metadata()
+        .is_ok_and(|m| m.len() == FILE_HEADER_LEN as u64)
+    {
+        return false;
+    }
+    let mut bytes = [0u8; FILE_HEADER_LEN];
+    if !read_full(&mut file, &mut bytes).is_ok_and(|n| n == FILE_HEADER_LEN) {
+        return false;
+    }
+    let zero_suffix = bytes.iter().rev().take_while(|&&b| b == 0).count();
+    zero_suffix == FILE_HEADER_LEN
+        || (bytes.starts_with(&FILE_MAGIC) && zero_suffix >= HEADER_CRC_BYTES)
+}
+
 /// Folds an assessment into a segment row. Returns the row and what to do with its chunk rows: the chunk
 /// list of the valid prefix for a scanned file, none for a file without usable data, and "keep" when the
 /// file could not be read at all.
@@ -144,16 +197,29 @@ pub(crate) fn apply_assessment(mut seg: SegmentInfo, a: &Assessment) -> (Segment
     seg.integrity_detail = a.detail.clone();
     let rows = match &a.outcome {
         Outcome::Scanned(scan) => {
+            // `byte_size` / `file_crc32c` describe the valid prefix; the counts, capture bounds and chunk
+            // rows also cover the intact chunks beyond a damaged one, which readers still return.
+            let beyond = scan.beyond_damage.as_ref();
+            let min_of = |a: Option<u64>, b: Option<u64>| match (a, b) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let max_of = |a: Option<u64>, b: Option<u64>| match (a, b) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            };
             seg.byte_size = scan.valid_len;
-            seg.first_capture_ns = scan.min_capture_ns;
-            seg.last_capture_ns = scan.max_capture_ns;
-            seg.record_count = scan.record_count;
-            seg.chunk_count = scan.chunks.len() as u64;
+            seg.first_capture_ns =
+                min_of(scan.min_capture_ns, beyond.and_then(|b| b.min_capture_ns));
+            seg.last_capture_ns =
+                max_of(scan.max_capture_ns, beyond.and_then(|b| b.max_capture_ns));
+            seg.record_count = scan.record_count + beyond.map_or(0, |b| b.record_count);
+            seg.chunk_count = scan.indexable_chunks().count() as u64;
             seg.file_crc32c = Some(scan.valid_crc32c);
             seg.created_mono_ns = seg
                 .created_mono_ns
                 .or_else(|| scan.header.created_mono_ns());
-            ChunkRows::Replace(scan.chunks.iter().map(ChunkEntry::from).collect())
+            ChunkRows::Replace(scan.indexable_chunks().map(ChunkEntry::from).collect())
         }
         Outcome::Missing | Outcome::Unusable => {
             seg.byte_size = 0;
@@ -167,6 +233,18 @@ pub(crate) fn apply_assessment(mut seg: SegmentInfo, a: &Assessment) -> (Segment
         Outcome::Unreadable => ChunkRows::Keep,
     };
     (seg, rows)
+}
+
+/// Validation of an indexed segment: only the verdict (integrity, detail) and the observed file length are
+/// updated; the writer-recorded reference (durable length, its CRC, counts, capture bounds) is kept.
+fn with_assessment_verdict(mut seg: SegmentInfo, a: &Assessment) -> SegmentInfo {
+    seg.file_len = a.file_len;
+    seg.integrity = a.integrity;
+    seg.integrity_detail = a.detail.clone();
+    seg.created_mono_ns = seg
+        .created_mono_ns
+        .or_else(|| a.scan().and_then(|s| s.header.created_mono_ns()));
+    seg
 }
 
 /// Session checksum: CRC-32C over `segment_index u32 | byte_size u64 | file_crc32c u32` (little-endian,
@@ -321,7 +399,15 @@ pub(crate) fn rescan_session(
             Some(r) => r.clone(),
             None => orphan_segment_row(id, segment_index, rel_path, &a, info.started_unix_ns),
         };
-        let (mut seg, chunk_rows) = apply_assessment(base, &a);
+        let (mut seg, chunk_rows) = match (mode, row) {
+            // Validation never rewrites what the writer recorded as durable: that row stays the reference
+            // for every later validation (otherwise damage found once would read as a plain torn tail the
+            // next time, and capture bounds would shrink while the chunk rows still reach past them).
+            (Rescan::Validate, Some(r)) => {
+                (with_assessment_verdict(r.clone(), &a), ChunkRows::Keep)
+            }
+            _ => apply_assessment(base, &a),
+        };
         seg.status = match (&a.outcome, row.map(|r| r.status)) {
             (Outcome::Missing, _) => SegmentStatus::Missing,
             (_, None | Some(SegmentStatus::Open | SegmentStatus::Missing)) => {
@@ -352,9 +438,15 @@ pub(crate) fn rescan_session(
         integrity = IntegrityStatus::Truncated;
         details.push("no segment file was created".to_owned());
     }
-    let record_count = segments.iter().map(|s| s.record_count).sum();
-    let first_capture_ns = segments.iter().filter_map(|s| s.first_capture_ns).min();
-    let last_capture_ns = segments.iter().filter_map(|s| s.last_capture_ns).max();
+    let mut record_count = segments.iter().map(|s| s.record_count).sum();
+    let mut first_capture_ns = segments.iter().filter_map(|s| s.first_capture_ns).min();
+    let mut last_capture_ns = segments.iter().filter_map(|s| s.last_capture_ns).max();
+    if mode == Rescan::Validate {
+        // The session's extent stays what was recorded (see the per-segment rows above).
+        record_count = info.record_count;
+        first_capture_ns = info.first_capture_ns.or(first_capture_ns);
+        last_capture_ns = info.last_capture_ns.or(last_capture_ns);
+    }
     let checksum = session_checksum(&segments);
     let detail = (!details.is_empty()).then(|| details.join("; "));
     let (status, ended_unix_ns, recovered_unix_ns) = match mode {
@@ -702,5 +794,42 @@ mod tests {
         );
         assert!(matches!(a.outcome, Outcome::Missing | Outcome::Unreadable));
         assert_ne!(a.integrity, IntegrityStatus::Ok);
+    }
+
+    #[test]
+    fn an_unpersisted_header_is_truncated_not_damaged() {
+        let tmp = crate::test_support::TempDir::new("unpersisted-header");
+        let path = tmp.path().join(segment_file_name(3));
+        let id = SessionId(uuid::Uuid::from_u128(9));
+        let assess = |bytes: &[u8]| {
+            fs::write(&path, bytes).expect("write");
+            assess_segment(&path, id, 3)
+        };
+
+        // Power loss right after creation: the length survived, the data did not.
+        let a = assess(&[0u8; FILE_HEADER_LEN]);
+        assert!(matches!(a.outcome, Outcome::Unusable));
+        assert_eq!(a.integrity, IntegrityStatus::Truncated, "{:?}", a.detail);
+        assert!(
+            a.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("created but never written"))
+        );
+
+        // Partially persisted header: magic present, the rest (CRC included) still zero.
+        let mut partial = [0u8; FILE_HEADER_LEN];
+        partial[..FILE_MAGIC.len()].copy_from_slice(&FILE_MAGIC);
+        partial[FILE_MAGIC.len()] = 1;
+        assert_eq!(assess(&partial).integrity, IntegrityStatus::Truncated);
+
+        // Garbage of header length, a zero header followed by data, or a header with a wrong CRC are
+        // damage, not a harmless crash trace.
+        let mut garbage = [0xA5u8; FILE_HEADER_LEN];
+        assert_eq!(assess(&garbage).integrity, IntegrityStatus::Damaged);
+        garbage[..FILE_MAGIC.len()].copy_from_slice(&FILE_MAGIC);
+        assert_eq!(assess(&garbage).integrity, IntegrityStatus::Damaged);
+        let mut longer = vec![0u8; FILE_HEADER_LEN];
+        longer.extend_from_slice(&[1u8; 64]);
+        assert_eq!(assess(&longer).integrity, IntegrityStatus::Damaged);
     }
 }

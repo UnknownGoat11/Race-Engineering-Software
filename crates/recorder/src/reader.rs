@@ -128,7 +128,8 @@ impl SessionReader {
     ///
     /// Recording order follows the order of `append` calls: capture times are non-decreasing when producers
     /// append in capture order, except for recorder notes, which carry the capture time of the first record
-    /// of the gap they describe.
+    /// of the gap they describe. A gap note is returned whenever its gap overlaps `range`, even when its own
+    /// capture time lies before the range start, so a read starting inside a gap is never silently short.
     pub fn records(&self, range: TimeRange) -> Result<RecordStream, RecorderError> {
         let decompressor = Decompressor::new().map_err(RecorderError::Codec)?;
         Ok(RecordStream {
@@ -189,7 +190,7 @@ impl Iterator for RecordStream {
                     match record_at(&self.raw, self.pos) {
                         Ok((rec, next)) => {
                             self.pos = next;
-                            if self.range.contains(rec.capture_ns) {
+                            if in_range(&self.range, rec.kind, rec.capture_ns, rec.bytes) {
                                 return Some(Ok(RecordedRecord {
                                     kind: rec.kind,
                                     capture_ns: rec.capture_ns,
@@ -421,6 +422,26 @@ impl SegmentCursor {
             source,
         })?;
         Ok(())
+    }
+}
+
+/// Whether a record belongs to a read of `range`: its capture time lies in the range or, for a gap note,
+/// the gap it describes `[first_capture_ns, last_capture_ns]` overlaps the range (so a read starting inside
+/// a gap still reports it; the writer widens the note's chunk header to the end of the gap accordingly).
+fn in_range(range: &TimeRange, kind: RecordKind, capture_ns: u64, bytes: &[u8]) -> bool {
+    if range.contains(capture_ns) {
+        return true;
+    }
+    if kind != RecordKind::RecorderNote {
+        return false;
+    }
+    match GapNote::decode(bytes) {
+        Ok(GapNote {
+            first_capture_ns: Some(first),
+            last_capture_ns: Some(last),
+            ..
+        }) if first <= last => range.overlaps(first, last),
+        _ => false,
     }
 }
 

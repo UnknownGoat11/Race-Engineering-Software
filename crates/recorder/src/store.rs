@@ -36,8 +36,10 @@ pub struct RecordingStore {
     index: Mutex<Index>,
     active: ActiveSessions,
     recovery: RecoveryReport,
-    /// Exclusively locked for the lifetime of the store; the OS releases it if the process dies.
-    _lock: File,
+    /// The directory lock file, exclusively locked until the store AND every writer thread it started are
+    /// gone (each writer holds a clone, so a session that outlives its store still keeps the directory
+    /// locked). The OS releases the lock if the process dies.
+    lock: Arc<File>,
 }
 
 impl fmt::Debug for RecordingStore {
@@ -85,7 +87,7 @@ impl RecordingStore {
             index: Mutex::new(index),
             active: Arc::default(),
             recovery,
-            _lock: lock_file,
+            lock: Arc::new(lock_file),
         })
     }
 
@@ -155,8 +157,11 @@ impl RecordingStore {
         };
         lock(&self.active).insert(id);
         let active = Arc::clone(&self.active);
+        let held_lock = Arc::clone(&self.lock);
         let on_exit = ExitGuard::new(move || {
             lock(&active).remove(&id);
+            // The directory lock is released only after the last writer thread is done with the directory.
+            drop(held_lock);
         });
         let spawn = SessionSpawn {
             config: self.cfg.clone(),

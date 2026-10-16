@@ -14,6 +14,9 @@ zstd.workspace = true
 crc32c.workspace = true
 rusqlite.workspace = true
 uuid.workspace = true
+# Validates caller-supplied JSON fields (laps, stints, metadata updates) before they are queued.
+serde.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Additive feature on the workspace `windows` dependency: GetDiskFreeSpaceExW lives in Storage_FileSystem.

@@ -1,4 +1,4 @@
-//! Recording writer: one OS thread per recording session (decision D-006, ARCHITECTURE §3).
+//! Recording writer: one OS thread per recording session (decision D-006, ARCHITECTURE Â§3).
 //!
 //! Data path: producers call [`RecordSender::append`], which never blocks: the record is copied into a
 //! bounded queue (bounded in records and in bytes) or, when the queue is full, counted as an overrun. The
@@ -225,7 +225,8 @@ pub struct RecorderStats {
     pub index_errors: u64,
     /// Events not delivered because the application did not drain the event queue.
     pub events_dropped: u64,
-    /// Lap/stint/event/metadata messages refused because the control queue was full.
+    /// Lap/stint/event/metadata messages refused because the control queue was full or one of their JSON
+    /// fields was invalid ([`AppendError::InvalidJson`]).
     pub control_dropped: u64,
     /// Records currently queued.
     pub queue_len: usize,
@@ -291,6 +292,9 @@ pub struct SessionOptions {
     disk_probe: Box<dyn DiskSpaceProbe>,
     capture_clock: Option<Arc<dyn CaptureClock>>,
     files: Arc<dyn SegmentFileFactory>,
+    /// Test hook: makes the writer thread's creation fail.
+    #[cfg(test)]
+    fail_thread_spawn: bool,
 }
 
 impl Default for SessionOptions {
@@ -299,6 +303,8 @@ impl Default for SessionOptions {
             disk_probe: Box::new(SystemDiskSpace),
             capture_clock: None,
             files: Arc::new(OsFiles),
+            #[cfg(test)]
+            fail_thread_spawn: false,
         }
     }
 }
@@ -333,6 +339,12 @@ impl SessionOptions {
     #[cfg(test)]
     pub(crate) fn with_files(mut self, files: Arc<dyn SegmentFileFactory>) -> Self {
         self.files = files;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_failing_thread_spawn(mut self) -> Self {
+        self.fail_thread_spawn = true;
         self
     }
 }
@@ -697,30 +709,57 @@ impl RecordingSession {
         self.sender.stats()
     }
 
-    /// Indexes (or updates) a lap. Non-blocking.
+    /// Indexes (or updates) a lap. Non-blocking. `metrics_json` must be valid JSON
+    /// ([`AppendError::InvalidJson`] otherwise: the lap is not queued).
     pub fn record_lap(&self, lap: LapRecord) -> Result<(), AppendError> {
         check_ns(lap.start_capture_ns)?;
         check_opt_ns(lap.end_capture_ns)?;
+        self.check_json("LapRecord::metrics_json", lap.metrics_json.as_deref())?;
         self.control(Control::Lap(lap))
     }
 
-    /// Indexes (or updates) a stint. Non-blocking.
+    /// Indexes (or updates) a stint. Non-blocking. `metrics_json` must be valid JSON
+    /// ([`AppendError::InvalidJson`] otherwise: the stint is not queued).
     pub fn record_stint(&self, stint: StintRecord) -> Result<(), AppendError> {
         check_ns(stint.start_capture_ns)?;
         check_opt_ns(stint.end_capture_ns)?;
+        self.check_json("StintRecord::metrics_json", stint.metrics_json.as_deref())?;
         self.control(Control::Stint(stint))
     }
 
-    /// Indexes an event (alert, pit, flag…). Non-blocking. To also keep the event in the recording itself,
+    /// Indexes an event (alert, pit, flagâ€¦). Non-blocking. To also keep the event in the recording itself,
     /// append it as a [`RecordKind::SessionEvent`] record.
     pub fn record_event(&self, event: EventRecord) -> Result<(), AppendError> {
         check_opt_ns(event.capture_ns)?;
         self.control(Control::Event(event))
     }
 
-    /// Updates session metadata that became known after the start (vehicle, track…). Non-blocking.
+    /// Updates session metadata that became known after the start (vehicle, trackâ€¦). Non-blocking.
+    /// `data_availability_json` must be valid JSON ([`AppendError::InvalidJson`] otherwise: nothing of the
+    /// update is applied).
     pub fn update_meta(&self, update: SessionMetaUpdate) -> Result<(), AppendError> {
+        self.check_json(
+            "SessionMetaUpdate::data_availability_json",
+            update.data_availability_json.as_deref(),
+        )?;
         self.control(Control::Meta(update))
+    }
+
+    /// Rejects (and counts in [`RecorderStats::control_dropped`]) a JSON field that is not valid JSON, on
+    /// the caller's thread: queued, it would fail the index's `json_valid` check and the whole row would be
+    /// lost as an index failure, and laps, stints and metadata cannot be rebuilt from the recording.
+    fn check_json(&self, field: &'static str, json: Option<&str>) -> Result<(), AppendError> {
+        let Some(json) = json else {
+            return Ok(());
+        };
+        serde_json::from_str::<serde::de::IgnoredAny>(json).map_err(|e| {
+            self.shared.control_dropped.fetch_add(1, Ordering::Relaxed);
+            AppendError::InvalidJson {
+                field,
+                reason: e.to_string(),
+            }
+        })?;
+        Ok(())
     }
 
     /// Closes the current segment after the records appended before this call; the next record opens a new
@@ -875,15 +914,34 @@ pub(crate) fn spawn(s: SessionSpawn) -> Result<RecordingSession, RecorderError> 
     let id = s.session_id;
     let dir = s.dir.clone();
     let max_queue_bytes = s.config.queue_capacity_bytes;
+    #[cfg(test)]
+    let fail_thread_spawn = s.options.fail_thread_spawn;
     let mut writer = Writer::new(s, data_rx, control_rx, events_tx, Arc::clone(&shared))?;
     let now = Instant::now();
     writer
         .open_segment(now)
         .map_err(|e| RecorderError::io(e.op, e.path, e.source))?;
-    let thread = std::thread::Builder::new()
-        .name(format!("recorder-{}", &id.to_string()[..8]))
-        .spawn(move || writer.run())
-        .map_err(RecorderError::SpawnWriter)?;
+    let first_segment = writer.seg.as_ref().map(|seg| seg.path.clone());
+    let builder = std::thread::Builder::new().name(format!("recorder-{}", &id.to_string()[..8]));
+    #[cfg(test)]
+    let started = if fail_thread_spawn {
+        drop(writer);
+        Err(io::Error::other("injected writer thread spawn failure"))
+    } else {
+        builder.spawn(move || writer.run())
+    };
+    #[cfg(not(test))]
+    let started = builder.spawn(move || writer.run());
+    // On failure the writer (and its segment file handle) has already been dropped.
+    let thread = match started {
+        Ok(thread) => thread,
+        Err(e) => {
+            if let Some(path) = first_segment {
+                remove_unwritten_segment(&path);
+            }
+            return Err(RecorderError::SpawnWriter(e));
+        }
+    };
     tracing::info!(component = COMPONENT, session = %id, dir = %dir.display(), "recording session started");
     Ok(RecordingSession {
         id,
@@ -898,6 +956,19 @@ pub(crate) fn spawn(s: SessionSpawn) -> Result<RecordingSession, RecorderError> 
         shared,
         thread: Some(thread),
     })
+}
+
+/// Removes the first segment of a session whose writer thread never started. Only a file holding exactly
+/// the file header (no record was ever written to it) is removed; anything else is left in place.
+fn remove_unwritten_segment(path: &Path) {
+    let header_only = fs::metadata(path).is_ok_and(|m| m.len() == FILE_HEADER_LEN as u64);
+    if !header_only {
+        tracing::warn!(component = COMPONENT, path = %path.display(), "segment of a failed session start is not header-only; left in place");
+        return;
+    }
+    if let Err(e) = fs::remove_file(path) {
+        tracing::warn!(component = COMPONENT, path = %path.display(), error = %e, "could not remove the segment of a failed session start");
+    }
 }
 
 /// Flushes the write buffer and `sync_data`s the segment, accounting the wall time in the stats.
@@ -1407,12 +1478,16 @@ impl Writer {
                 first_capture_ns: Some(acc.first_ns),
                 last_capture_ns: Some(acc.last_ns),
             };
-            // The note sits at the start of the gap on the capture timeline.
+            // The note sits at the start of the gap on the capture timeline; the chunk header is widened to
+            // the end of the gap so that range reads starting inside the gap still find the note.
             match self
                 .chunk
                 .push(RecordKind::RecorderNote, acc.first_ns, &note.encode(), now)
             {
-                Ok(()) => self.chunk_notes.push((reason, acc)),
+                Ok(()) => {
+                    self.chunk.cover_capture_ns(acc.last_ns);
+                    self.chunk_notes.push((reason, acc));
+                }
                 Err(e) => {
                     // Unreachable (fixed-size note, reserved kind); the counters still hold the gap.
                     tracing::error!(component = COMPONENT, session = %self.session_id, error = %e, "gap note refused by the chunk builder");

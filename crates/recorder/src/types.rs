@@ -86,10 +86,12 @@ text_enum! {
         Unverified => "UNVERIFIED",
         /// Every byte validated (chunk CRCs, decompression, framing; whole-file CRC matches).
         Ok => "OK",
-        /// Valid data followed by an incomplete final write (crash); nothing before it is affected.
+        /// Valid data followed by an incomplete final write (crash), or a segment created but never written;
+        /// nothing before it is affected.
         Truncated => "TRUNCATED",
         /// Corruption before the end of a segment, a missing segment, or a mismatch with what the writer
-        /// recorded; data after the damage point in that segment is not readable.
+        /// recorded. The damaged chunks' records are lost; intact chunks after a damaged chunk body stay
+        /// readable, but nothing after a damaged chunk header can be located.
         Damaged => "DAMAGED",
     }
 }

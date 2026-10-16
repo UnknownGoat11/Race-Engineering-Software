@@ -3,7 +3,9 @@
 //! * [`validate_segment`] — full sequential validation (header CRC, body CRC, decompression, record
 //!   framing) used by startup recovery and by the integrity check when a segment is closed. It stops at
 //!   the first incomplete or invalid chunk and **never modifies the file**: it reports the valid length,
-//!   the chunks before it and why it stopped.
+//!   the chunks before it and why it stopped. When the invalid chunk's header is intact (only its body is
+//!   damaged) it also steps over it and reports the chunks after it ([`SegmentScan::beyond_damage`]), so
+//!   intact data after a damaged region stays reachable.
 //! * [`walk_chunk_headers`] — a cheap header-only walk (seeking over bodies) used by readers to complete
 //!   a chunk map; bodies are verified later, when they are actually read.
 
@@ -70,7 +72,8 @@ pub enum ScanStop {
         kind: TornKind,
     },
     /// A chunk at `offset` is invalid and more (non-zero) data follows it: corruption in the middle of
-    /// the file. Records after `offset` in this segment are not recoverable by the scanner.
+    /// the file. When the invalid chunk's header was intact (only its body is damaged), the scan skips it
+    /// and keeps going: the chunks found after it are in [`SegmentScan::beyond_damage`].
     Corrupt {
         /// Byte offset of the invalid chunk (= the valid length).
         offset: u64,
@@ -143,6 +146,133 @@ pub struct SegmentScan {
     pub valid_crc32c: u32,
     /// Why the scan stopped.
     pub stop: ScanStop,
+    /// Set when the scan stopped at a chunk whose header was intact but whose body is damaged ([`ScanStop::
+    /// Corrupt`]): what lies beyond it. All the fields above describe the valid prefix only.
+    pub beyond_damage: Option<BeyondDamage>,
+}
+
+/// The part of a segment after a damaged chunk whose header was intact. Its header CRC passed, so its
+/// length is what the writer wrote and the scan can step over it; it continues while chunk headers stay
+/// intact and in sequence, and stops (silently: everything after is unreachable) at the first header that
+/// is not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BeyondDamage {
+    /// Every chunk from the first damaged one on, in file order, damaged ones included (readers report a
+    /// damaged chunk as an error item and return the intact ones).
+    pub chunks: Vec<ChunkLoc>,
+    /// Offset and error of each damaged chunk among `chunks` (the first is the [`ScanStop::Corrupt`] one).
+    pub damaged: Vec<(u64, FormatError)>,
+    /// Records in the intact chunks among `chunks` (all kinds).
+    pub record_count: u64,
+    /// Of which recorder notes.
+    pub note_count: u64,
+    /// Sum of `dropped_records` over the gap notes in the intact chunks.
+    pub gap_dropped_records: u64,
+    /// Smallest capture time in the intact chunks.
+    pub min_capture_ns: Option<u64>,
+    /// Largest capture time in the intact chunks.
+    pub max_capture_ns: Option<u64>,
+}
+
+impl BeyondDamage {
+    /// Offset of the first byte after the last chunk in `chunks`.
+    pub fn end(&self) -> Option<u64> {
+        self.chunks.last().map(ChunkLoc::end)
+    }
+
+    /// Number of intact chunks among `chunks`.
+    pub fn intact_chunks(&self) -> usize {
+        self.chunks.len().saturating_sub(self.damaged.len())
+    }
+}
+
+/// Note statistics of a decoded, validated chunk body: `(notes, dropped records they describe)`.
+fn note_stats(raw: &[u8]) -> (u64, u64) {
+    let mut notes = 0u64;
+    let mut dropped = 0u64;
+    for rec in RecordIter::new(raw).flatten() {
+        if rec.kind == RecordKind::RecorderNote {
+            notes += 1;
+            if let Ok(note) = GapNote::decode(rec.bytes) {
+                dropped = dropped.saturating_add(note.dropped_records);
+            }
+        }
+    }
+    (notes, dropped)
+}
+
+/// Continues a scan after the damaged chunk `damaged` (header intact, body bad because of `error`): steps
+/// over it and validates every following chunk while headers stay intact and in sequence. Returns the
+/// region, the bytes consumed after the damaged chunk, and whether those bytes were all zero.
+fn scan_beyond_damage<R: Read>(
+    reader: &mut R,
+    damaged: ChunkLoc,
+    error: FormatError,
+    decompressor: &mut Decompressor<'static>,
+    body: &mut Vec<u8>,
+    raw: &mut Vec<u8>,
+) -> io::Result<(BeyondDamage, u64, bool)> {
+    let mut region = BeyondDamage {
+        chunks: vec![damaged],
+        damaged: vec![(damaged.offset, error)],
+        ..BeyondDamage::default()
+    };
+    let mut offset = damaged.end();
+    let mut expected_seq = damaged.header.chunk_seq.saturating_add(1);
+    let mut consumed = 0u64;
+    let tail_zero = loop {
+        let mut hb = [0u8; CHUNK_HEADER_LEN];
+        let n = read_full(reader, &mut hb)?;
+        if n == 0 {
+            break true;
+        }
+        if n < CHUNK_HEADER_LEN {
+            consumed += n as u64;
+            break all_zero(&hb[..n]);
+        }
+        let h = match ChunkHeader::decode(&hb) {
+            Ok(h) if h.chunk_seq == expected_seq => h,
+            _ => {
+                let (rest, rest_zero) = drain(reader)?;
+                consumed += CHUNK_HEADER_LEN as u64 + rest;
+                break all_zero(&hb) && rest_zero;
+            }
+        };
+        body.resize(h.body_len as usize, 0);
+        let n = read_full(reader, body)?;
+        if n < body.len() {
+            consumed += (CHUNK_HEADER_LEN + n) as u64;
+            break false;
+        }
+        let loc = ChunkLoc { offset, header: h };
+        match h
+            .verify_body(body)
+            .and_then(|()| decode_body(&h, body, decompressor, raw))
+        {
+            Ok(_) => {
+                let (notes, dropped) = note_stats(raw);
+                region.note_count += notes;
+                region.gap_dropped_records = region.gap_dropped_records.saturating_add(dropped);
+                region.record_count += u64::from(h.record_count);
+                region.min_capture_ns = Some(
+                    region
+                        .min_capture_ns
+                        .map_or(h.min_capture_ns, |m| m.min(h.min_capture_ns)),
+                );
+                region.max_capture_ns = Some(
+                    region
+                        .max_capture_ns
+                        .map_or(h.max_capture_ns, |m| m.max(h.max_capture_ns)),
+                );
+            }
+            Err(e) => region.damaged.push((offset, e)),
+        }
+        region.chunks.push(loc);
+        consumed += h.total_len();
+        offset += h.total_len();
+        expected_seq = expected_seq.saturating_add(1);
+    };
+    Ok((region, consumed, tail_zero))
 }
 
 /// Errors that prevent a scan from producing a result at all.
@@ -189,6 +319,7 @@ pub fn validate_segment<R: Read>(mut reader: R) -> Result<SegmentScan, ScanError
         max_capture_ns: None,
         valid_crc32c: header_crc32c,
         stop: ScanStop::CleanEof,
+        beyond_damage: None,
     };
     let mut offset = FILE_HEADER_LEN as u64;
     let mut body = Vec::new();
@@ -254,35 +385,45 @@ pub fn validate_segment<R: Read>(mut reader: R) -> Result<SegmentScan, ScanError
                 (CHUNK_HEADER_LEN + n) as u64,
             );
         }
+        let damaged = ChunkLoc { offset, header: h };
         if let Err(error) = h.verify_body(&body) {
-            let (rest, rest_zero) = drain(&mut reader)?;
+            let (region, rest, rest_zero) = scan_beyond_damage(
+                &mut reader,
+                damaged,
+                error.clone(),
+                &mut decompressor,
+                &mut body,
+                &mut raw,
+            )?;
             // Nothing (or only zeros) after a complete chunk with a bad body CRC: the last write was only
             // partially persisted. Anything else is corruption in the middle of the file.
-            let stop = if rest == 0 || rest_zero {
+            let stop = if region.chunks.len() == 1 && rest_zero {
                 ScanStop::TornTail {
                     offset,
                     kind: TornKind::InvalidFinalChunk(error),
                 }
             } else {
+                scan.beyond_damage = Some(region);
                 ScanStop::Corrupt { offset, error }
             };
             break (stop, h.total_len() + rest);
         }
         if let Err(error) = decode_body(&h, &body, &mut decompressor, &mut raw) {
             // The CRC matched, so these are exactly the bytes the writer produced: not a torn write.
-            let (rest, _) = drain(&mut reader)?;
+            let (region, rest, _) = scan_beyond_damage(
+                &mut reader,
+                damaged,
+                error.clone(),
+                &mut decompressor,
+                &mut body,
+                &mut raw,
+            )?;
+            scan.beyond_damage = Some(region);
             break (ScanStop::Corrupt { offset, error }, h.total_len() + rest);
         }
-        for rec in RecordIter::new(&raw).flatten() {
-            if rec.kind == RecordKind::RecorderNote {
-                scan.note_count += 1;
-                if let Ok(note) = GapNote::decode(rec.bytes) {
-                    scan.gap_dropped_records = scan
-                        .gap_dropped_records
-                        .saturating_add(note.dropped_records);
-                }
-            }
-        }
+        let (notes, dropped) = note_stats(&raw);
+        scan.note_count += notes;
+        scan.gap_dropped_records = scan.gap_dropped_records.saturating_add(dropped);
         scan.valid_crc32c = crc32c::crc32c_append(scan.valid_crc32c, &hb);
         scan.valid_crc32c = crc32c::crc32c_append(scan.valid_crc32c, &body);
         scan.record_count += u64::from(h.record_count);
@@ -314,9 +455,25 @@ impl SegmentScan {
         self.chunk_end_crc32c.get(i).copied()
     }
 
-    /// Records in valid chunks excluding recorder notes (i.e. producer records).
+    /// Producer records (recorder notes excluded) in every intact chunk: the valid prefix plus the intact
+    /// chunks found beyond a damaged one ([`SegmentScan::beyond_damage`]), i.e. everything still readable.
     pub fn producer_record_count(&self) -> u64 {
-        self.record_count.saturating_sub(self.note_count)
+        let beyond = self
+            .beyond_damage
+            .as_ref()
+            .map_or(0, |b| b.record_count.saturating_sub(b.note_count));
+        self.record_count
+            .saturating_sub(self.note_count)
+            .saturating_add(beyond)
+    }
+
+    /// Every chunk a reader should know about, in file order: the valid prefix plus, beyond a damaged
+    /// chunk with an intact header, every chunk found after it (damaged ones included, so readers report
+    /// them).
+    pub fn indexable_chunks(&self) -> impl Iterator<Item = &ChunkLoc> {
+        self.chunks
+            .iter()
+            .chain(self.beyond_damage.iter().flat_map(|b| b.chunks.iter()))
     }
 }
 
@@ -550,13 +707,54 @@ mod tests {
         assert!(
             matches!(&scan.stop, ScanStop::Corrupt { offset, error: FormatError::ChunkBodyCrc { .. } } if *offset == offsets[2])
         );
-        // A corrupted header (length field) is caught by the header CRC.
+        // The damaged chunk's header is intact: the scan steps over it and finds the intact chunks after it.
+        let beyond = scan.beyond_damage.as_ref().expect("beyond damage");
+        assert_eq!(
+            beyond.chunks.iter().map(|c| c.offset).collect::<Vec<_>>(),
+            offsets[2..]
+        );
+        assert_eq!(beyond.damaged.len(), 1);
+        assert_eq!(beyond.damaged[0].0, offsets[2]);
+        assert_eq!((beyond.intact_chunks(), beyond.record_count), (2, 14));
+        assert_eq!(
+            (beyond.min_capture_ns, beyond.max_capture_ns),
+            (Some(3_000), Some(4_006))
+        );
+        assert_eq!(beyond.end(), Some(bytes.len() as u64));
+        assert_eq!(scan.indexable_chunks().count(), 5);
+        assert_eq!(scan.producer_record_count(), 28);
+        assert_eq!(scan.file_len, bytes.len() as u64);
+        // A corrupted header (length field) is caught by the header CRC; nothing after it can be located.
         let (mut bytes, offsets) = build_segment(5, 7);
         bytes[offsets[1] as usize + 5] ^= 0x01;
         let scan = validate_segment(Cursor::new(&bytes)).expect("scan");
         assert!(
             matches!(&scan.stop, ScanStop::Corrupt { offset, error: FormatError::ChunkHeaderCrc { .. } } if *offset == offsets[1])
         );
+        assert_eq!(scan.beyond_damage, None);
+    }
+
+    #[test]
+    fn several_damaged_bodies_are_all_stepped_over() {
+        let (mut bytes, offsets) = build_segment(6, 7);
+        for i in [1usize, 3] {
+            bytes[offsets[i] as usize + CHUNK_HEADER_LEN + 1] ^= 0x40;
+        }
+        let scan = validate_segment(Cursor::new(&bytes)).expect("scan");
+        let beyond = scan.beyond_damage.as_ref().expect("beyond damage");
+        assert_eq!(
+            beyond.damaged.iter().map(|(o, _)| *o).collect::<Vec<_>>(),
+            vec![offsets[1], offsets[3]]
+        );
+        assert_eq!(beyond.chunks.len(), 5);
+        assert_eq!(beyond.intact_chunks(), 3);
+        assert_eq!(scan.producer_record_count(), 7 * 4);
+        // A torn final write after the damage still ends the region where the intact data ends.
+        let cut = bytes.len() - 3;
+        let scan = validate_segment(Cursor::new(&bytes[..cut])).expect("scan");
+        let beyond = scan.beyond_damage.as_ref().expect("beyond damage");
+        assert_eq!(beyond.end(), Some(offsets[5]));
+        assert_eq!(scan.file_len, cut as u64);
     }
 
     #[test]

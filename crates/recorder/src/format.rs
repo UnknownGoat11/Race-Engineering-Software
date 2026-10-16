@@ -335,7 +335,8 @@ impl FileHeader {
 /// How a chunk body is encoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChunkCodec {
-    /// Body is the raw record bytes (fallback used only if compression fails).
+    /// Body is the raw record bytes: used when zstd does not shrink the data (tiny or incompressible
+    /// chunks, a normal case) or when compression fails. Not an error signal.
     Stored,
     /// Body is one zstd frame of the raw record bytes.
     Zstd,

@@ -13,7 +13,7 @@ use crossbeam_channel::Receiver;
 use crate::clock::unix_now_ns;
 use crate::config::{DEFAULT_DISK_CRITICAL_FREE_BYTES, INDEX_FILE_NAME, RecorderConfig};
 use crate::disk::DiskSpaceProbe;
-use crate::error::AppendError;
+use crate::error::{AppendError, RecorderError};
 use crate::format::{GapNote, GapReason, MAX_CAPTURE_NS, MAX_RECORD_BYTES, RecordKind};
 use crate::index::{
     ChunkEntry, ChunkRows, EventQuery, Index, SegmentInfo, SessionEnd, SessionInfo,
@@ -794,7 +794,7 @@ fn startup_recovery_marks_a_crashed_session_interrupted_with_its_last_valid_time
 }
 
 #[test]
-fn corruption_inside_the_synced_prefix_stops_recovery_there_and_is_reported() {
+fn corruption_inside_the_synced_prefix_is_reported_and_intact_chunks_after_it_stay_readable() {
     let dir = TempDir::new("corrupt-durable");
     let cfg = config(dir.path());
     let (id, seg_path, chunks) = {
@@ -823,12 +823,16 @@ fn corruption_inside_the_synced_prefix_stops_recovery_there_and_is_reported() {
     assert_eq!(r.integrity, IntegrityStatus::Damaged);
     assert_eq!(
         (r.record_count, r.last_capture_ns),
-        (20, Some(19 * MS)),
-        "stops at the first bad chunk"
+        (40, Some(49 * MS)),
+        "only the damaged chunk (records 20..29) is lost; the intact chunks after it are kept"
     );
     let detail = r.integrity_detail.clone().unwrap_or_default();
     assert!(
         detail.contains(&format!("corrupt chunk at byte {}", chunks[2].offset)),
+        "{detail}"
+    );
+    assert!(
+        detail.contains("2 intact chunk(s) after the damage are still readable"),
         "{detail}"
     );
     assert!(
@@ -840,7 +844,44 @@ fn corruption_inside_the_synced_prefix_stops_recovery_there_and_is_reported() {
         (info.status, info.integrity),
         (SessionStatus::Interrupted, IntegrityStatus::Damaged)
     );
-    assert_eq!(produced_ms(&read_all(&store, id)), ms_range(0..20));
+    assert_eq!(
+        store.chunks(id, 0).expect("chunks"),
+        chunks,
+        "every chunk stays indexed"
+    );
+    let results: Vec<Result<RecordedRecord, RecorderError>> = store
+        .open_reader(id)
+        .expect("reader")
+        .records(TimeRange::ALL)
+        .expect("stream")
+        .collect();
+    let errors: Vec<&RecorderError> = results.iter().filter_map(|r| r.as_ref().err()).collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "the damaged chunk is reported once: {errors:?}"
+    );
+    assert!(
+        matches!(errors[0], RecorderError::Format { offset, .. } if *offset == chunks[2].offset),
+        "{:?}",
+        errors[0]
+    );
+    let good: Vec<RecordedRecord> = results.into_iter().filter_map(Result::ok).collect();
+    assert_eq!(
+        produced_ms(&good),
+        ms_range(0..20)
+            .into_iter()
+            .chain(30..50)
+            .collect::<Vec<_>>()
+    );
+    check_payloads(&good);
+    // Re-validation agrees and keeps the rows.
+    let v = store.validate_session(id).expect("validate");
+    assert_eq!(
+        (v.integrity, v.record_count),
+        (IntegrityStatus::Damaged, 40)
+    );
+    assert_eq!(store.chunks(id, 0).expect("chunks"), chunks);
     assert_eq!(
         fs::read(&seg_path).expect("read"),
         bytes,
@@ -1088,4 +1129,90 @@ fn readers_walk_chunk_headers_where_the_offset_index_is_incomplete() {
         .map(|r| r.expect("record").capture_ns / MS)
         .collect();
     assert_eq!(late, ms_range(35..50));
+}
+
+#[test]
+fn a_failed_writer_thread_start_leaves_nothing_behind() {
+    let tmp = TempDir::new("spawn-fail");
+    let store = RecordingStore::open(config(tmp.path())).expect("open");
+    let err = store
+        .start_session(
+            meta(),
+            options(&plenty_of_space()).with_failing_thread_spawn(),
+        )
+        .expect_err("the writer thread cannot start");
+    assert!(matches!(err, RecorderError::SpawnWriter(_)), "{err}");
+    assert!(store.sessions().expect("sessions").is_empty());
+    assert!(store.recording_sessions().is_empty());
+    let sessions_dir = store.config().sessions_dir();
+    assert_eq!(
+        fs::read_dir(&sessions_dir).expect("sessions dir").count(),
+        0,
+        "no session directory is left behind"
+    );
+    drop(store);
+    let reopened = RecordingStore::open(config(tmp.path())).expect("reopen");
+    assert!(
+        reopened.sessions().expect("sessions").is_empty(),
+        "no phantom session is adopted at the next startup"
+    );
+}
+
+#[test]
+fn a_range_read_starting_inside_a_gap_still_returns_the_gap_note() {
+    let dir = TempDir::new("gap-range");
+    let store = RecordingStore::open(config(dir.path())).expect("store");
+    let space = plenty_of_space();
+    let session = store
+        .start_session(meta(), options(&space))
+        .expect("session");
+    let id = session.id();
+    let events = session.events().clone();
+    let mut seen = Vec::new();
+
+    append_range(&session, 0..15);
+    session.sync(WAIT).expect("sync");
+    space.0.store(GIB / 2, Ordering::SeqCst);
+    wait_for(&events, &mut seen, |e| {
+        matches!(e, RecorderEvent::DiskSpaceCritical { .. })
+    });
+    // A gap longer than a chunk's capture span (10 ms): the note's chunk is sealed on its own.
+    append_range(&session, 15..40);
+    settle(&session);
+    space.0.store(3 * GIB, Ordering::SeqCst);
+    wait_for(&events, &mut seen, |e| {
+        matches!(e, RecorderEvent::DiskSpaceRecovered { .. })
+    });
+    append_range(&session, 40..45);
+    session.finish().expect("finish");
+
+    let expected_note = GapNote {
+        reason: GapReason::DiskSpaceCritical,
+        dropped_records: 25,
+        first_capture_ns: Some(15 * MS),
+        last_capture_ns: Some(39 * MS),
+    };
+    assert_eq!(gap_notes(&read_all(&store, id)), vec![expected_note]);
+    let read = |from_ms: u64| -> Vec<RecordedRecord> {
+        store
+            .open_reader(id)
+            .expect("reader")
+            .records(TimeRange::new(from_ms * MS, MAX_CAPTURE_NS).expect("range"))
+            .expect("stream")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("every chunk verifies")
+    };
+    let inside = read(30);
+    assert_eq!(
+        gap_notes(&inside),
+        vec![expected_note],
+        "a read starting inside the gap reports it"
+    );
+    assert_eq!(produced_ms(&inside), ms_range(40..45));
+    let after = read(41);
+    assert!(
+        gap_notes(&after).is_empty(),
+        "a read after the gap does not"
+    );
+    assert_eq!(produced_ms(&after), ms_range(41..45));
 }

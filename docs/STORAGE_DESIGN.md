@@ -36,7 +36,10 @@ Status: implemented for v0.x (decision D-006). This document is normative for th
 ```
 
 * One store owns a directory at a time: `RecordingStore::open` takes the lock with `File::try_lock`
-  (released by the OS if the process dies) and fails with `DirectoryInUse` otherwise.
+  (released by the OS if the process dies) and fails with `DirectoryInUse` otherwise. The lock is held until
+  the store **and every writer thread it started** are gone: a `RecordingSession` that outlives its store keeps
+  the directory locked until `finish` returns (or its background finalization ends), so no other store can
+  "recover" or delete a session that is still being recorded.
 * Paths stored in the index are relative to `recordings_dir` and `/`-separated, so a recordings directory
   can be moved or copied as a whole.
 * A segment file is created with `create_new` (never truncates an existing file); a name collision moves to the
@@ -66,7 +69,10 @@ All integers are little-endian. CRC-32C is the Castagnoli CRC (crate `crc32c`, s
 
 The header is written, flushed and `sync_data`ed when the segment is created, so an existing segment always
 starts with a valid header unless the crash hit that very write (recovery reports such a file as
-"created but never written").
+"created but never written", TRUNCATED). That covers a file shorter than the header and a file exactly one
+header long whose header was never (fully) persisted: all zeros, or the file magic followed by zeros that
+cover at least the header CRC (after a power loss NTFS can keep the extended length without the data). Any
+other invalid header is DAMAGED.
 
 ### 3.2 Chunk header (48 bytes)
 
@@ -77,7 +83,7 @@ starts with a valid header unless the crash hit that very write (recovery report
 | 8      | 4    | record_count (u32)   | records in the body, ≥ 1                                                    |
 | 12     | 4    | chunk_seq (u32)      | 0-based sequence within the segment (must be contiguous)                    |
 | 16     | 8    | min_capture_ns (u64) | smallest capture time in the chunk ("first capture ns")                     |
-| 24     | 8    | max_capture_ns (u64) | largest capture time in the chunk ("last capture ns"); ≥ min               |
+| 24     | 8    | max_capture_ns (u64) | largest capture time in the chunk ("last capture ns"); ≥ min; reaches the end of the gap of any gap note in the chunk (§3.4) |
 | 32     | 4    | raw_len (u32)        | decoded body length, ≤ 64 MiB; `record_count × 13 ≤ raw_len`               |
 | 36     | 4    | body_crc32c          | CRC-32C of the **encoded** body bytes                                       |
 | 40     | 1    | codec (u8)           | 0 = stored (body is the raw records, `body_len == raw_len`), 1 = one zstd frame |
@@ -131,7 +137,10 @@ Whenever records are dropped (input queue overrun, write failure, critical disk 
 | 12     | 8    | first_capture_ns (u64; 0 when absent)                                 |
 | 20     | 8    | last_capture_ns (u64; 0 when absent)                                  |
 
-The note record's own `capture_ns` is the capture time of the first dropped record.
+The note record's own `capture_ns` is the capture time of the first dropped record. The header of the chunk
+holding the note is widened so that its `max_capture_ns` reaches the note's `last_capture_ns` (record times
+still lie inside `[min, max]`), and readers return a note whenever its gap `[first, last]` overlaps the
+requested range (§7): a read that starts inside a gap still gets the note, so the gap is never silent.
 
 ### 3.5 Limits
 
@@ -227,7 +236,11 @@ segments, integrity, checksum and the writer thread's CPU time.
 the last index transactions, never corrupt the database; recorded data does not depend on it),
 `foreign_keys=ON`, `busy_timeout=5000`, `application_id=0x4C4D5552` ('LMUR'), `user_version=1`. A database
 with another application id, unknown tables or a newer `user_version` is refused. All tables are `STRICT`;
-JSON columns are checked with `json_valid`. Every connection belongs to one thread (the store has one, each
+JSON columns are checked with `json_valid`; caller-supplied JSON is also checked before it is queued
+(`start_session` for the metadata, `record_lap` / `record_stint` / `update_meta` on the caller's thread,
+returning `AppendError::InvalidJson` and counting `control_dropped`), so a malformed field is a caller error
+reported at once instead of a lost lap, stint or metadata update (they exist only in the index and cannot be
+rebuilt from the recording). Every connection belongs to one thread (the store has one, each
 writer thread has its own). Capture times and counters are `u64` in Rust and checked conversions to SQLite's
 signed 64-bit INTEGER.
 
@@ -292,7 +305,11 @@ sync appends chunk rows and updates counters → each close stores the validated
 `finish` writes COMPLETE, end time, totals, integrity and checksum. If index writes failed during the
 session, `finish` first rebuilds every segment and chunk row from the files. If the final update itself
 fails, the session stays ACTIVE and the next startup recovers it (as INTERRUPTED; the data is intact).
-`validate_session` re-validates a finished session on demand (status and chunk rows unchanged).
+`validate_session` re-validates a finished session on demand (status and chunk rows unchanged). It updates
+only the verdict (integrity, detail, observed `file_len`, checksum): the writer-recorded reference of each
+segment (`byte_size`, `file_crc32c`, counts, capture bounds) and the session's extent are kept, so every later
+validation compares against the same durable truth and damage found once is reported again (it never decays
+into TRUNCATED), and the capture bounds used by replay do not shrink.
 
 ## 6. Crash tolerance and recovery
 
@@ -326,11 +343,22 @@ range. Recovery then checks the **durable prefix**: the bytes the index recorded
 chunk boundary of the valid prefix with the same CRC; otherwise the segment is DAMAGED ("the index recorded N
 bytes as durable but only M bytes are valid").
 
+**Stepping over a damaged body.** When the stop is `Corrupt` at a chunk whose header CRC passed (so its
+`body_len` is what the writer wrote) but whose body fails its CRC or does not decode, the scan does not give
+up on the rest of the segment: it steps over that chunk and keeps validating the following chunks while their
+headers stay intact and in sequence (`SegmentScan::beyond_damage`: those chunks, damaged ones included, the
+offsets and causes of the damaged ones, and the record counts and capture range of the intact ones). The
+valid-prefix fields above are unchanged. Every consumer (startup recovery, close-time validation, abandoned
+segments, index rebuilds) then indexes the valid prefix **plus** every chunk beyond the damage, and counts the
+intact ones in the segment's records and capture bounds; readers report each damaged chunk as an error item
+and return the intact ones. `byte_size` / `file_crc32c` stay those of the valid prefix. A damaged chunk
+header (its length cannot be trusted) still ends the scan: nothing after it can be located.
+
 ### 6.3 Startup recovery (`RecordingStore::open`)
 
 For every ACTIVE session (it was being recorded when the application stopped): every segment (index rows plus
 any `seg-*.lmurec` file found in its directory) is rescanned; the index gets the valid length, the chunk rows of
-the valid prefix and the integrity status; the session becomes **INTERRUPTED** with `last_capture_ns` = the
+the valid prefix (plus the chunks beyond a damaged body, §6.2) and the integrity status; the session becomes **INTERRUPTED** with `last_capture_ns` = the
 last valid capture time, `recovered_unix_ns` set and `ended_unix_ns` NULL (the true end is unknown), and a
 RECORDER warning event describing what was recovered. **Files are left exactly as they are**: nothing is
 truncated, rewritten or deleted; readers simply stop at the valid length. Per-session problems are reported in
@@ -363,6 +391,9 @@ truncated, rewritten or deleted; readers simply stop at the valid length. Per-se
   OPEN segment, up to its current length: a session can be read while it is being recorded).
 * **Order:** recording order. Capture times are non-decreasing when producers append in capture order, except
   recorder notes, which carry the capture time of the first record of their gap.
+* **Gap notes in range reads:** a gap note is returned whenever its gap `[first_capture_ns, last_capture_ns]`
+  overlaps the requested range, even when its own capture time lies before the range start; its chunk's header
+  covers the whole gap (§3.4), so chunk-level seek reaches it.
 * **Replay clock:** `ReplayClock` maps wall time to capture time over `[start_ns, end_ns]` with speeds
   0.25×, 0.5×, 1×, 2×, 4× (exact integer ratios, no drift), play/pause, seek (clamped), continuous speed
   changes and `wall_time_until(target)` for scheduling. It is pure (the caller passes `Instant`s); UI
@@ -444,9 +475,15 @@ payload model is in `tests/common/mod.rs`.
   modified, integrity is OK at chunk boundaries and TRUNCATED otherwise (`scenario_tests`, `scan`);
 * a real process death (child process exits mid-recording without any destructor) recovered at the next open
   (`tests/crash_process.rs`);
-* corrupted CRC in a middle chunk: the scan stops there and reports offset and cause; validation marks the
-  session DAMAGED; readers report that chunk and return everything else (`tests/store_api.rs`); corruption
-  inside the durable prefix of a crashed session (`scenario_tests`);
+* corrupted CRC in a middle chunk: the scan stops the valid prefix there, reports offset and cause, and steps
+  over the damaged body to the intact chunks after it (`scan`); validation marks the session DAMAGED; readers
+  report that chunk and return everything else (`tests/store_api.rs`); corruption inside the durable prefix
+  of a crashed session: recovery keeps every intact chunk after the damage readable (`scenario_tests`);
+  re-validation keeps reporting damage in the final chunk and keeps the capture bounds (`tests/store_api.rs`);
+  an unpersisted (zero / partial) header is TRUNCATED, not DAMAGED (`recovery`);
+* a range read starting inside a gap returns the gap note (`scenario_tests`); invalid lap/stint/metadata
+  JSON is refused at the call (`tests/store_api.rs`); a session that outlives its store keeps the directory
+  locked (`tests/store_api.rs`); a failed writer-thread start leaves no directory behind (`scenario_tests`);
 * deterministic overrun (stalled writer) and exact overrun accounting under four unthrottled producers;
 * injected write/create failures (OS error 112): FAILED segment, `RecordingFailed` with the OS error, counted
   drops, retry, `RecordingResumed`, gap note; simulated filling disk: suspension, hysteresis, resume;
@@ -463,5 +500,6 @@ payload model is in `tests/common/mod.rs`.
 * The writer's CPU time is reported on Windows only (`GetThreadTimes`).
 * `validate_session` holds the store's index connection for the duration of the scan (writers use their
   own connections and are not blocked).
-* After `validate_session` finds damage, `byte_size` is the valid prefix while chunk rows are kept, so readers
-  still reach intact chunks after the damage.
+* `validate_session` keeps the writer-recorded segment rows (§5.3): after it finds damage, `byte_size` is
+  still the recorded durable length and the chunk rows are kept, so readers still reach intact chunks after
+  the damage and later validations report the same damage.

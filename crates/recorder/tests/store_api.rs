@@ -726,3 +726,163 @@ fn a_recordings_directory_has_a_single_owner() {
     RecordingStore::open(RecorderConfig::new(dir.path()))
         .expect("free again once the owner is gone");
 }
+
+#[test]
+fn a_live_session_keeps_the_directory_locked_after_its_store_is_dropped() {
+    let dir = TempDir::new("lock-live");
+    let store = RecordingStore::open(config(dir.path())).expect("first owner");
+    let session = store
+        .start_session(meta(), SessionOptions::new())
+        .expect("start");
+    let id = session.id();
+    session
+        .append(RecordKind::Marker, 0, b"live")
+        .expect("append");
+    session.sync(WAIT).expect("sync");
+    drop(store);
+    // The writer still records into the directory: nobody else may open (and "recover") it.
+    assert!(matches!(
+        RecordingStore::open(config(dir.path())),
+        Err(RecorderError::DirectoryInUse { .. })
+    ));
+    session
+        .append(RecordKind::Marker, PERIOD_NS, b"still live")
+        .expect("append after the store is gone");
+    session.finish().expect("finish");
+    let reopened = RecordingStore::open(config(dir.path())).expect("free once the writer is done");
+    assert!(
+        reopened.recovery_report().sessions.is_empty(),
+        "a finished session needs no recovery"
+    );
+    let info = reopened.session(id).expect("read").expect("row");
+    assert_eq!(info.status, SessionStatus::Complete);
+    assert_eq!(info.record_count, 2);
+}
+
+#[test]
+fn revalidation_keeps_reporting_damage_in_the_final_chunk() {
+    let dir = TempDir::new("revalidate");
+    let store = RecordingStore::open(config(dir.path())).expect("open");
+    let session = store
+        .start_session(meta(), SessionOptions::new())
+        .expect("start");
+    let id = session.id();
+    for i in 0..300u64 {
+        session
+            .append(RecordKind::Marker, i * PERIOD_NS, &i.to_le_bytes())
+            .expect("append");
+    }
+    session.finish().expect("finish");
+    let before = store.session(id).expect("read").expect("row");
+    let bounds = store.open_reader(id).expect("reader").capture_bounds();
+    let seg_before = store.segments(id).expect("segments")[0].clone();
+    let path = segment_path(&store, id, 0);
+    let mut bytes = fs::read(&path).expect("read");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x01;
+    fs::write(&path, &bytes).expect("damage the final chunk");
+
+    for round in 0..2 {
+        let v = store.validate_session(id).expect("validate");
+        assert_eq!(
+            v.integrity,
+            IntegrityStatus::Damaged,
+            "round {round}: {v:?}"
+        );
+        let info = store.session(id).expect("read").expect("row");
+        assert_eq!(info.integrity, IntegrityStatus::Damaged, "round {round}");
+        assert_eq!(
+            (
+                info.record_count,
+                info.first_capture_ns,
+                info.last_capture_ns
+            ),
+            (
+                before.record_count,
+                before.first_capture_ns,
+                before.last_capture_ns
+            ),
+            "round {round}: the recorded extent is kept"
+        );
+        assert_eq!(
+            store.open_reader(id).expect("reader").capture_bounds(),
+            bounds,
+            "round {round}"
+        );
+        let seg = &store.segments(id).expect("segments")[0];
+        assert_eq!(
+            (seg.byte_size, seg.file_crc32c, seg.record_count),
+            (
+                seg_before.byte_size,
+                seg_before.file_crc32c,
+                seg_before.record_count
+            ),
+            "round {round}: the durable reference is kept"
+        );
+    }
+}
+
+#[test]
+fn invalid_json_is_refused_up_front_and_valid_rows_still_land() {
+    let dir = TempDir::new("json");
+    let store = RecordingStore::open(config(dir.path())).expect("open");
+    let session = store
+        .start_session(meta(), SessionOptions::new())
+        .expect("start");
+    let id = session.id();
+    let lap = |metrics_json: Option<&str>| LapRecord {
+        lap_number: 3,
+        stint_number: Some(1),
+        start_capture_ns: 0,
+        end_capture_ns: Some(1_000),
+        lap_time_s: Some(123.4),
+        sector_times_s: [None, None, None],
+        valid: Some(true),
+        pit_lap: Some(false),
+        metrics_json: metrics_json.map(str::to_owned),
+    };
+    let stint = |metrics_json: Option<&str>| StintRecord {
+        stint_number: 1,
+        start_capture_ns: 0,
+        end_capture_ns: None,
+        start_lap: Some(1),
+        end_lap: None,
+        driver: None,
+        metrics_json: metrics_json.map(str::to_owned),
+    };
+    let bad_meta = SessionMetaUpdate {
+        track: Some("Spa".into()),
+        data_availability_json: Some("{not json".into()),
+        ..Default::default()
+    };
+    assert!(matches!(
+        session.update_meta(bad_meta),
+        Err(AppendError::InvalidJson { .. })
+    ));
+    assert!(matches!(
+        session.record_lap(lap(Some("[1,"))),
+        Err(AppendError::InvalidJson { .. })
+    ));
+    assert!(matches!(
+        session.record_stint(stint(Some("nope"))),
+        Err(AppendError::InvalidJson { .. })
+    ));
+    assert_eq!(session.stats().control_dropped, 3);
+    session
+        .update_meta(SessionMetaUpdate {
+            track: Some("Spa".into()),
+            data_availability_json: Some(r#"{"tyres":true}"#.into()),
+            ..Default::default()
+        })
+        .expect("valid meta");
+    session.record_lap(lap(Some("[1,2]"))).expect("valid lap");
+    session.record_stint(stint(None)).expect("valid stint");
+    let summary = session.finish().expect("finish");
+    assert_eq!(summary.stats.index_errors, 0, "{summary:?}");
+    let info = store.session(id).expect("read").expect("row");
+    assert_eq!(info.meta.track.as_deref(), Some("Spa"));
+    let laps = store.laps(id).expect("laps");
+    assert_eq!(laps.len(), 1);
+    assert_eq!(laps[0].lap_time_s, Some(123.4));
+    assert_eq!(store.stints(id).expect("stints").len(), 1);
+}
