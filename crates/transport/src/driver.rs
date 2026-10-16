@@ -9,7 +9,10 @@
 //!   session.
 //! * Every time the session is (re)bound, the client discards stale queued telemetry and emits
 //!   [`DriverEvent::SessionReady`] followed by [`DriverEvent::SnapshotNeeded`]: the application
-//!   then sends SCHEMA_NEGOTIATE and a TELEMETRY_SNAPSHOT. Inbound SNAPSHOT_REQUESTs produce
+//!   then sends SCHEMA_NEGOTIATE and a TELEMETRY_SNAPSHOT. In a new sequence space (created
+//!   session, or resume after an app restart) the transport holds live frames and SESSION_EVENTs
+//!   until that SCHEMA_NEGOTIATE was written, so it is always the space's first stream frame
+//!   (§5) even if the producer keeps calling `send_live` meanwhile. Inbound SNAPSHOT_REQUESTs produce
 //!   `SnapshotNeeded` at most once per `SNAPSHOT_REQUEST_MIN_INTERVAL_MS` (coalesced, §5).
 //! * Reliable messages ([`DriverClient::send_reliable`]) are accepted from [`DriverClient::start`]
 //!   until streaming stops (stop, end of session, FAILED, shutdown); then the pending ones are
@@ -82,6 +85,10 @@ pub enum SnapshotTrigger {
     SessionReady(SessionReadyKind),
     /// The relay forwarded a SNAPSHOT_REQUEST (rate-limited, §5).
     Requested(SnapshotReason),
+    /// The SCHEMA_NEGOTIATE the new sequence space waits for could not be written (larger than
+    /// the current relay's payload limit, or unencodable; counted in the metrics): telemetry is
+    /// held until a fitting SCHEMA_NEGOTIATE (and a snapshot) is sent.
+    SchemaDropped,
 }
 
 /// Events of the driver client.
@@ -99,6 +106,29 @@ pub enum DriverEvent {
     SnapshotNeeded { trigger: SnapshotTrigger },
     /// A non-fatal error reported by the relay (e.g. a rate-limited code request).
     RelayError { code: ErrorCode, message: String },
+    /// What became of [`DriverClient::end_session`] on the relay (engineers see "driver ended the
+    /// session" only once it was delivered).
+    SessionEnded {
+        session_id: u64,
+        outcome: SessionEndOutcome,
+    },
+}
+
+/// Outcome of ending a session (see [`DriverEvent::SessionEnded`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionEndOutcome {
+    /// SESSION_CLOSE was written to the relay.
+    Delivered,
+    /// The relay could not be reached (offline, or the close could not be written): the session
+    /// is forgotten in the credential store, and SESSION_CLOSE is sent on the next successful
+    /// connection of this app run ([`DriverClient::start`]), before the new session is bound.
+    /// Until then, or if the app exits first, the relay keeps it for its grace period.
+    Deferred,
+    /// The deferred SESSION_CLOSE found the session already gone on the relay (expired).
+    AlreadyGone,
+    /// The relay refused to resume the session for the deferred SESSION_CLOSE; it is not retried
+    /// and the relay ends the session after its grace period.
+    Refused { code: ErrorCode },
 }
 
 /// The client has shut down.
@@ -383,9 +413,36 @@ struct DriverState {
     /// The session bound most recently in this app run. Reliable messages queued for it are
     /// discarded when a different session is bound (they are meaningless there).
     last_bound: Option<u64>,
+    /// A session the user ended while its SESSION_CLOSE could not be delivered: closed on the
+    /// next connection before binding (memory only; already deleted from the credential store).
+    end_pending: Option<StoredDriverSession>,
 }
 
 impl DriverState {
+    /// The user ended the session but SESSION_CLOSE could not be delivered now: it is deleted
+    /// from the store (the next app start does not resume it) and kept in memory for a deferred
+    /// close. Returns the session id, if there was a session.
+    fn defer_end(&mut self, auth: &AuthManager) -> Option<u64> {
+        if !self.stored_loaded {
+            self.stored_loaded = true;
+            match auth.load_driver_session() {
+                Ok(stored) => self.session = stored,
+                Err(e) => {
+                    tracing::warn!(component = COMPONENT, error = %e, "stored session unusable, nothing to end");
+                }
+            }
+        }
+        let ended = self.session.take();
+        self.forget_session(auth);
+        let session_id = ended.as_ref().map(|s| s.session_id);
+        // At most one can be pending: a new session is bound only after the pending one was
+        // closed (see `bind`), so there is nothing else to end meanwhile.
+        if ended.is_some() {
+            self.end_pending = ended;
+        }
+        session_id
+    }
+
     /// Forgets the session (memory and credential store).
     fn forget_session(&mut self, auth: &AuthManager) {
         self.session = None;
@@ -431,6 +488,8 @@ struct Bound {
     info: SessionInfo,
     kind: SessionReadyKind,
     early: Vec<Frame>,
+    /// The deferred SESSION_CLOSE sent on this connection before binding, if any.
+    ended_previous: Option<(u64, SessionEndOutcome)>,
 }
 
 struct Supervisor<T> {
@@ -463,7 +522,8 @@ impl<T: TelemetryTransport> Supervisor<T> {
                 // Acknowledges FAILED.
                 DriverCommand::Stop => self.core.status.disconnected(),
                 DriverCommand::EndSession => {
-                    self.state.forget_session(&self.core.auth);
+                    // Not connected: SESSION_CLOSE waits for the next connection.
+                    self.defer_end().await;
                     self.core.status.disconnected();
                 }
                 DriverCommand::Shutdown => break,
@@ -498,7 +558,7 @@ impl<T: TelemetryTransport> Supervisor<T> {
                         Some(DriverCommand::Start(c) | DriverCommand::UpdateSession(c)) => {
                             self.state.create = Some(*c);
                         }
-                        other => return self.interrupted(other),
+                        other => return self.interrupted(other).await,
                     },
                 }
             }
@@ -506,16 +566,32 @@ impl<T: TelemetryTransport> Supervisor<T> {
     }
 
     /// A stop / end / shutdown command (or all handles dropped) outside a connection.
-    fn interrupted(&mut self, command: Option<DriverCommand>) -> Exit {
+    async fn interrupted(&mut self, command: Option<DriverCommand>) -> Exit {
         let exit = match command {
             Some(DriverCommand::EndSession) => {
-                self.state.forget_session(&self.core.auth);
+                self.defer_end().await;
                 Exit::Idle
             }
             Some(DriverCommand::Stop) => Exit::Idle,
             _ => Exit::Shutdown,
         };
         self.stopped(exit)
+    }
+
+    /// Ends the session without a connection (see [`DriverState::defer_end`]) and reports it.
+    async fn defer_end(&mut self) {
+        if let Some(session_id) = self.state.defer_end(&self.core.auth) {
+            tracing::info!(
+                component = COMPONENT,
+                session_id,
+                "session ended offline: SESSION_CLOSE deferred to the next connection"
+            );
+            self.event(DriverEvent::SessionEnded {
+                session_id,
+                outcome: SessionEndOutcome::Deferred,
+            })
+            .await;
+        }
     }
 
     fn stopped(&mut self, exit: Exit) -> Exit {
@@ -580,7 +656,7 @@ impl<T: TelemetryTransport> Supervisor<T> {
             }
             match outcome {
                 Ok(result) => result,
-                Err(command) => return Attempt::Ended(self.interrupted(command)),
+                Err(command) => return Attempt::Ended(self.interrupted(command).await),
             }
         };
         let (link, server, bound) = match connected {
@@ -625,6 +701,13 @@ impl<T: TelemetryTransport> Supervisor<T> {
             old_session_messages_discarded = old_session_messages,
             "session ready"
         );
+        if let Some((ended, outcome)) = bound.ended_previous {
+            self.event(DriverEvent::SessionEnded {
+                session_id: ended,
+                outcome,
+            })
+            .await;
+        }
         self.event(DriverEvent::SessionReady {
             session_id,
             kind: bound.kind,
@@ -665,10 +748,20 @@ impl<T: TelemetryTransport> Supervisor<T> {
             self.state.forget_session(&self.core.auth);
         }
         match end {
-            ConnectionEnd::Closed => {
+            ConnectionEnd::Closed { flushed } => {
                 let exit = match logic.exit {
-                    Some(UserExit::EndSession) => {
+                    Some(UserExit::EndSession) if flushed => {
                         self.state.forget_session(&self.core.auth);
+                        self.event(DriverEvent::SessionEnded {
+                            session_id,
+                            outcome: SessionEndOutcome::Delivered,
+                        })
+                        .await;
+                        Exit::Idle
+                    }
+                    Some(UserExit::EndSession) => {
+                        // The link failed before SESSION_CLOSE was written.
+                        self.defer_end().await;
                         Exit::Idle
                     }
                     Some(UserExit::Stop) => Exit::Idle,
@@ -719,6 +812,7 @@ async fn bind<R: FrameReader, W: FrameWriter>(
             }
         }
     }
+    let ended_previous = close_pending(state, link).await?;
     if let Some(stored) = state.session.clone() {
         const STAGE: &str = "SESSION_RESUME";
         let new_space = !state.sequence_space_announced;
@@ -733,6 +827,7 @@ async fn bind<R: FrameReader, W: FrameWriter>(
                 let token = driver_token(&info, STAGE)?;
                 if new_space {
                     core.reset_sequence();
+                    core.queue.hold_until_schema();
                 }
                 state.sequence_space_announced = true;
                 state.remember_session(&core.auth, info.session_id, token);
@@ -741,7 +836,12 @@ async fn bind<R: FrameReader, W: FrameWriter>(
                 } else {
                     SessionReadyKind::Resumed
                 };
-                return Ok(Bound { info, kind, early });
+                return Ok(Bound {
+                    info,
+                    kind,
+                    early,
+                    ended_previous,
+                });
             }
             SessionReply::Refused(code, message)
                 if matches!(
@@ -775,12 +875,16 @@ async fn bind<R: FrameReader, W: FrameWriter>(
         SessionReply::Info(info, early) => {
             let token = driver_token(&info, STAGE)?;
             core.reset_sequence();
+            // SCHEMA_NEGOTIATE must be the first stream frame of the new space (§5), whatever the
+            // producers queue first.
+            core.queue.hold_until_schema();
             state.sequence_space_announced = true;
             state.remember_session(&core.auth, info.session_id, token);
             Ok(Bound {
                 info,
                 kind: SessionReadyKind::Created,
                 early,
+                ended_previous,
             })
         }
         SessionReply::Refused(code, message) => Err(HandshakeError::Refused {
@@ -790,6 +894,60 @@ async fn bind<R: FrameReader, W: FrameWriter>(
             fatal: false,
         }),
     }
+}
+
+/// Sends the deferred SESSION_CLOSE of a session the user ended while offline (see
+/// [`DriverState::end_pending`]). The relay accepts SESSION_CLOSE only on a bound connection, so
+/// the session is resumed first; after the close the connection stays open, unbound, for the
+/// session bound next. Returns the outcome, or `None` if nothing was pending. A transport error
+/// keeps it pending (the attempt is retried).
+async fn close_pending<R: FrameReader, W: FrameWriter>(
+    state: &mut DriverState,
+    link: &mut Link<R, W>,
+) -> Result<Option<(u64, SessionEndOutcome)>, HandshakeError> {
+    const STAGE: &str = "SESSION_RESUME (deferred SESSION_CLOSE)";
+    let Some(pending) = state.end_pending.clone() else {
+        return Ok(None);
+    };
+    link.send(&Message::SessionResume(SessionResume::Driver {
+        session_id: pending.session_id,
+        resume_token: pending.resume_token.clone(),
+        // Nothing is streamed into it; the space it had is irrelevant.
+        new_sequence_space: false,
+    }))
+    .await?;
+    let outcome = match await_session_info(link, STAGE).await? {
+        SessionReply::Info(info, _early) => {
+            link.send(&Message::SessionClose(SessionClose {
+                session_id: info.session_id,
+                reason: SessionCloseReason::DriverStopped,
+            }))
+            .await?;
+            tracing::info!(
+                component = COMPONENT,
+                session_id = pending.session_id,
+                "deferred SESSION_CLOSE delivered"
+            );
+            SessionEndOutcome::Delivered
+        }
+        SessionReply::Refused(code, message)
+            if matches!(
+                code,
+                ErrorCode::SessionNotFound | ErrorCode::SessionClosed | ErrorCode::NotAuthorized
+            ) =>
+        {
+            tracing::info!(component = COMPONENT, session_id = pending.session_id, ?code, %message, "the ended session is already gone on the relay");
+            SessionEndOutcome::AlreadyGone
+        }
+        // Not retried: a persistent refusal must not keep every new session from being bound.
+        // The relay ends the session after its grace period.
+        SessionReply::Refused(code, message) => {
+            tracing::warn!(component = COMPONENT, session_id = pending.session_id, ?code, %message, "deferred SESSION_CLOSE refused; the relay ends the session after its grace period");
+            SessionEndOutcome::Refused { code }
+        }
+    };
+    state.end_pending = None;
+    Ok(Some((pending.session_id, outcome)))
 }
 
 /// SESSION_CREATE data with nothing known yet (`None` everywhere, never invented values).
@@ -1001,6 +1159,11 @@ impl RoleLogic for DriverLogic {
     }
 
     fn on_tick(&mut self, ctx: &mut Ctx<'_, DriverEvent>) -> Flow {
+        if ctx.queue.take_schema_resend() {
+            ctx.emit(DriverEvent::SnapshotNeeded {
+                trigger: SnapshotTrigger::SchemaDropped,
+            });
+        }
         if let Some(reason) = ctx.queue.due_snapshot_request(ctx.now_ms) {
             ctx.emit(DriverEvent::SnapshotNeeded {
                 trigger: SnapshotTrigger::Requested(reason),

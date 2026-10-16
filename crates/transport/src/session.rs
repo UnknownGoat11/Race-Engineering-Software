@@ -187,6 +187,7 @@ impl ClientCore {
         let inputs = MetricsInputs {
             frames_out_total: self.writer_counters.frames_out(),
             oversize_dropped: self.writer_counters.oversize_dropped(),
+            unencodable_dropped: self.writer_counters.unencodable_dropped(),
             dropped_obsolete: self.queue.dropped_obsolete(),
             reliable_discarded: self.queue.reliable_discarded(),
             send_queue_depth: self.queue.depth(),
@@ -226,6 +227,10 @@ impl ClientCore {
                     s.reconnect_attempt = attempt;
                     s.session_id = None;
                 });
+                // Nothing publishes during the backoff: the snapshot shown meanwhile must say "no
+                // link" (rates None) and carry the current counters, not the last connected one.
+                let sequence = self.metrics_tx.borrow().sequence;
+                self.publish_metrics(sequence);
                 Some(delay)
             }
         }
@@ -301,8 +306,9 @@ pub(crate) enum CloseAction {
 /// How [`run_connection`] ended.
 #[derive(Debug)]
 pub(crate) enum ConnectionEnd {
-    /// Closed on purpose.
-    Closed,
+    /// Closed on purpose. `flushed`: the final messages (e.g. SESSION_CLOSE) were written and the
+    /// stream closed without an error; `false` if the link failed or timed out first.
+    Closed { flushed: bool },
     /// Lost; reconnect.
     Lost(String),
     /// Ended for good.
@@ -354,6 +360,10 @@ pub(crate) trait RoleLogic {
     /// One inbound frame that passed the header rules (PONG never reaches the role).
     fn on_frame(&mut self, ctx: &mut Ctx<'_, Self::Event>, frame: Frame, msg_type: MsgType)
     -> Flow;
+    /// A frame of a message type this version does not know (skipped, counted as ignored). A
+    /// receiver of the stream must still observe the sequence number of a stream-class id (§5
+    /// "Unknown stream types"); the default does nothing.
+    fn on_unknown(&mut self, _ctx: &mut Ctx<'_, Self::Event>, _frame: &Frame) {}
     /// One command from the application.
     fn on_command(&mut self, ctx: &mut Ctx<'_, Self::Event>, command: Self::Command) -> Flow;
     /// Periodic hook (every liveness check).
@@ -439,15 +449,19 @@ where
     } = link;
     let timing = core.config.timing;
     let (lane_tx, lane_rx) = mpsc::channel::<WriterCommand>(CONTROL_LANE_CAPACITY);
+    // Validated in HELLO (a relay announcing an unusable limit never gets here).
+    let max_payload =
+        handshake::effective_payload_limit(&server.limits).unwrap_or(MIN_RELAY_PAYLOAD_LIMIT);
+    // Producers are refused oversize messages up front from now on (the writer still drops and
+    // counts what was queued under a larger limit of an earlier connection).
+    core.queue.set_payload_limit(max_payload);
     let setup = WriterSetup {
         session_id,
         next_sequence: Arc::clone(&core.next_sequence),
         clock: core.clock,
         write_timeout: timing.write_timeout,
         close_timeout: timing.close_timeout,
-        // Validated in HELLO (a relay announcing an unusable limit never gets here).
-        max_payload: handshake::effective_payload_limit(&server.limits)
-            .unwrap_or(MIN_RELAY_PAYLOAD_LIMIT),
+        max_payload,
         counters: Arc::clone(&core.writer_counters),
         component: core.component,
     };
@@ -606,14 +620,16 @@ where
         CloseAction::Graceful { last } => {
             let close = lane_tx.send(WriterCommand::Close { last });
             // Wait for the writer to flush and close; it is aborted below otherwise.
+            let mut flushed = false;
             if timeout(timing.close_timeout, close).await.is_ok()
-                && timeout(timing.close_timeout.saturating_mul(2), &mut writer_task.0)
-                    .await
-                    .is_ok()
+                && let Ok(joined) =
+                    timeout(timing.close_timeout.saturating_mul(2), &mut writer_task.0).await
             {
                 writer_joined = true;
+                // `last` reached the TLS stream only if the writer ended without an error.
+                flushed = matches!(joined, Ok(Ok(())));
             }
-            ConnectionEnd::Closed
+            ConnectionEnd::Closed { flushed }
         }
         CloseAction::Reconnect(reason) => ConnectionEnd::Lost(reason),
         CloseAction::Fail(reason) => ConnectionEnd::Failed(reason),
@@ -687,6 +703,7 @@ fn dispatch<L: RoleLogic>(
                 "unknown message type skipped"
             );
             ctx.metrics.ignored();
+            logic.on_unknown(ctx, &frame);
             return Flow::Continue;
         }
         Err(e) => {
@@ -854,13 +871,26 @@ async fn writer_loop<W: FrameWriter>(
         //    its write completed; if this task fails or is aborted first, the connection's owner
         //    re-queues it (`OutboundQueue::requeue_in_flight`).
         if let Some(item) = queue.pop_reliable() {
-            match item {
-                Outbound::Control(message) => write_control(&mut writer, &message, &setup).await?,
+            let written = match &item {
+                Outbound::Control(message) => write_control(&mut writer, message, &setup).await?,
                 Outbound::Stream { message, priority } => {
-                    write_stream(&mut writer, &message, priority, &setup).await?;
+                    write_stream(&mut writer, message, *priority, &setup).await?
+                }
+            };
+            queue.reliable_written();
+            if item.msg_type() == MsgType::SchemaNegotiate {
+                if written {
+                    // The space's first stream frame is out: held telemetry may follow (§5).
+                    queue.schema_written();
+                } else if queue.schema_dropped() {
+                    // The held stream waits for a schema that will never be written: the role
+                    // logic asks the application for a new one (driver: `SnapshotNeeded`).
+                    tracing::warn!(
+                        component = setup.component,
+                        "SCHEMA_NEGOTIATE dropped while the stream waits for it: a new one is needed"
+                    );
                 }
             }
-            queue.reliable_written();
             unflushed = true;
             continue;
         }
@@ -927,12 +957,28 @@ where
         .map_err(|_| TransportError::WriteTimeout { timeout: limit })?
 }
 
-/// Writes a control-class message (sequence 0, the bound session id).
+/// Counts (and logs, at powers of two only) a message that could not be encoded.
+fn unencodable(setup: &WriterSetup, msg_type: MsgType, error: &protocol::messages::MessageError) {
+    let dropped_total = setup.counters.unencodable();
+    // A message every frame fails on must not flood the log (the metrics count every drop).
+    if dropped_total.is_power_of_two() {
+        tracing::error!(
+            component = setup.component,
+            %msg_type,
+            error = %error,
+            dropped_total,
+            "cannot encode message, dropped"
+        );
+    }
+}
+
+/// Writes a control-class message (sequence 0, the bound session id). Returns whether it was
+/// written (`false`: dropped and counted).
 async fn write_control<W: FrameWriter>(
     writer: &mut W,
     message: &Message,
     setup: &WriterSetup,
-) -> Result<(), TransportError> {
+) -> Result<bool, TransportError> {
     if message.msg_type().is_stream() {
         // Stream-class messages need a sequence number (SESSION_EVENT etc. via the reliable queue).
         return write_stream(writer, message, FramePriority::Control, setup).await;
@@ -941,30 +987,31 @@ async fn write_control<W: FrameWriter>(
     {
         Ok(frame) => frame,
         Err(e) => {
-            tracing::error!(component = setup.component, msg_type = %message.msg_type(), error = %e, "cannot encode control message, dropped");
-            return Ok(());
+            unencodable(setup, message.msg_type(), &e);
+            return Ok(false);
         }
     };
     timed(setup.write_timeout, writer.send(&frame)).await?;
     setup.counters.frame_written();
-    Ok(())
+    Ok(true)
 }
 
 /// Writes a stream-class message with the next sequence number. The number is consumed only when
-/// the frame is written, so frames refused here leave no sequence gap.
+/// the frame is written, so frames refused here leave no sequence gap. Returns whether it was
+/// written (`false`: dropped and counted).
 async fn write_stream<W: FrameWriter>(
     writer: &mut W,
     message: &Message,
     priority: FramePriority,
     setup: &WriterSetup,
-) -> Result<(), TransportError> {
+) -> Result<bool, TransportError> {
     let sequence = setup.next_sequence.load(Ordering::Relaxed);
     let meta = FrameMeta::stream(priority, setup.session_id, sequence, setup.clock.now_ns());
     let frame = match message.to_frame(&meta) {
         Ok(frame) => frame,
         Err(e) => {
-            tracing::error!(component = setup.component, msg_type = %message.msg_type(), error = %e, "cannot encode stream message, dropped");
-            return Ok(());
+            unencodable(setup, message.msg_type(), &e);
+            return Ok(false);
         }
     };
     if frame.payload().len() > setup.max_payload {
@@ -981,14 +1028,14 @@ async fn write_stream<W: FrameWriter>(
                 "payload exceeds the relay limit, dropped"
             );
         }
-        return Ok(());
+        return Ok(false);
     }
     timed(setup.write_timeout, writer.send(&frame)).await?;
     setup
         .next_sequence
         .store(sequence.wrapping_add(1), Ordering::Relaxed);
     setup.counters.frame_written();
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1032,12 +1079,23 @@ mod tests {
         written: Arc<Mutex<Vec<Frame>>>,
         attempts: Arc<AtomicUsize>,
         next_sequence: Arc<AtomicU64>,
+        counters: Arc<WriterCounters>,
         task: JoinHandle<Result<(), TransportError>>,
         _lane: mpsc::Sender<WriterCommand>,
     }
 
     /// Runs a writer over a link that stalls after `capacity` frames.
     fn writer_over_stalling_link(queue: Arc<OutboundQueue>, capacity: usize) -> WriterHarness {
+        writer_with_limit(queue, capacity, MAX_PAYLOAD_BYTES)
+    }
+
+    /// Like [`writer_over_stalling_link`], with the relay's payload limit `max_payload`.
+    fn writer_with_limit(
+        queue: Arc<OutboundQueue>,
+        capacity: usize,
+        max_payload: usize,
+    ) -> WriterHarness {
+        let counters = Arc::new(WriterCounters::default());
         let written = Arc::new(Mutex::new(Vec::new()));
         let attempts = Arc::new(AtomicUsize::new(0));
         let next_sequence = Arc::new(AtomicU64::new(FIRST_SEQUENCE));
@@ -1049,8 +1107,8 @@ mod tests {
             // Long enough never to fire: the tests end the writer by aborting it.
             write_timeout: Duration::from_secs(3_600),
             close_timeout: Duration::from_secs(1),
-            max_payload: MAX_PAYLOAD_BYTES,
-            counters: Arc::new(WriterCounters::default()),
+            max_payload,
+            counters: Arc::clone(&counters),
             component: "transport.test",
         };
         let writer = StallingWriter {
@@ -1064,9 +1122,84 @@ mod tests {
             written,
             attempts,
             next_sequence,
+            counters,
             task,
             _lane: lane,
         }
+    }
+
+    /// Yields until `pred` holds.
+    async fn until(what: &str, mut pred: impl FnMut() -> bool) {
+        for _ in 0..10_000 {
+            if pred() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("never happened: {what}");
+    }
+
+    fn schema() -> Message {
+        Message::SchemaNegotiate(protocol::messages::SchemaNegotiate {
+            schema_version: telemetry_model::TELEMETRY_SCHEMA_VERSION,
+            capabilities: Default::default(),
+            vehicle_capabilities: Default::default(),
+        })
+    }
+
+    #[tokio::test]
+    async fn the_writer_releases_held_telemetry_only_after_writing_the_schema() {
+        let queue = Arc::new(OutboundQueue::new(4));
+        queue.hold_until_schema();
+        queue
+            .push_live(delta(1), FramePriority::P0, 0)
+            .expect("delta");
+        let h = writer_over_stalling_link(Arc::clone(&queue), usize::MAX);
+        for _ in 0..1_000 {
+            tokio::task::yield_now().await;
+        }
+        assert!(h.written.lock().is_empty(), "held until the schema");
+        queue
+            .try_push_reliable(Outbound::Stream {
+                message: schema(),
+                priority: FramePriority::Control,
+            })
+            .expect("schema");
+        until("two frames written", || h.written.lock().len() == 2).await;
+        let written: Vec<(u64, Option<MsgType>)> = h
+            .written
+            .lock()
+            .iter()
+            .map(|f| (f.header().sequence, f.msg_type()))
+            .collect();
+        assert_eq!(
+            written,
+            vec![
+                (1, Some(MsgType::SchemaNegotiate)),
+                (2, Some(MsgType::TelemetryDelta))
+            ]
+        );
+        assert!(!queue.awaiting_schema());
+        h.task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_frame_queued_under_a_larger_limit_is_dropped_counted_and_leaves_no_gap() {
+        // Queued while the limit was the protocol maximum; the new connection's relay announces
+        // less: the writer drops it, counts it, and consumes no sequence number.
+        let queue = Arc::new(OutboundQueue::new(4));
+        queue
+            .push_live(delta(1), FramePriority::P0, 0)
+            .expect("delta");
+        let h = writer_with_limit(Arc::clone(&queue), usize::MAX, 63);
+        until("the oversize drop is counted", || {
+            h.counters.oversize_dropped() == 1
+        })
+        .await;
+        assert!(h.written.lock().is_empty());
+        assert_eq!(h.next_sequence.load(Ordering::SeqCst), FIRST_SEQUENCE);
+        assert_eq!(h.counters.unencodable_dropped(), 0);
+        h.task.abort();
     }
 
     /// Yields until the writer attempted `n` writes (the last one stalls).

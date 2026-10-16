@@ -17,6 +17,11 @@
 //! * A logout starts a new login generation: an AUTH that completes afterwards is discarded and
 //!   cannot log the user back in. An explicit login with an account of the other role (e.g. a
 //!   driver account in engineer mode) stores nothing.
+//! * Relay accounts have exactly one role, so tokens are kept **per role**
+//!   ([`CredentialKind::DriverRefreshToken`] / [`CredentialKind::EngineerRefreshToken`]): each
+//!   mode logs in once, and switching modes never presents the other role's token. A token stored
+//!   before this split ([`CredentialKind::RefreshToken`]) is used as a fallback and moved to the
+//!   slot of the role its AUTH_OK reports.
 //!
 //! Relay requirement (not enforceable here): if a connection drops after AUTH{RefreshToken} was
 //! sent but before AUTH_OK arrived, the client never learns the rotated token. The relay should
@@ -63,19 +68,25 @@ pub(crate) struct ReloginNeeded(pub ReloginCause);
 /// The credential one AUTH attempt presents. Refresh and password plans hold the process-wide
 /// rotation lock until the reply was processed. `generation` is the login generation the plan was
 /// made in: a [`AuthManager::logout`] meanwhile makes its outcome irrelevant (nothing is stored).
+/// `role` is the mode the plan was made for (the token slot it came from).
 pub(crate) enum AuthPlan {
     Access {
         token: Secret,
+        role: ClientRole,
         generation: u64,
     },
     Refresh {
         token: Secret,
+        role: ClientRole,
+        /// Loaded from the pre-role [`CredentialKind::RefreshToken`] key.
+        legacy: bool,
         generation: u64,
         _rotation: OwnedMutexGuard<()>,
     },
     Password {
         username: String,
         password: Secret,
+        role: ClientRole,
         generation: u64,
         _rotation: OwnedMutexGuard<()>,
     },
@@ -88,6 +99,15 @@ impl AuthPlan {
             AuthPlan::Access { generation, .. }
             | AuthPlan::Refresh { generation, .. }
             | AuthPlan::Password { generation, .. } => *generation,
+        }
+    }
+
+    /// The mode the plan was made for.
+    pub(crate) const fn role(&self) -> ClientRole {
+        match self {
+            AuthPlan::Access { role, .. }
+            | AuthPlan::Refresh { role, .. }
+            | AuthPlan::Password { role, .. } => *role,
         }
     }
 
@@ -110,12 +130,31 @@ impl AuthPlan {
     }
 }
 
+/// The tokens of one role's account.
 #[derive(Debug, Default)]
-struct AuthState {
+struct RoleTokens {
     /// Access token and the local instant until which it is used.
     access: Option<(Secret, Instant)>,
     /// Newest refresh token known to this process (also persisted).
     refresh: Option<Secret>,
+}
+
+/// Index of a role's [`RoleTokens`].
+const fn role_index(role: ClientRole) -> usize {
+    match role {
+        ClientRole::Driver => 0,
+        ClientRole::Engineer => 1,
+    }
+}
+
+/// Number of roles (token slots).
+const ROLE_COUNT: usize = 2;
+
+#[derive(Debug, Default)]
+struct AuthState {
+    /// Per role: relay accounts have exactly one role, so the driver and the engineer login of
+    /// one user are separate accounts with separate tokens.
+    tokens: [RoleTokens; ROLE_COUNT],
     account: Option<AccountInfo>,
     /// Incremented by every logout. AUTH results of an older generation are discarded, so an AUTH
     /// that completes after a logout cannot log the user back in.
@@ -154,15 +193,22 @@ impl AuthManager {
         &self.namespace
     }
 
-    /// Whether a refresh token is available (the user logged in before).
-    pub fn is_logged_in(&self) -> Result<bool, CredentialError> {
-        if self.state.lock().refresh.is_some() {
+    /// Whether a refresh token of `role`'s account is available (the user logged in before in
+    /// that mode). A token stored before tokens were kept per role counts for either mode until
+    /// its first use reveals its role.
+    pub fn is_logged_in(&self, role: ClientRole) -> Result<bool, CredentialError> {
+        if self.state.lock().tokens[role_index(role)].refresh.is_some() {
             return Ok(true);
         }
-        Ok(self
-            .store
-            .load(&self.namespace, CredentialKind::RefreshToken)?
-            .is_some())
+        for kind in [
+            CredentialKind::refresh_token(role),
+            CredentialKind::RefreshToken,
+        ] {
+            if self.store.load(&self.namespace, kind)?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The account of the most recent successful AUTH in this process.
@@ -182,71 +228,108 @@ impl AuthManager {
             generation,
             ..AuthState::default()
         };
-        self.store
-            .delete(&self.namespace, CredentialKind::RefreshToken)?;
-        self.store
-            .delete(&self.namespace, CredentialKind::DriverSession)?;
+        for kind in [
+            CredentialKind::RefreshToken,
+            CredentialKind::DriverRefreshToken,
+            CredentialKind::EngineerRefreshToken,
+            CredentialKind::DriverSession,
+        ] {
+            self.store.delete(&self.namespace, kind)?;
+        }
         drop(state);
         tracing::info!(component = "transport", "logged out");
         Ok(())
     }
 
-    /// The access token if it is usable at `now`, with the current login generation.
-    fn valid_access(&self, now: Instant) -> Option<(Secret, u64)> {
+    /// `role`'s access token if it is usable at `now`, with the current login generation.
+    fn valid_access(&self, now: Instant, role: ClientRole) -> Option<(Secret, u64)> {
         let state = self.state.lock();
-        state
+        state.tokens[role_index(role)]
             .access
             .as_ref()
             .filter(|(_, until)| now < *until)
             .map(|(token, _)| (token.clone(), state.generation))
     }
 
-    /// The credential for the next AUTH.
-    pub(crate) async fn plan(&self, now: Instant) -> Result<AuthPlan, HandshakeError> {
-        if let Some((token, generation)) = self.valid_access(now) {
-            return Ok(AuthPlan::Access { token, generation });
+    /// The credential for the next AUTH in `role`'s mode.
+    pub(crate) async fn plan(
+        &self,
+        now: Instant,
+        role: ClientRole,
+    ) -> Result<AuthPlan, HandshakeError> {
+        if let Some((token, generation)) = self.valid_access(now, role) {
+            return Ok(AuthPlan::Access {
+                token,
+                role,
+                generation,
+            });
         }
         let wait_started = Instant::now();
         let rotation = Arc::clone(&self.rotation).lock_owned().await;
         // Another connection may have refreshed while this one waited for the lock. Re-check at
         // `now` plus the time spent waiting.
-        if let Some((token, generation)) = self.valid_access(now + wait_started.elapsed()) {
-            return Ok(AuthPlan::Access { token, generation });
+        if let Some((token, generation)) = self.valid_access(now + wait_started.elapsed(), role) {
+            return Ok(AuthPlan::Access {
+                token,
+                role,
+                generation,
+            });
         }
         let (in_memory, generation) = {
             let state = self.state.lock();
-            (state.refresh.clone(), state.generation)
+            (
+                state.tokens[role_index(role)].refresh.clone(),
+                state.generation,
+            )
         };
-        let token = match in_memory {
-            Some(token) => token,
+        let (token, legacy) = match in_memory {
+            Some(token) => (token, false),
             None => {
-                let stored = self
+                let (stored, legacy) = match self
                     .store
-                    .load(&self.namespace, CredentialKind::RefreshToken)?;
+                    .load(&self.namespace, CredentialKind::refresh_token(role))?
+                {
+                    Some(token) => (Some(token), false),
+                    None => (
+                        self.store
+                            .load(&self.namespace, CredentialKind::RefreshToken)?,
+                        true,
+                    ),
+                };
                 let Some(token) = stored else {
                     return Err(HandshakeError::Relogin(ReloginCause::NotLoggedIn));
                 };
+                // A pre-role token is not cached for `role`: its account may have the other role
+                // (`accepted` files it under the role the relay reports).
                 let mut state = self.state.lock();
                 // A logout since the generation was read deleted this token: do not cache it.
-                if state.generation == generation {
-                    state.refresh = Some(token.clone());
+                if state.generation == generation && !legacy {
+                    state.tokens[role_index(role)].refresh = Some(token.clone());
                 }
-                token
+                (token, legacy)
             }
         };
         Ok(AuthPlan::Refresh {
             token,
+            role,
+            legacy,
             generation,
             _rotation: rotation,
         })
     }
 
-    /// Plan for an explicit password login.
-    pub(crate) async fn password_plan(&self, username: &str, password: Secret) -> AuthPlan {
+    /// Plan for an explicit password login in `role`'s mode.
+    pub(crate) async fn password_plan(
+        &self,
+        username: &str,
+        password: Secret,
+        role: ClientRole,
+    ) -> AuthPlan {
         let rotation = Arc::clone(&self.rotation).lock_owned().await;
         AuthPlan::Password {
             username: username.to_owned(),
             password,
+            role,
             generation: self.state.lock().generation,
             _rotation: rotation,
         }
@@ -286,34 +369,66 @@ impl AuthManager {
             );
             return Err(ReloginNeeded(ReloginCause::NotLoggedIn));
         }
-        let rotated = refresh.is_some_and(|r| state.refresh.as_ref() != Some(r));
+        // Tokens are filed under the role the relay reports for the account. A token presented
+        // from the pre-role key (`legacy`) or from the other mode's slot (`misfiled`) moves there.
+        let slot = role_index(ok.role);
+        let (presented, legacy) = match &plan {
+            AuthPlan::Refresh { token, legacy, .. } => (Some(token.clone()), *legacy),
+            _ => (None, false),
+        };
+        let misfiled = !matches!(plan, AuthPlan::Password { .. }) && plan.role() != ok.role;
+        let move_token = legacy || misfiled;
+        let rotated = refresh.is_some_and(|r| state.tokens[slot].refresh.as_ref() != Some(r));
         if let Some(r) = refresh {
-            state.refresh = Some(r.clone());
-        } else if state.refresh.is_none() {
+            state.tokens[slot].refresh = Some(r.clone());
+        } else if let Some(p) = presented.filter(|_| move_token) {
+            // Not rotated: the presented token stays valid in its proper slot.
+            state.tokens[slot].refresh = Some(p);
+        } else if state.tokens[slot].refresh.is_none() {
             tracing::warn!(
                 component = "transport",
                 "AUTH_OK carried no refresh token: the login lasts until the app exits"
             );
         }
-        state.access = access.and_then(|token| {
+        if misfiled {
+            state.tokens[role_index(plan.role())] = RoleTokens::default();
+        }
+        state.tokens[slot].access = access.and_then(|token| {
             lifetime
                 .checked_sub(ACCESS_TOKEN_MARGIN)
                 .filter(|usable| !usable.is_zero())
                 .map(|usable| (token.clone(), now + usable))
         });
         state.account = Some(account.clone());
-        if rotated
-            && let Err(e) = self.store.store(
-                &self.namespace,
-                CredentialKind::RefreshToken,
-                &ok.refresh_token,
-            )
+        if (rotated || move_token)
+            && let Some(token) = state.tokens[slot].refresh.clone()
         {
-            tracing::error!(
-                component = "transport",
-                error = %e,
-                "could not persist the refresh token; the login lasts until the app exits"
-            );
+            match self.store.store(
+                &self.namespace,
+                CredentialKind::refresh_token(ok.role),
+                &token,
+            ) {
+                Ok(()) => {
+                    // Delete the old copy only once the new one is stored.
+                    let old = if legacy {
+                        Some(CredentialKind::RefreshToken)
+                    } else if misfiled {
+                        Some(CredentialKind::refresh_token(plan.role()))
+                    } else {
+                        None
+                    };
+                    if let Some(old) = old
+                        && let Err(e) = self.store.delete(&self.namespace, old)
+                    {
+                        tracing::warn!(component = "transport", error = %e, "could not delete the moved refresh token");
+                    }
+                }
+                Err(e) => tracing::error!(
+                    component = "transport",
+                    error = %e,
+                    "could not persist the refresh token; the login lasts until the app exits"
+                ),
+            }
         }
         drop(state);
         // Releases the rotation lock only after the newest refresh token is known.
@@ -326,7 +441,7 @@ impl AuthManager {
     pub(crate) fn access_rejected(&self, plan: &AuthPlan) {
         let mut state = self.state.lock();
         if state.generation == plan.generation() {
-            state.access = None;
+            state.tokens[role_index(plan.role())].access = None;
         }
     }
 
@@ -337,12 +452,12 @@ impl AuthManager {
         if state.generation != plan.generation() {
             return;
         }
-        state.refresh = None;
-        state.access = None;
-        if let Err(e) = self
-            .store
-            .delete(&self.namespace, CredentialKind::RefreshToken)
-        {
+        state.tokens[role_index(plan.role())] = RoleTokens::default();
+        let kind = match plan {
+            AuthPlan::Refresh { legacy: true, .. } => CredentialKind::RefreshToken,
+            _ => CredentialKind::refresh_token(plan.role()),
+        };
+        if let Err(e) = self.store.delete(&self.namespace, kind) {
             tracing::error!(component = "transport", error = %e, "could not delete the refused refresh token");
         }
         drop(state);
@@ -436,7 +551,7 @@ pub async fn login<T: TelemetryTransport>(
 ) -> Result<AccountInfo, LoginError> {
     let mut link = open_link(transport, config).await?;
     let server = handshake::hello(&mut link, config, role).await?;
-    let plan = auth.password_plan(username, password).await;
+    let plan = auth.password_plan(username, password, role).await;
     let result = handshake::authenticate(&mut link, auth, role, &server, Some(plan)).await;
     goodbye(&mut link).await;
     let account = result.map_err(login_error)?;
@@ -458,7 +573,7 @@ pub async fn register<T: TelemetryTransport>(
     const STAGE: &str = "ACCOUNT_REGISTER";
     let mut link = open_link(transport, config).await?;
     let server = handshake::hello(&mut link, config, role).await?;
-    let plan = auth.password_plan(username, password.clone()).await;
+    let plan = auth.password_plan(username, password.clone(), role).await;
     link.send(&Message::AccountRegister(AccountRegister {
         username: username.to_owned(),
         password,
@@ -544,9 +659,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn not_logged_in_without_a_refresh_token() {
         let (m, _) = manager();
-        assert!(!m.is_logged_in().expect("store"));
+        assert!(!m.is_logged_in(ClientRole::Driver).expect("store"));
         assert!(matches!(
-            m.plan(Instant::now()).await,
+            m.plan(Instant::now(), ClientRole::Driver).await,
             Err(HandshakeError::Relogin(ReloginCause::NotLoggedIn))
         ));
     }
@@ -557,12 +672,12 @@ mod tests {
         store
             .store(
                 m.namespace(),
-                CredentialKind::RefreshToken,
+                CredentialKind::DriverRefreshToken,
                 &Secret::new("r1"),
             )
             .expect("seed");
         let now = Instant::now();
-        let plan = m.plan(now).await.expect("plan");
+        let plan = m.plan(now, ClientRole::Driver).await.expect("plan");
         assert!(
             matches!(plan.message(), Auth::RefreshToken { ref token } if token.expose() == "r1")
         );
@@ -572,20 +687,20 @@ mod tests {
         assert_eq!(account.username, "alice");
         assert_eq!(
             store
-                .load(m.namespace(), CredentialKind::RefreshToken)
+                .load(m.namespace(), CredentialKind::DriverRefreshToken)
                 .expect("load"),
             Some(Secret::new("r2")),
             "rotated refresh token persisted"
         );
         // Next connection uses the access token (no rotation) ...
         assert!(matches!(
-            m.plan(now).await.expect("plan"),
+            m.plan(now, ClientRole::Driver).await.expect("plan"),
             AuthPlan::Access { .. }
         ));
         // ... until 60 s before its expiry.
         let late = now + Duration::from_secs(15 * 60 - 59);
         assert!(matches!(
-            m.plan(late).await.expect("plan"),
+            m.plan(late, ClientRole::Driver).await.expect("plan"),
             AuthPlan::Refresh { .. }
         ));
     }
@@ -596,14 +711,17 @@ mod tests {
         store
             .store(
                 m.namespace(),
-                CredentialKind::RefreshToken,
+                CredentialKind::DriverRefreshToken,
                 &Secret::new("r1"),
             )
             .expect("seed");
-        let plan = m.plan(Instant::now()).await.expect("plan");
+        let plan = m
+            .plan(Instant::now(), ClientRole::Driver)
+            .await
+            .expect("plan");
         m.refresh_rejected(&plan);
         drop(plan);
-        assert!(!m.is_logged_in().expect("store"));
+        assert!(!m.is_logged_in(ClientRole::Driver).expect("store"));
         assert!(store.keys().is_empty());
     }
 
@@ -613,13 +731,13 @@ mod tests {
         store
             .store(
                 m.namespace(),
-                CredentialKind::RefreshToken,
+                CredentialKind::DriverRefreshToken,
                 &Secret::new("r1"),
             )
             .expect("seed");
         let now = Instant::now();
         // AUTH{RefreshToken} is in flight when the user logs out.
-        let plan = m.plan(now).await.expect("plan");
+        let plan = m.plan(now, ClientRole::Driver).await.expect("plan");
         m.logout().expect("logout");
         let ok = auth_ok("r2", SERVER_NOW + 15 * 60 * 1_000_000_000);
         assert_eq!(
@@ -627,10 +745,10 @@ mod tests {
             Err(ReloginNeeded(ReloginCause::NotLoggedIn))
         );
         assert!(store.keys().is_empty(), "nothing re-persisted");
-        assert!(!m.is_logged_in().expect("store"));
+        assert!(!m.is_logged_in(ClientRole::Driver).expect("store"));
         assert_eq!(m.account(), None);
         assert!(matches!(
-            m.plan(now).await,
+            m.plan(now, ClientRole::Driver).await,
             Err(HandshakeError::Relogin(ReloginCause::NotLoggedIn))
         ));
 
@@ -638,23 +756,23 @@ mod tests {
         store
             .store(
                 m.namespace(),
-                CredentialKind::RefreshToken,
+                CredentialKind::DriverRefreshToken,
                 &Secret::new("r9"),
             )
             .expect("seed");
-        let stale = m.plan(now).await.expect("plan");
+        let stale = m.plan(now, ClientRole::Driver).await.expect("plan");
         m.logout().expect("logout");
         store
             .store(
                 m.namespace(),
-                CredentialKind::RefreshToken,
+                CredentialKind::DriverRefreshToken,
                 &Secret::new("r10"),
             )
             .expect("new login");
         m.refresh_rejected(&stale);
         assert_eq!(
             store
-                .load(m.namespace(), CredentialKind::RefreshToken)
+                .load(m.namespace(), CredentialKind::DriverRefreshToken)
                 .expect("load"),
             Some(Secret::new("r10"))
         );
@@ -666,7 +784,7 @@ mod tests {
         store
             .store(
                 m.namespace(),
-                CredentialKind::RefreshToken,
+                CredentialKind::DriverRefreshToken,
                 &Secret::new("r1"),
             )
             .expect("seed");
@@ -688,14 +806,20 @@ mod tests {
         store
             .store(
                 m.namespace(),
-                CredentialKind::RefreshToken,
+                CredentialKind::DriverRefreshToken,
                 &Secret::new("r1"),
             )
             .expect("seed");
-        let first = m.plan(Instant::now()).await.expect("plan");
+        let first = m
+            .plan(Instant::now(), ClientRole::Driver)
+            .await
+            .expect("plan");
         let m2 = Arc::clone(&m);
-        let second =
-            tokio::spawn(async move { m2.plan(Instant::now()).await.map(|p| p.message()) });
+        let second = tokio::spawn(async move {
+            m2.plan(Instant::now(), ClientRole::Driver)
+                .await
+                .map(|p| p.message())
+        });
         tokio::task::yield_now().await;
         assert!(!second.is_finished(), "second refresh waits for the first");
         let ok = auth_ok("r2", SERVER_NOW + 15 * 60 * 1_000_000_000);
@@ -714,26 +838,118 @@ mod tests {
         store
             .store(
                 m.namespace(),
-                CredentialKind::RefreshToken,
+                CredentialKind::DriverRefreshToken,
                 &Secret::new("r1"),
             )
             .expect("seed");
         let now = Instant::now();
-        let plan = m.plan(now).await.expect("plan");
+        let plan = m.plan(now, ClientRole::Driver).await.expect("plan");
         let mut ok = auth_ok("", SERVER_NOW + 15 * 60 * 1_000_000_000);
         ok.access_token = Secret::new("");
         m.accepted(plan, &ok, SERVER_NOW, now).expect("accepted");
         assert_eq!(
             store
-                .load(m.namespace(), CredentialKind::RefreshToken)
+                .load(m.namespace(), CredentialKind::DriverRefreshToken)
                 .expect("load"),
             Some(Secret::new("r1")),
             "an empty refresh token is \"none issued\", not a new token"
         );
         // No (empty) access token is used: the next AUTH presents the refresh token again.
-        match m.plan(now).await.expect("plan") {
+        match m.plan(now, ClientRole::Driver).await.expect("plan") {
             AuthPlan::Refresh { token, .. } => assert_eq!(token.expose(), "r1"),
             _ => panic!("expected the stored refresh token"),
         }
+    }
+
+    const FIFTEEN_MIN_NS: u64 = 15 * 60 * 1_000_000_000;
+
+    #[tokio::test(start_paused = true)]
+    async fn driver_and_engineer_logins_are_kept_apart() {
+        // F7: switching modes never presents the other role's token.
+        let (m, store) = manager();
+        let now = Instant::now();
+        let plan = m
+            .password_plan("alice", Secret::new("pw"), ClientRole::Driver)
+            .await;
+        m.accepted(
+            plan,
+            &auth_ok("rd", SERVER_NOW + FIFTEEN_MIN_NS),
+            SERVER_NOW,
+            now,
+        )
+        .expect("driver login");
+        assert!(m.is_logged_in(ClientRole::Driver).expect("store"));
+        assert!(!m.is_logged_in(ClientRole::Engineer).expect("store"));
+        assert!(matches!(
+            m.plan(now, ClientRole::Engineer).await,
+            Err(HandshakeError::Relogin(ReloginCause::NotLoggedIn))
+        ));
+        let plan = m
+            .password_plan("bob", Secret::new("pw"), ClientRole::Engineer)
+            .await;
+        let mut ok = auth_ok("re", SERVER_NOW + FIFTEEN_MIN_NS);
+        ok.role = ClientRole::Engineer;
+        ok.access_token = Secret::new("access-e");
+        m.accepted(plan, &ok, SERVER_NOW, now)
+            .expect("engineer login");
+        for (role, kind, refresh, access) in [
+            (
+                ClientRole::Driver,
+                CredentialKind::DriverRefreshToken,
+                "rd",
+                "access-1",
+            ),
+            (
+                ClientRole::Engineer,
+                CredentialKind::EngineerRefreshToken,
+                "re",
+                "access-e",
+            ),
+        ] {
+            assert_eq!(
+                store.load(m.namespace(), kind).expect("load"),
+                Some(Secret::new(refresh))
+            );
+            match m.plan(now, role).await.expect("plan") {
+                AuthPlan::Access { token, .. } => assert_eq!(token.expose(), access),
+                _ => panic!("expected {role:?}'s access token"),
+            }
+        }
+        m.logout().expect("logout");
+        assert!(store.keys().is_empty(), "logout forgets both logins");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pre_role_token_moves_to_its_accounts_role() {
+        let (m, store) = manager();
+        store
+            .store(
+                m.namespace(),
+                CredentialKind::RefreshToken,
+                &Secret::new("r1"),
+            )
+            .expect("seed");
+        let now = Instant::now();
+        assert!(m.is_logged_in(ClientRole::Engineer).expect("store"));
+        // Used in engineer mode, but the account is a driver account (not rotated).
+        let plan = m.plan(now, ClientRole::Engineer).await.expect("plan");
+        let mut ok = auth_ok("", SERVER_NOW + FIFTEEN_MIN_NS);
+        ok.role = ClientRole::Driver;
+        let account = m.accepted(plan, &ok, SERVER_NOW, now).expect("accepted");
+        assert_eq!(account.role, ClientRole::Driver);
+        assert_eq!(
+            store
+                .load(m.namespace(), CredentialKind::DriverRefreshToken)
+                .expect("load"),
+            Some(Secret::new("r1"))
+        );
+        assert_eq!(
+            store
+                .load(m.namespace(), CredentialKind::RefreshToken)
+                .expect("load"),
+            None
+        );
+        assert!(!m.is_logged_in(ClientRole::Engineer).expect("store"));
+        assert!(m.is_logged_in(ClientRole::Driver).expect("store"));
     }
 }

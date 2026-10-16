@@ -302,8 +302,14 @@ pub(crate) fn unexpected(stage: &'static str, message: Message) -> HandshakeErro
     }
 }
 
-/// HELLO exchange: version negotiation, the environment check (strict: the relay's environment
-/// must equal the configured one, PROTOCOL.md §6) and the relay's limits.
+/// HELLO exchange: version negotiation, the environment check and the relay's limits.
+///
+/// The environment check is deliberately **stricter** than PROTOCOL.md §6 and
+/// `protocol::version::check_relay_environment`, which only require a production client to refuse
+/// a non-production relay: here the relay's environment must equal the configured one for every
+/// environment. A development or staging client never offers its stored refresh token to a relay
+/// that announces another environment (credentials are namespaced per environment, D-020), and a
+/// misconfigured endpoint fails loudly instead of mixing test and staging accounts.
 pub(crate) async fn hello<R: FrameReader, W: FrameWriter>(
     link: &mut Link<R, W>,
     config: &ClientConfig,
@@ -353,7 +359,7 @@ pub(crate) async fn authenticate<R: FrameReader, W: FrameWriter>(
     loop {
         let plan = match next.take() {
             Some(plan) => plan,
-            None => auth.plan(link.clock.now()).await?,
+            None => auth.plan(link.clock.now(), role).await?,
         };
         link.send(&Message::Auth(plan.message())).await?;
         let (_, message) = link.recv_message(STAGE).await?;

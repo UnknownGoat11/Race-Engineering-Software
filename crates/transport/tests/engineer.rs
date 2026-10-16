@@ -21,9 +21,10 @@ use telemetry_model::enums::SessionType;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use transport::{
-    ClientConfig, ConnectionState, DriverClient, DriverEvent, EngineerClient, EngineerEndReason,
-    EngineerEvent, EngineerPhase, FailureReason, IdentityCard, InboundFrame, JoinError,
-    MemoryCredentialStore, SnapshotTrigger, display_connect_code, login,
+    ClientConfig, ConnectionState, CredentialKind, CredentialStore, DriverClient, DriverEvent,
+    EngineerClient, EngineerEndReason, EngineerEvent, EngineerPhase, FailureReason, IdentityCard,
+    InboundFrame, JoinError, MemoryCredentialStore, ReloginCause, SessionEndOutcome,
+    SnapshotTrigger, display_connect_code, login,
 };
 
 /// `(msg_type, sequence, TLV tag, replayed, arrival)` of a delivered frame.
@@ -176,7 +177,7 @@ async fn ended(events: &mut mpsc::Receiver<EngineerEvent>) -> EngineerEndReason 
     loop {
         match next_event(events).await {
             EngineerEvent::Ended(reason) => return reason,
-            EngineerEvent::Frame(_) | EngineerEvent::StreamReset(_) => {}
+            EngineerEvent::Frame(_) | EngineerEvent::StreamReset { .. } => {}
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -186,7 +187,7 @@ async fn ended(events: &mut mpsc::Receiver<EngineerEvent>) -> EngineerEndReason 
 async fn stream_reset(events: &mut mpsc::Receiver<EngineerEvent>) -> IdentityCard {
     loop {
         match next_event(events).await {
-            EngineerEvent::StreamReset(card) => return card,
+            EngineerEvent::StreamReset { card, .. } => return card,
             EngineerEvent::Frame(_) => {}
             other => panic!("expected StreamReset, got {other:?}"),
         }
@@ -235,7 +236,7 @@ async fn wait_engineers(
 fn assert_only_refresh_token(store: &MemoryCredentialStore) {
     let keys = store.keys();
     assert_eq!(keys.len(), 1, "{keys:?}");
-    assert!(keys[0].ends_with("#refresh_token"), "{keys:?}");
+    assert!(keys[0].ends_with("#engineer_refresh_token"), "{keys:?}");
 }
 
 #[tokio::test(start_paused = true)]
@@ -418,8 +419,9 @@ async fn join_errors_are_typed_for_the_ui() {
     assert_eq!(error, JoinError::SessionFull { max: 2 });
     assert_eq!(error.message(), "Driver already has 2 engineers connected");
 
-    // A driver account cannot join as an engineer.
-    let (_store, driver_auth) = new_app(&config);
+    // F7: the driver login of this app is never presented in engineer mode: it needs its own
+    // (engineer) login.
+    let (driver_store, driver_auth) = new_app(&config);
     login(
         &relay.transport(),
         &config,
@@ -430,12 +432,48 @@ async fn join_errors_are_typed_for_the_ui() {
     )
     .await
     .expect("driver login");
+    let (not_logged_in, _events) =
+        EngineerClient::spawn(config.clone(), relay.transport(), Arc::clone(&driver_auth))
+            .expect("valid config");
+    let error = not_logged_in
+        .join(&code2)
+        .await
+        .expect_err("no engineer login");
+    assert_eq!(error, JoinError::ReloginRequired(ReloginCause::NotLoggedIn));
+    not_logged_in.shutdown().await;
+
+    // A token stored before tokens were kept per role (role unknown) of a driver account: the
+    // relay reveals its role, so the join fails as "not an engineer" and the token moves to the
+    // driver slot.
+    let ns = driver_auth.namespace().to_owned();
+    let token = driver_store
+        .load(&ns, CredentialKind::DriverRefreshToken)
+        .expect("load")
+        .expect("driver token");
+    driver_store
+        .delete(&ns, CredentialKind::DriverRefreshToken)
+        .expect("delete");
+    driver_store
+        .store(&ns, CredentialKind::RefreshToken, &token)
+        .expect("seed legacy");
+    let legacy_auth = restart_app(&driver_store, &config);
     let (not_engineer, _events) =
-        EngineerClient::spawn(config.clone(), relay.transport(), driver_auth)
+        EngineerClient::spawn(config.clone(), relay.transport(), Arc::clone(&legacy_auth))
             .expect("valid config");
     let error = not_engineer.join(&code2).await.expect_err("driver account");
     assert_eq!(error, JoinError::NotAnEngineer);
     assert_eq!(error.message(), "This account is not an engineer account.");
+    assert_eq!(
+        driver_store.keys(),
+        vec![format!("{ns}#driver_refresh_token")],
+        "the pre-role token moved to the driver slot"
+    );
+    assert!(legacy_auth.is_logged_in(ClientRole::Driver).expect("store"));
+    assert!(
+        !legacy_auth
+            .is_logged_in(ClientRole::Engineer)
+            .expect("store")
+    );
 
     // Redemption rate limit.
     relay.set_join_limit(Some(2));
@@ -514,12 +552,22 @@ async fn network_blip_resumes_with_the_in_memory_ticket_and_requests_a_snapshot(
     let ticket_join = relay.received_from(ENGINEER, MsgType::SessionJoin).len();
     assert_eq!(ticket_join, 1);
 
+    let before_drop = e.client.now_ns();
     relay.disconnect_all();
     wait_state(&mut status, ConnectionState::Reconnecting).await;
     wait_state(&mut status, ConnectionState::Connected).await;
     match next_event(&mut e.events).await {
-        EngineerEvent::StreamReset(c) => assert_eq!(c, card),
-        other => panic!("expected StreamReset, got {other:?}"),
+        EngineerEvent::StreamReset {
+            card: c,
+            gap: Some(gap),
+        } => {
+            assert_eq!(c, card);
+            // F9: the app can mark "events may be missing" over the drop interval (§6).
+            assert!(before_drop <= gap.dropped_at_ns, "{gap:?}");
+            assert!(gap.dropped_at_ns < gap.resumed_at_ns, "{gap:?}");
+            assert!(gap.resumed_at_ns <= e.client.now_ns(), "{gap:?}");
+        }
+        other => panic!("expected StreamReset with its gap, got {other:?}"),
     }
     // Resumed with the ticket (no new code, no new join), then asked for a fresh snapshot.
     assert_eq!(relay.received_from(ENGINEER, MsgType::SessionJoin).len(), 1);
@@ -725,6 +773,67 @@ async fn driver_ending_the_session_ends_it_for_the_engineer() {
     driver.client.shutdown().await;
 }
 
+/// Waits for the driver's next [`DriverEvent::SessionEnded`].
+async fn session_ended(events: &mut mpsc::Receiver<DriverEvent>) -> (u64, SessionEndOutcome) {
+    loop {
+        if let DriverEvent::SessionEnded {
+            session_id,
+            outcome,
+        } = next_event(events).await
+        {
+            return (session_id, outcome);
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_session_ended_offline_is_closed_on_the_next_connection() {
+    // F4: ending the session while the relay is unreachable must not leave the engineers
+    // waiting for the relay's grace period once the driver is back.
+    let relay = FakeRelay::new(Environment::Development);
+    let config = dev_config(&relay);
+    let mut driver = streaming_driver(&relay, &config).await;
+    let mut e = joined_engineer(&relay, &config, &driver, ENGINEER).await;
+    let mut status = driver.client.status();
+    // Stop keeps the session (engineers stay attached), then the relay becomes unreachable.
+    driver.client.stop().await.expect("stop");
+    wait_state(&mut status, ConnectionState::Disconnected).await;
+    relay.set_down(true);
+    driver.client.end_session().await.expect("end session");
+    assert_eq!(
+        session_ended(&mut driver.events).await,
+        (driver.session_id, SessionEndOutcome::Deferred)
+    );
+    advance(Duration::from_secs(5)).await;
+    assert_eq!(relay.sessions(), vec![driver.session_id], "not closed yet");
+    assert!(
+        drain_events(&mut e.events)
+            .iter()
+            .all(|ev| !matches!(ev, EngineerEvent::Ended(_))),
+        "the engineer still waits"
+    );
+
+    // Back online: the next start closes the old session first, then creates a new one.
+    relay.set_down(false);
+    driver.client.start(session_create()).await.expect("start");
+    assert_eq!(
+        session_ended(&mut driver.events).await,
+        (driver.session_id, SessionEndOutcome::Delivered)
+    );
+    assert_eq!(
+        ended(&mut e.events).await,
+        EngineerEndReason::DriverEndedSession
+    );
+    let new_sessions = relay.sessions();
+    assert_eq!(new_sessions.len(), 1);
+    assert_ne!(
+        new_sessions[0], driver.session_id,
+        "a new session was created"
+    );
+    e.client.shutdown().await;
+    driver.client.shutdown().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn driver_restart_resets_the_engineer_stream_without_false_loss() {
     let relay = FakeRelay::new(Environment::Development);
@@ -758,30 +867,54 @@ async fn driver_restart_resets_the_engineer_stream_without_false_loss() {
         other => panic!("expected SessionReady, got {other:?}"),
     }
     match next_event(&mut e.events).await {
-        EngineerEvent::StreamReset(card) => assert_eq!(card.session_id, session_id),
+        EngineerEvent::StreamReset { card, gap } => {
+            assert_eq!(card.session_id, session_id);
+            assert_eq!(gap, None, "the engineer's link did not drop");
+        }
         other => panic!("expected StreamReset, got {other:?}"),
     }
     let mut status = client.status();
     wait_state(&mut status, ConnectionState::Connected).await;
+    // The restarted app's producer runs before it re-sent SCHEMA_NEGOTIATE: the transport holds
+    // the telemetry, so the schema is still the new space's first frame at the engineer.
     client
         .send_live(Message::TelemetrySnapshot(tlv(20, 4)), FramePriority::P0)
         .expect("snapshot");
     advance(Duration::from_millis(50)).await;
     client
+        .send_reliable(schema_negotiate())
+        .await
+        .expect("schema");
+    advance(Duration::from_millis(50)).await;
+    client
         .send_live(Message::TelemetryDelta(tlv(21, 1)), FramePriority::P0)
         .expect("delta");
     advance(Duration::from_millis(500)).await;
-    let after: Vec<(u64, Option<u64>, Option<Arrival>)> = frames(drain_events(&mut e.events))
-        .iter()
-        .map(|f| (f.header.sequence, message_tag(&f.message), f.arrival))
-        .collect();
+    let after: Vec<(u64, MsgType, Option<u64>, Option<Arrival>)> =
+        frames(drain_events(&mut e.events))
+            .iter()
+            .map(|f| {
+                (
+                    f.header.sequence,
+                    f.message.msg_type(),
+                    message_tag(&f.message),
+                    f.arrival,
+                )
+            })
+            .collect();
     assert_eq!(
         after,
         vec![
-            (1, Some(20), Some(Arrival::First)),
-            (2, Some(21), Some(Arrival::InOrder)),
+            (1, MsgType::SchemaNegotiate, None, Some(Arrival::First)),
+            (
+                2,
+                MsgType::TelemetrySnapshot,
+                Some(20),
+                Some(Arrival::InOrder)
+            ),
+            (3, MsgType::TelemetryDelta, Some(21), Some(Arrival::InOrder)),
         ],
-        "the new sequence space is delivered, not discarded as stale"
+        "the new sequence space is delivered schema first, not discarded as stale"
     );
     advance(Duration::from_secs(2)).await;
     let m = e.client.metrics().borrow().clone();
@@ -789,7 +922,11 @@ async fn driver_restart_resets_the_engineer_stream_without_false_loss() {
         m.sequence_totals.lost, 0,
         "no false loss across the restart"
     );
-    assert_eq!(m.sequence_totals.received, 6);
+    assert_eq!(
+        m.sequence_totals.restarts, 0,
+        "the SESSION_INFO reset the stream; no sequence-based restart was (falsely) detected"
+    );
+    assert_eq!(m.sequence_totals.received, 7);
     e.client.shutdown().await;
     client.shutdown().await;
 }
@@ -1143,6 +1280,102 @@ async fn disconnect_while_a_resume_reply_is_pending_frees_the_slot() {
     assert_eq!(relay.engineer_slots(), 0);
     assert_eq!(*e.client.phase().borrow(), EngineerPhase::Idle);
     relay.hold_session_replies(false);
+    e.client.shutdown().await;
+    driver.client.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_incompatible_refusal_of_a_join_or_resume_is_final_and_typed() {
+    // F3: a resume refused as INCOMPATIBLE is not retried until the ticket expires, and a join
+    // refused that way is `JoinError::Incompatible` ("update required"), not a generic refusal.
+    let relay = FakeRelay::new(Environment::Development);
+    let config = dev_config(&relay);
+    let driver = streaming_driver(&relay, &config).await;
+    let mut e = joined_engineer(&relay, &config, &driver, ENGINEER).await;
+    let mut status = e.client.status();
+
+    relay.refuse_engineer_binds(Some(ErrorCode::Incompatible));
+    relay.disconnect_all();
+    assert_eq!(ended(&mut e.events).await, EngineerEndReason::Incompatible);
+    let failed = wait_state(&mut status, ConnectionState::Failed).await;
+    assert!(matches!(
+        failed.failure,
+        Some(FailureReason::Incompatible { .. })
+    ));
+    let resumes = relay.received_from(ENGINEER, MsgType::SessionResume).len();
+    assert_eq!(resumes, 1, "refused once, never retried");
+    advance(Duration::from_secs(60)).await;
+    assert_eq!(
+        relay.received_from(ENGINEER, MsgType::SessionResume).len(),
+        resumes
+    );
+    e.client.disconnect().await.expect("disconnect");
+    wait_state(&mut status, ConnectionState::Disconnected).await;
+
+    let code = current_code(&driver.client).await;
+    assert!(matches!(
+        e.client.join(&code).await,
+        Err(JoinError::Incompatible { .. })
+    ));
+    e.client.shutdown().await;
+    driver.client.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unknown_stream_type_of_a_newer_minor_consumes_its_sequence_number() {
+    // F1: a stream-class id this version does not know (0x29-0x2F) is skipped but its sequence
+    // number is observed, so the next known frame is in order rather than a false loss (§5).
+    let relay = FakeRelay::new(Environment::Development);
+    let config = dev_config(&relay);
+    let driver = streaming_driver(&relay, &config).await;
+    let mut e = joined_engineer(&relay, &config, &driver, ENGINEER).await;
+    driver
+        .client
+        .send_live(Message::TelemetryDelta(tlv(3, 1)), FramePriority::P0)
+        .expect("delta");
+    advance(Duration::from_millis(100)).await;
+    let last = frames(drain_events(&mut e.events))
+        .last()
+        .map(|f| f.header.sequence)
+        .expect("a live frame");
+    let delta = |tag, seq| {
+        relay_frame(
+            &Message::TelemetryDelta(tlv(tag, 1)),
+            driver.session_id,
+            seq,
+        )
+    };
+    relay.send_to_engineers(&with_raw_type(&delta(90, last + 1), 0x29));
+    relay.send_to_engineers(&delta(91, last + 2));
+    advance(Duration::from_millis(100)).await;
+    let got: Vec<(u64, Option<u64>, Option<Arrival>)> = frames(drain_events(&mut e.events))
+        .iter()
+        .map(|f| (f.header.sequence, message_tag(&f.message), f.arrival))
+        .collect();
+    assert_eq!(
+        got,
+        vec![(last + 2, Some(91), Some(Arrival::InOrder))],
+        "the unknown frame is not applied and leaves no false gap"
+    );
+
+    // A loss detected on an unknown frame reaches the application with the next delivered one:
+    // seq last+3 is lost, last+4 is of an unknown type (Gap{1} there), last+5 is known.
+    relay.send_to_engineers(&with_raw_type(&delta(92, last + 4), 0x29));
+    relay.send_to_engineers(&delta(93, last + 5));
+    relay.send_to_engineers(&delta(94, last + 6));
+    advance(Duration::from_millis(100)).await;
+    let got: Vec<(u64, Option<u64>, Option<Arrival>)> = frames(drain_events(&mut e.events))
+        .iter()
+        .map(|f| (f.header.sequence, message_tag(&f.message), f.arrival))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            (last + 5, Some(93), Some(Arrival::Gap { missing: 1 })),
+            (last + 6, Some(94), Some(Arrival::InOrder)),
+        ],
+        "the gap seen on the unknown frame is reported once, on the next delivered frame"
+    );
     e.client.shutdown().await;
     driver.client.shutdown().await;
 }

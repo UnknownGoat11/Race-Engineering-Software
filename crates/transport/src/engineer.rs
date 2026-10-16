@@ -217,11 +217,30 @@ pub enum EngineerEvent {
     Frame(Box<InboundFrame>),
     /// SESSION_INFO after a resume or a driver restart: the sequence space restarted, reset any
     /// stream-derived state (the replayed snapshot follows). No new confirmation is needed.
-    StreamReset(IdentityCard),
+    StreamReset {
+        /// The session as the relay announced it now.
+        card: IdentityCard,
+        /// After a network drop: the interval in which reliable events may be missing (§6). `None`
+        /// when the link did not drop (the driver restarted its sequence space).
+        gap: Option<StreamGap>,
+    },
     /// The connection to the driver ended for good.
     Ended(EngineerEndReason),
     /// A non-fatal error reported by the relay.
     RelayError { code: ErrorCode, message: String },
+}
+
+/// The interval of a network drop, in nanoseconds of the client's monotonic clock (the epoch of
+/// [`InboundFrame::received_at_ns`] and [`EngineerClient::now_ns`]). Events of the driver that
+/// happened in it may be missing (§6: the relay does not buffer reliable messages for a
+/// disconnected engineer); the replayed snapshot restores the current state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamGap {
+    /// When the client detected the link loss (the stream may have stopped somewhat earlier,
+    /// up to the liveness timeout).
+    pub dropped_at_ns: u64,
+    /// When the resume's SESSION_INFO arrived.
+    pub resumed_at_ns: u64,
 }
 
 type JoinReply = oneshot::Sender<Result<IdentityCard, JoinError>>;
@@ -594,6 +613,7 @@ impl<T: TelemetryTransport> Supervisor<T> {
                 phase: Arc::clone(&self.phase),
                 exit: None,
                 new_ticket: None,
+                pending_arrival: None,
             };
             let end = run_connection(
                 &mut self.core,
@@ -615,7 +635,7 @@ impl<T: TelemetryTransport> Supervisor<T> {
             // counters in the cumulative totals.
             self.core.metrics.sequence_reset(&logic.receiver.stats());
             match end {
-                ConnectionEnd::Closed => {
+                ConnectionEnd::Closed { .. } => {
                     // Cancel, disconnect or shutdown: the ticket dies with `joined`.
                     self.idle();
                     return match logic.exit {
@@ -624,11 +644,7 @@ impl<T: TelemetryTransport> Supervisor<T> {
                     };
                 }
                 ConnectionEnd::Failed(reason) => {
-                    let end_reason = match &reason {
-                        FailureReason::SessionEnded(r) => *r,
-                        FailureReason::ReloginRequired(_) => EngineerEndReason::ReloginRequired,
-                        _ => EngineerEndReason::TicketExpired,
-                    };
+                    let end_reason = end_reason_of(&reason);
                     return self.ended(end_reason, reason).await;
                 }
                 ConnectionEnd::Lost(error) => match self.resume(&mut joined, error).await {
@@ -665,6 +681,7 @@ impl<T: TelemetryTransport> Supervisor<T> {
     /// the user disconnects.
     async fn resume(&mut self, joined: &mut Joined, first_error: String) -> Resumed<T> {
         let dropped_at = Instant::now();
+        let dropped_at_ns = self.core.clock.now_ns();
         let ttl = self.core.config.timing.engineer_ticket_ttl;
         let mut error = first_error;
         loop {
@@ -724,8 +741,15 @@ impl<T: TelemetryTransport> Supervisor<T> {
                         tracing::warn!(component = COMPONENT, error = %e, "snapshot request after reconnect not queued");
                     }
                     if joined.confirmed {
-                        self.event(EngineerEvent::StreamReset(joined.card.clone()))
-                            .await;
+                        let gap = StreamGap {
+                            dropped_at_ns,
+                            resumed_at_ns: self.core.clock.now_ns(),
+                        };
+                        self.event(EngineerEvent::StreamReset {
+                            card: joined.card.clone(),
+                            gap: Some(gap),
+                        })
+                        .await;
                     }
                     tracing::info!(
                         component = COMPONENT,
@@ -759,6 +783,20 @@ impl<T: TelemetryTransport> Supervisor<T> {
                                 .await,
                         );
                     }
+                    // Retrying until the ticket expires cannot help: an update is required.
+                    ErrorCode::Incompatible => {
+                        tracing::warn!(component = COMPONENT, %message, "resume refused: incompatible");
+                        self.core
+                            .status
+                            .update(|s| s.last_error = Some(message.clone()));
+                        return Resumed::Exit(
+                            self.ended(
+                                EngineerEndReason::Incompatible,
+                                FailureReason::Incompatible { detail: message },
+                            )
+                            .await,
+                        );
+                    }
                     other => error = format!("the relay refused the resume: {other:?} ({message})"),
                 },
                 Connected::Failed(failure) => {
@@ -766,12 +804,7 @@ impl<T: TelemetryTransport> Supervisor<T> {
                     match disposition {
                         Disposition::Retry => error = text,
                         Disposition::Fail(reason) => {
-                            let end_reason = match reason {
-                                FailureReason::ReloginRequired(_) => {
-                                    EngineerEndReason::ReloginRequired
-                                }
-                                _ => EngineerEndReason::TicketExpired,
-                            };
+                            let end_reason = end_reason_of(&reason);
                             self.core.status.update(|s| s.last_error = Some(text));
                             return Resumed::Exit(self.ended(end_reason, reason).await);
                         }
@@ -903,6 +936,16 @@ async fn serve_while<F: std::future::Future>(
     }
 }
 
+/// The end reason shown for a FAILED engineer connection.
+fn end_reason_of(reason: &FailureReason) -> EngineerEndReason {
+    match reason {
+        FailureReason::SessionEnded(r) => *r,
+        FailureReason::ReloginRequired(_) => EngineerEndReason::ReloginRequired,
+        FailureReason::Incompatible { .. } => EngineerEndReason::Incompatible,
+        _ => EngineerEndReason::TicketExpired,
+    }
+}
+
 /// Maps a failed join to the typed error shown by the UI.
 fn join_error(failure: &BindFailure) -> JoinError {
     match failure {
@@ -920,6 +963,9 @@ fn join_error(failure: &BindFailure) -> JoinError {
             // The relay accepts SESSION_JOIN only from ENGINEER accounts (§6).
             ErrorCode::NotAuthorized => JoinError::NotAnEngineer,
             ErrorCode::RateLimited => JoinError::RateLimited,
+            ErrorCode::Incompatible => JoinError::Incompatible {
+                detail: message.clone(),
+            },
             other => JoinError::Refused {
                 code: *other,
                 message: message.clone(),
@@ -1071,6 +1117,29 @@ impl PendingBuffer {
     }
 }
 
+/// Whether a classification must reach the application even if its frame is not delivered.
+fn is_significant(arrival: Arrival) -> bool {
+    matches!(
+        arrival,
+        Arrival::First | Arrival::Gap { .. } | Arrival::Restart
+    )
+}
+
+/// Combines the classification of an undelivered frame (`earlier`) with that of a later frame:
+/// a restart outranks everything (old-space state must be reset), missing counts add up, and a
+/// gap outranks the start of a stream (the loss is what the application must act on).
+fn merge_arrival(earlier: Arrival, later: Arrival) -> Arrival {
+    match (earlier, later) {
+        (Arrival::Restart, _) | (_, Arrival::Restart) => Arrival::Restart,
+        (Arrival::Gap { missing: a }, Arrival::Gap { missing: b }) => Arrival::Gap {
+            missing: a.saturating_add(b),
+        },
+        (gap @ Arrival::Gap { .. }, _) | (_, gap @ Arrival::Gap { .. }) => gap,
+        (Arrival::First, _) | (_, Arrival::First) => Arrival::First,
+        (_, other) => other,
+    }
+}
+
 /// Engineer behaviour on a bound connection.
 struct EngineerLogic {
     receiver: StreamReceiver,
@@ -1080,6 +1149,11 @@ struct EngineerLogic {
     phase: Arc<watch::Sender<EngineerPhase>>,
     exit: Option<Interrupt>,
     new_ticket: Option<Secret>,
+    /// A significant classification (first frame, gap, restart) of a frame that was not
+    /// delivered (an unknown stream type of a newer minor, an undecodable or non-live frame):
+    /// merged into the next delivered frame's [`InboundFrame::arrival`] so the application still
+    /// learns of the loss or restart.
+    pending_arrival: Option<Arrival>,
 }
 
 impl EngineerLogic {
@@ -1103,6 +1177,27 @@ impl EngineerLogic {
         }
     }
 
+    /// Remembers the classification of a frame that is not delivered (see
+    /// [`EngineerLogic::pending_arrival`]).
+    fn carry(&mut self, arrival: Option<Arrival>) {
+        if let Some(a) = arrival.filter(|a| is_significant(*a)) {
+            self.pending_arrival = Some(match self.pending_arrival.take() {
+                Some(earlier) => merge_arrival(earlier, a),
+                None => a,
+            });
+        }
+    }
+
+    /// The classification reported for a delivered frame: `arrival` merged with the pending one.
+    /// Replayed frames (`None`) are not tracked and leave the pending one for the next frame.
+    fn with_pending(&mut self, arrival: Option<Arrival>) -> Option<Arrival> {
+        let a = arrival?;
+        Some(match self.pending_arrival.take() {
+            Some(earlier) => merge_arrival(earlier, a),
+            None => a,
+        })
+    }
+
     fn on_stream_frame(
         &mut self,
         ctx: &mut Ctx<'_, EngineerEvent>,
@@ -1121,11 +1216,13 @@ impl EngineerLogic {
         let reception = self
             .receiver
             .receive(msg_type, header.priority, header.sequence, replayed);
+        let arrival = reception.arrival;
         if let Some(t) = trailer.filter(|_| !replayed) {
             ctx.metrics.relay_dropped(t.relay_dropped);
         }
         if !reception.live {
             ctx.metrics.not_live();
+            self.carry(arrival);
             return Flow::Continue;
         }
         if !replayed {
@@ -1138,16 +1235,18 @@ impl EngineerLogic {
             Err(e) => {
                 tracing::warn!(component = COMPONENT, %msg_type, error = %e, "undecodable stream frame skipped");
                 ctx.metrics.decode_error();
+                self.carry(arrival);
                 return Flow::Continue;
             }
         };
+        let arrival = self.with_pending(arrival);
         self.deliver(
             ctx,
             InboundFrame {
                 message,
                 header,
                 trailer,
-                arrival: reception.arrival,
+                arrival,
                 received_at_ns: ctx.now_ns,
             },
         );
@@ -1158,6 +1257,19 @@ impl EngineerLogic {
 impl RoleLogic for EngineerLogic {
     type Command = EngineerCommand;
     type Event = EngineerEvent;
+
+    fn on_unknown(&mut self, ctx: &mut Ctx<'_, EngineerEvent>, frame: &Frame) {
+        // A stream type of a newer minor still consumes a sequence number of the driver's space:
+        // skipping it unseen would make the next known frame look like a loss (§5).
+        let header = frame.header();
+        if header.session_id != ctx.session_id {
+            return;
+        }
+        let replayed = frame.relay_trailer().is_some_and(|t| t.replayed);
+        // The frame is never applied: its classification travels with the next delivered frame.
+        let arrival = self.receiver.observe_unknown(header, replayed);
+        self.carry(arrival);
+    }
 
     fn on_frame(
         &mut self,
@@ -1187,12 +1299,18 @@ impl RoleLogic for EngineerLogic {
                 ctx.metrics.sequence_reset(&self.receiver.stats());
                 self.receiver.reset();
                 self.pending.clear();
+                self.pending_arrival = None;
                 if let ResumeCredential::EngineerTicket(ticket) = &info.resume {
                     self.new_ticket = Some(ticket.clone());
                 }
                 self.card = IdentityCard::from(&info);
                 if self.confirmed {
-                    ctx.emit(EngineerEvent::StreamReset(self.card.clone()));
+                    // On this connection: the link did not drop (a driver restart, or the
+                    // resume's own SESSION_INFO, reported with its gap by `resume`).
+                    ctx.emit(EngineerEvent::StreamReset {
+                        card: self.card.clone(),
+                        gap: None,
+                    });
                 } else {
                     self.phase
                         .send_replace(EngineerPhase::AwaitingConfirmation(self.card.clone()));
@@ -1217,6 +1335,12 @@ impl RoleLogic for EngineerLogic {
                     "the relay disconnected ({other:?})"
                 ))),
             },
+            // Like the driver: an incompatibility is not retried (an update is required).
+            Message::Error(e) if e.fatal && e.code == ErrorCode::Incompatible => {
+                Flow::Close(CloseAction::Fail(FailureReason::Incompatible {
+                    detail: e.message,
+                }))
+            }
             Message::Error(e) if e.fatal => Flow::Close(CloseAction::Reconnect(format!(
                 "the relay reported a fatal error: {:?} ({})",
                 e.code, e.message
@@ -1311,6 +1435,30 @@ mod tests {
 
     fn delta(tag: u8) -> Message {
         Message::TelemetryDelta(TelemetryPayload::new(Bytes::from(vec![tag; 64])).expect("tlv"))
+    }
+
+    #[test]
+    fn undelivered_classifications_merge_restart_first_and_gaps_add_up() {
+        use Arrival as A;
+        assert_eq!(
+            merge_arrival(A::Gap { missing: 2 }, A::InOrder),
+            A::Gap { missing: 2 }
+        );
+        assert_eq!(
+            merge_arrival(A::Gap { missing: 2 }, A::Gap { missing: 3 }),
+            A::Gap { missing: 5 }
+        );
+        assert_eq!(merge_arrival(A::Restart, A::Gap { missing: 1 }), A::Restart);
+        assert_eq!(merge_arrival(A::Gap { missing: 1 }, A::Restart), A::Restart);
+        assert_eq!(merge_arrival(A::Restart, A::InOrder), A::Restart);
+        assert_eq!(merge_arrival(A::First, A::InOrder), A::First);
+        assert_eq!(
+            merge_arrival(A::First, A::Gap { missing: 4 }),
+            A::Gap { missing: 4 }
+        );
+        assert!(!is_significant(A::InOrder));
+        assert!(!is_significant(A::Duplicate));
+        assert!(is_significant(A::Restart));
     }
 
     #[test]
@@ -1425,6 +1573,27 @@ mod tests {
         assert_eq!(card.driver_username, "alice");
         assert!(!format!("{card:?}").contains("ticket-secret"));
         assert_eq!(engineer_ticket(&info), Some(Secret::new("ticket-secret")));
+    }
+
+    #[test]
+    fn an_incompatible_refusal_maps_to_the_update_required_states() {
+        let refused = BindFailure::Refused {
+            code: ErrorCode::Incompatible,
+            message: "minor too old".to_owned(),
+            max_engineers: 2,
+        };
+        assert_eq!(
+            join_error(&refused),
+            JoinError::Incompatible {
+                detail: "minor too old".to_owned()
+            }
+        );
+        assert_eq!(
+            end_reason_of(&FailureReason::Incompatible {
+                detail: String::new()
+            }),
+            EngineerEndReason::Incompatible
+        );
     }
 
     #[test]

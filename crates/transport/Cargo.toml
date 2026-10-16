@@ -23,6 +23,8 @@ keyring = { workspace = true, features = ["windows-native"] }
 
 [dev-dependencies]
 rcgen.workspace = true
+# Re-sealing test frames whose type id was rewritten (unknown-type tests).
+crc32c.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]

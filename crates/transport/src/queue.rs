@@ -8,7 +8,10 @@
 //!   so nothing piles up while stopped and no waiting producer hangs. Messages queued while the
 //!   link is down stay queued and are written after the reconnect (same session); when a new
 //!   session starts or streaming stops, the pending ones are discarded and counted
-//!   ([`OutboundQueue::reliable_discarded`]).
+//!   ([`OutboundQueue::reliable_discarded`]). SCHEMA_NEGOTIATE has its own latest-wins slot outside
+//!   the FIFO's capacity (mid-session it keeps its FIFO place, written after the messages queued
+//!   before it): after a new sequence space starts, the other stream messages are held until it
+//!   was written (§5), so it must never wait behind them.
 //!   **Delivery is at most once across a connection loss**: a message counts as written once its
 //!   bytes were handed to the TLS stream. If the link then dies silently (detected only by the
 //!   heartbeat or write timeout), the messages written meanwhile are lost with their sequence
@@ -35,8 +38,8 @@
 use std::collections::VecDeque;
 
 use parking_lot::Mutex;
-use protocol::frame::{Delivery, FramePriority, MsgType};
-use protocol::messages::{Message, SnapshotReason};
+use protocol::frame::{Delivery, FramePriority, MAX_PAYLOAD_BYTES, MsgType};
+use protocol::messages::{Message, MessageError, SnapshotReason};
 use protocol::sequence::SnapshotRequestLimiter;
 use thiserror::Error;
 use tokio::sync::Notify;
@@ -73,6 +76,13 @@ pub enum Outbound {
 }
 
 impl Outbound {
+    /// The message of the item.
+    pub fn message(&self) -> &Message {
+        match self {
+            Outbound::Control(m) | Outbound::Stream { message: m, .. } => m,
+        }
+    }
+
     /// Message type of the item.
     pub fn msg_type(&self) -> MsgType {
         match self {
@@ -106,6 +116,18 @@ pub enum QueueError {
     NotStreaming,
     #[error("the client has shut down")]
     Closed,
+    /// The encoded payload exceeds the payload limit (the relay's announced limit, at most the
+    /// protocol maximum): the writer would have to drop it, so it is refused here and the
+    /// producer learns of it.
+    #[error("{msg_type} payload of {len} bytes exceeds the limit of {limit} bytes")]
+    TooLarge {
+        msg_type: MsgType,
+        len: usize,
+        limit: usize,
+    },
+    /// The message cannot be encoded.
+    #[error("{msg_type} cannot be encoded: {detail}")]
+    Unencodable { msg_type: MsgType, detail: String },
 }
 
 /// Result of enqueueing a live frame.
@@ -132,6 +154,25 @@ struct Inner {
     pending_snapshot_request: Option<SnapshotReason>,
     /// Reliable messages are accepted (see [`OutboundQueue::set_streaming`]).
     streaming: bool,
+    /// A new sequence space started and its SCHEMA_NEGOTIATE has not been written yet: live
+    /// frames and reliable stream messages other than SCHEMA_NEGOTIATE are held (§5: the schema is
+    /// the first stream frame of a space). See [`OutboundQueue::hold_until_schema`].
+    awaiting_schema: bool,
+    /// The pending SCHEMA_NEGOTIATE: a latest-wins slot outside the reliable FIFO and its
+    /// capacity, written before any other reliable message. A schema held in the FIFO behind
+    /// messages that are themselves held until the schema is written could never get in while the
+    /// FIFO is full (deadlock); a newer schema supersedes an unsent older one.
+    schema: Option<Outbound>,
+    /// How many FIFO messages were queued before the pending schema and are still pending. Outside
+    /// [`Inner::awaiting_schema`] the schema keeps its place in the FIFO order (a schema sent
+    /// mid-session must not overtake the session events queued before it); a newer schema that
+    /// supersedes a pending one takes the older one's place.
+    schema_ahead: usize,
+    /// The space's SCHEMA_NEGOTIATE was dropped by the writer while stream traffic was held for it
+    /// (see [`OutboundQueue::schema_dropped`]): the application must send a fitting one.
+    schema_resend_needed: bool,
+    /// Largest payload accepted (see [`OutboundQueue::set_payload_limit`]).
+    payload_limit: usize,
     closed: bool,
 }
 
@@ -144,6 +185,39 @@ impl Inner {
             Some(QueueError::NotStreaming)
         } else {
             None
+        }
+    }
+
+    /// Puts `schema` into the schema slot; an unsent older one is superseded (counted as
+    /// `dropped_obsolete`).
+    fn put_schema(&mut self, schema: Outbound) {
+        if self.schema.replace(schema).is_some() {
+            self.dropped_obsolete = self.dropped_obsolete.saturating_add(1);
+        } else {
+            self.schema_ahead = self.reliable.len();
+        }
+        self.schema_resend_needed = false;
+    }
+
+    /// Whether the writer may take `item` now (see [`Inner::awaiting_schema`]).
+    fn may_write(&self, item: &Outbound) -> bool {
+        !self.awaiting_schema
+            || matches!(item, Outbound::Control(_))
+            || item.msg_type() == MsgType::SchemaNegotiate
+    }
+}
+
+/// Length of the encoded payload of `message`. TLV-carrying messages are measured without
+/// encoding (they are the high-rate ones); the others are encoded into a scratch buffer.
+pub(crate) fn encoded_payload_len(message: &Message) -> Result<usize, MessageError> {
+    match message {
+        Message::TelemetryDelta(p) | Message::TelemetrySnapshot(p) | Message::WeatherUpdate(p) => {
+            Ok(p.as_bytes().len())
+        }
+        other => {
+            let mut buf = Vec::new();
+            other.encode_payload(&mut buf)?;
+            Ok(buf.len())
         }
     }
 }
@@ -182,6 +256,11 @@ impl OutboundQueue {
                 snapshot_limiter: SnapshotRequestLimiter::default(),
                 pending_snapshot_request: None,
                 streaming: true,
+                awaiting_schema: false,
+                schema: None,
+                schema_ahead: 0,
+                schema_resend_needed: false,
+                payload_limit: MAX_PAYLOAD_BYTES,
                 closed: false,
             }),
             data: Notify::new(),
@@ -200,6 +279,76 @@ impl OutboundQueue {
         }
     }
 
+    /// Sets the largest payload accepted from now on: the relay's announced limit of the current
+    /// connection, clamped to the protocol maximum. Larger messages are refused with
+    /// [`QueueError::TooLarge`].
+    pub fn set_payload_limit(&self, limit: usize) {
+        self.inner.lock().payload_limit = limit.min(MAX_PAYLOAD_BYTES);
+    }
+
+    /// A new sequence space starts (driver, §5): until a SCHEMA_NEGOTIATE was written
+    /// ([`Self::schema_written`]), the writer takes neither live frames nor reliable stream
+    /// messages other than SCHEMA_NEGOTIATE, so SCHEMA_NEGOTIATE is the first stream frame of the
+    /// space whatever the producers queue first. Control messages (code requests, kicks) flow.
+    pub fn hold_until_schema(&self) {
+        let mut inner = self.inner.lock();
+        inner.awaiting_schema = true;
+        inner.schema_resend_needed = false;
+    }
+
+    /// A SCHEMA_NEGOTIATE was written: held stream traffic flows again.
+    pub fn schema_written(&self) {
+        self.inner.lock().awaiting_schema = false;
+        self.data.notify_one();
+    }
+
+    /// Whether stream traffic is held until a SCHEMA_NEGOTIATE is written.
+    pub fn awaiting_schema(&self) -> bool {
+        self.inner.lock().awaiting_schema
+    }
+
+    /// The writer dropped a SCHEMA_NEGOTIATE (oversize for the current relay, or unencodable).
+    /// If stream traffic is held for it, nothing would ever release the hold: the request for a
+    /// new schema is remembered for [`Self::take_schema_resend`]. Returns whether it was.
+    pub fn schema_dropped(&self) -> bool {
+        let mut inner = self.inner.lock();
+        if inner.awaiting_schema {
+            inner.schema_resend_needed = true;
+        }
+        inner.schema_resend_needed
+    }
+
+    /// Whether the application must send a new SCHEMA_NEGOTIATE because the writer dropped the
+    /// one the held stream waits for (see [`Self::schema_dropped`]). Reports it once.
+    pub fn take_schema_resend(&self) -> bool {
+        let mut inner = self.inner.lock();
+        // A schema written (or a new space) since makes the request moot.
+        let needed = inner.schema_resend_needed && inner.awaiting_schema && inner.schema.is_none();
+        inner.schema_resend_needed = false;
+        needed
+    }
+
+    /// Refuses a message whose payload cannot be encoded or exceeds `limit`.
+    fn check_size(message: &Message, limit: usize) -> Result<(), QueueError> {
+        let msg_type = message.msg_type();
+        let len = encoded_payload_len(message).map_err(|e| QueueError::Unencodable {
+            msg_type,
+            detail: e.to_string(),
+        })?;
+        if len > limit {
+            return Err(QueueError::TooLarge {
+                msg_type,
+                len,
+                limit,
+            });
+        }
+        Ok(())
+    }
+
+    fn payload_limit(&self) -> usize {
+        self.inner.lock().payload_limit
+    }
+
     /// Puts a latest-wins frame into its `(msg_type, priority)` slot. `now_ms` is the client's
     /// monotonic clock (a snapshot counts for SNAPSHOT_REQUEST coalescing, §5).
     pub fn push_live(
@@ -215,6 +364,8 @@ impl OutboundQueue {
         let (Some(t), Some(p)) = (live_index(msg_type), priority_index(priority)) else {
             return Err(QueueError::PriorityNotAllowed { msg_type, priority });
         };
+        // Measured outside the lock (non-TLV messages are encoded once to measure them).
+        Self::check_size(&message, self.payload_limit())?;
         let mut inner = self.inner.lock();
         if inner.closed {
             return Err(QueueError::Closed);
@@ -251,9 +402,16 @@ impl OutboundQueue {
     /// Appends to the reliable queue without waiting.
     pub fn try_push_reliable(&self, item: Outbound) -> Result<(), QueueError> {
         check_reliable(&item)?;
+        Self::check_size(item.message(), self.payload_limit())?;
         let mut inner = self.inner.lock();
         if let Some(refused) = inner.refuse_reliable() {
             return Err(refused);
+        }
+        if item.msg_type() == MsgType::SchemaNegotiate {
+            inner.put_schema(item);
+            drop(inner);
+            self.data.notify_one();
+            return Ok(());
         }
         if inner.reliable.len() >= inner.capacity {
             return Err(QueueError::Full {
@@ -272,6 +430,7 @@ impl OutboundQueue {
     /// client shuts down.
     pub async fn push_reliable(&self, item: Outbound) -> Result<(), QueueError> {
         check_reliable(&item)?;
+        Self::check_size(item.message(), self.payload_limit())?;
         loop {
             let space = self.space.notified();
             tokio::pin!(space);
@@ -282,6 +441,13 @@ impl OutboundQueue {
                 let mut inner = self.inner.lock();
                 if let Some(refused) = inner.refuse_reliable() {
                     return Err(refused);
+                }
+                // SCHEMA_NEGOTIATE never waits for space (see `Inner::schema`).
+                if item.msg_type() == MsgType::SchemaNegotiate {
+                    inner.put_schema(item);
+                    drop(inner);
+                    self.data.notify_one();
+                    return Ok(());
                 }
                 if inner.reliable.len() < inner.capacity {
                     inner.reliable.push_back(item);
@@ -295,10 +461,31 @@ impl OutboundQueue {
     }
 
     /// Next reliable message (writer side). It stays in flight until
-    /// [`OutboundQueue::reliable_written`].
+    /// [`OutboundQueue::reliable_written`]. While a SCHEMA_NEGOTIATE is awaited
+    /// ([`Self::hold_until_schema`]) the first message that may go is taken (control messages and
+    /// SCHEMA_NEGOTIATE); the held ones keep their order, and a pending SCHEMA_NEGOTIATE goes
+    /// first (it opens the space the other messages belong to). Otherwise the schema keeps its
+    /// FIFO place: it is written once the messages queued before it were.
     pub fn pop_reliable(&self) -> Option<Outbound> {
         let mut inner = self.inner.lock();
-        let item = inner.reliable.pop_front()?;
+        let schema_due = inner.awaiting_schema || inner.schema_ahead == 0;
+        let item = match inner.schema.take_if(|_| schema_due) {
+            Some(schema) => {
+                inner.schema_ahead = 0;
+                schema
+            }
+            None => {
+                let pos = inner
+                    .reliable
+                    .iter()
+                    .position(|item| inner.may_write(item))?;
+                let item = inner.reliable.remove(pos)?;
+                if inner.schema.is_some() && pos < inner.schema_ahead {
+                    inner.schema_ahead -= 1;
+                }
+                item
+            }
+        };
         inner.in_flight = Some(item.clone());
         drop(inner);
         self.space.notify_one();
@@ -317,7 +504,24 @@ impl OutboundQueue {
     pub fn requeue_in_flight(&self) -> bool {
         let mut inner = self.inner.lock();
         match inner.in_flight.take() {
+            Some(item) if item.msg_type() == MsgType::SchemaNegotiate => {
+                if inner.schema.is_some() {
+                    // A newer schema was queued meanwhile: it supersedes this one.
+                    inner.dropped_obsolete = inner.dropped_obsolete.saturating_add(1);
+                } else {
+                    // It was the first in line when it was popped.
+                    inner.schema = Some(item);
+                    inner.schema_ahead = 0;
+                }
+                drop(inner);
+                self.data.notify_one();
+                true
+            }
             Some(item) => {
+                // Popped before the pending schema was due, so it precedes it.
+                if inner.schema.is_some() {
+                    inner.schema_ahead += 1;
+                }
                 inner.reliable.push_front(item);
                 drop(inner);
                 self.data.notify_one();
@@ -330,7 +534,8 @@ impl OutboundQueue {
     /// Takes every pending live frame, in write order (writer side).
     pub fn take_live_round(&self, out: &mut VecDeque<(Message, FramePriority)>) {
         let mut inner = self.inner.lock();
-        if inner.occupied == 0 {
+        // Held until the space's SCHEMA_NEGOTIATE was written (the slots keep only the newest).
+        if inner.occupied == 0 || inner.awaiting_schema {
             return;
         }
         for (p, priority) in LIVE_PRIORITIES.iter().enumerate() {
@@ -372,9 +577,14 @@ impl OutboundQueue {
     pub fn clear_session(&self) -> usize {
         self.clear_live();
         let mut inner = self.inner.lock();
-        let n = inner.reliable.len() + usize::from(inner.in_flight.is_some());
+        let n = inner.reliable.len()
+            + usize::from(inner.in_flight.is_some())
+            + usize::from(inner.schema.is_some());
         inner.reliable.clear();
         inner.in_flight = None;
+        inner.schema = None;
+        inner.schema_ahead = 0;
+        inner.schema_resend_needed = false;
         inner.pending_snapshot_request = None;
         inner.reliable_discarded = inner
             .reliable_discarded
@@ -411,7 +621,7 @@ impl OutboundQueue {
     /// Reliable messages plus occupied live slots.
     pub fn depth(&self) -> usize {
         let inner = self.inner.lock();
-        inner.reliable.len() + inner.occupied
+        inner.reliable.len() + usize::from(inner.schema.is_some()) + inner.occupied
     }
 
     /// Whether anything is pending.
@@ -721,6 +931,229 @@ mod tests {
         q.set_streaming(false);
         q.close();
         assert_eq!(q.try_push_reliable(item()), Err(QueueError::Closed));
+    }
+
+    #[test]
+    fn a_new_sequence_space_holds_stream_traffic_until_its_schema_is_written() {
+        let q = OutboundQueue::new(8);
+        let event = Outbound::Stream {
+            message: Message::SnapshotRequest(SnapshotRequest {
+                reason: SnapshotReason::Manual,
+            }),
+            priority: FramePriority::Control,
+        };
+        let schema = Outbound::Stream {
+            message: Message::SchemaNegotiate(protocol::messages::SchemaNegotiate {
+                schema_version: telemetry_model::TELEMETRY_SCHEMA_VERSION,
+                capabilities: Default::default(),
+                vehicle_capabilities: Default::default(),
+            }),
+            priority: FramePriority::Control,
+        };
+        let code = Outbound::Control(Message::ConnectCodeRequest(
+            protocol::messages::ConnectCodeRequest,
+        ));
+        q.hold_until_schema();
+        assert!(q.awaiting_schema());
+        q.push_live(delta(1), FramePriority::P0, 0).expect("delta");
+        q.try_push_reliable(event.clone()).expect("event");
+        q.try_push_reliable(code.clone()).expect("code");
+        // Nothing of the stream may go yet; control messages flow.
+        assert!(drain(&q).is_empty(), "live frames are held");
+        assert_eq!(q.pop_reliable(), Some(code));
+        q.reliable_written();
+        assert_eq!(q.pop_reliable(), None, "the event waits for the schema");
+        // The schema overtakes what was queued before it, the rest keeps its order.
+        q.try_push_reliable(schema.clone()).expect("schema");
+        assert_eq!(q.pop_reliable(), Some(schema));
+        q.reliable_written();
+        q.schema_written();
+        assert!(!q.awaiting_schema());
+        assert_eq!(q.pop_reliable(), Some(event));
+        assert_eq!(drain(&q), vec![(delta(1), FramePriority::P0)]);
+        assert_eq!(q.dropped_obsolete(), 0, "held, not dropped");
+    }
+
+    fn schema_item(version: u16) -> Outbound {
+        Outbound::Stream {
+            message: Message::SchemaNegotiate(protocol::messages::SchemaNegotiate {
+                schema_version: version,
+                capabilities: Default::default(),
+                vehicle_capabilities: Default::default(),
+            }),
+            priority: FramePriority::Control,
+        }
+    }
+
+    fn event_item() -> Outbound {
+        Outbound::Stream {
+            message: Message::SnapshotRequest(SnapshotRequest {
+                reason: SnapshotReason::Manual,
+            }),
+            priority: FramePriority::Control,
+        }
+    }
+
+    fn request_item(reason: SnapshotReason) -> Outbound {
+        Outbound::Stream {
+            message: Message::SnapshotRequest(SnapshotRequest { reason }),
+            priority: FramePriority::Control,
+        }
+    }
+
+    #[test]
+    fn a_mid_session_schema_keeps_its_fifo_place() {
+        // Not awaiting a schema: messages queued before it are written before it, those queued
+        // after it after it; a superseding schema takes the older one's place.
+        let q = OutboundQueue::new(8);
+        q.try_push_reliable(request_item(SnapshotReason::Manual))
+            .expect("a");
+        q.try_push_reliable(request_item(SnapshotReason::Reconnect))
+            .expect("b");
+        q.try_push_reliable(schema_item(1)).expect("schema 1");
+        q.try_push_reliable(request_item(SnapshotReason::SequenceGap))
+            .expect("c");
+        q.try_push_reliable(schema_item(2)).expect("schema 2");
+        assert_eq!(q.pop_reliable(), Some(request_item(SnapshotReason::Manual)));
+        q.reliable_written();
+        // The connection dies while b is in flight: b is requeued and still precedes the schema.
+        assert_eq!(
+            q.pop_reliable(),
+            Some(request_item(SnapshotReason::Reconnect))
+        );
+        assert!(q.requeue_in_flight());
+        assert_eq!(
+            q.pop_reliable(),
+            Some(request_item(SnapshotReason::Reconnect))
+        );
+        q.reliable_written();
+        assert_eq!(q.pop_reliable(), Some(schema_item(2)), "the schema's place");
+        q.reliable_written();
+        assert_eq!(
+            q.pop_reliable(),
+            Some(request_item(SnapshotReason::SequenceGap))
+        );
+        q.reliable_written();
+        assert_eq!(q.pop_reliable(), None);
+
+        // A new space: the schema goes first whatever was queued before it.
+        q.try_push_reliable(request_item(SnapshotReason::Manual))
+            .expect("d");
+        q.hold_until_schema();
+        q.try_push_reliable(schema_item(3)).expect("schema 3");
+        assert_eq!(q.pop_reliable(), Some(schema_item(3)));
+    }
+
+    #[tokio::test]
+    async fn a_schema_is_accepted_even_when_held_messages_fill_the_queue() {
+        // F11: messages queued during an outage fill the queue; the new space holds them until
+        // the schema is written, so the schema must not wait for space they would free.
+        let q = OutboundQueue::new(2);
+        q.try_push_reliable(event_item()).expect("event 1");
+        q.try_push_reliable(event_item()).expect("event 2");
+        assert_eq!(
+            q.try_push_reliable(event_item()),
+            Err(QueueError::Full { capacity: 2 })
+        );
+        q.hold_until_schema();
+        assert_eq!(q.pop_reliable(), None, "events are held");
+        // Both the waiting and the non-waiting form get in at once.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            q.push_reliable(schema_item(1)),
+        )
+        .await
+        .expect("never waits")
+        .expect("accepted");
+        q.try_push_reliable(schema_item(2)).expect("accepted");
+        assert_eq!(
+            q.dropped_obsolete(),
+            1,
+            "the unsent older schema is superseded"
+        );
+        assert_eq!(q.depth(), 3);
+        assert_eq!(q.pop_reliable(), Some(schema_item(2)), "schema first");
+        q.reliable_written();
+        q.schema_written();
+        assert_eq!(q.pop_reliable(), Some(event_item()));
+        q.reliable_written();
+        assert_eq!(q.pop_reliable(), Some(event_item()));
+        q.reliable_written();
+        assert_eq!(q.pop_reliable(), None);
+    }
+
+    #[test]
+    fn an_in_flight_schema_is_requeued_into_its_slot_unless_a_newer_one_exists() {
+        let q = OutboundQueue::new(2);
+        q.try_push_reliable(schema_item(1)).expect("schema");
+        assert_eq!(q.pop_reliable(), Some(schema_item(1)));
+        assert!(q.requeue_in_flight());
+        assert_eq!(q.pop_reliable(), Some(schema_item(1)), "back in its slot");
+        q.try_push_reliable(schema_item(2)).expect("newer");
+        assert!(q.requeue_in_flight());
+        assert_eq!(q.pop_reliable(), Some(schema_item(2)), "the newer one wins");
+        q.reliable_written();
+        assert_eq!(q.pop_reliable(), None);
+        assert_eq!(q.dropped_obsolete(), 1);
+        // clear_session discards (and counts) a pending schema.
+        q.try_push_reliable(schema_item(3)).expect("schema");
+        assert_eq!(q.clear_session(), 1);
+        assert!(q.is_empty());
+    }
+
+    #[test]
+    fn a_dropped_schema_the_stream_waits_for_asks_for_a_new_one_once() {
+        // F12.
+        let q = OutboundQueue::new(2);
+        // Not held: nothing to ask for.
+        assert!(!q.schema_dropped());
+        assert!(!q.take_schema_resend());
+        q.hold_until_schema();
+        assert!(q.schema_dropped());
+        assert!(q.take_schema_resend());
+        assert!(!q.take_schema_resend(), "reported once");
+        // Moot once a new schema is queued.
+        assert!(q.schema_dropped());
+        q.try_push_reliable(schema_item(1)).expect("schema");
+        assert!(!q.take_schema_resend());
+    }
+
+    #[test]
+    fn messages_above_the_payload_limit_are_refused_up_front() {
+        let q = OutboundQueue::new(4);
+        // TLV payload of 64 bytes.
+        q.set_payload_limit(63);
+        assert_eq!(
+            q.push_live(delta(1), FramePriority::P0, 0),
+            Err(QueueError::TooLarge {
+                msg_type: MsgType::TelemetryDelta,
+                len: 64,
+                limit: 63
+            })
+        );
+        // Reliable messages are measured by encoding them.
+        let request = Outbound::Stream {
+            message: Message::SnapshotRequest(SnapshotRequest {
+                reason: SnapshotReason::Manual,
+            }),
+            priority: FramePriority::Control,
+        };
+        let request_len = encoded_payload_len(request.message()).expect("encodable");
+        q.set_payload_limit(request_len - 1);
+        assert!(matches!(
+            q.try_push_reliable(request.clone()),
+            Err(QueueError::TooLarge { len, .. }) if len == request_len
+        ));
+        q.set_payload_limit(request_len);
+        q.try_push_reliable(request).expect("fits");
+        assert_eq!(q.depth(), 1);
+        q.set_payload_limit(64);
+        q.push_live(delta(1), FramePriority::P0, 0)
+            .expect("exactly at the limit");
+        // Never above the protocol maximum, whatever a relay announces.
+        q.set_payload_limit(usize::MAX);
+        assert_eq!(q.payload_limit(), MAX_PAYLOAD_BYTES);
+        assert_eq!(encoded_payload_len(&delta(2)).expect("tlv"), 64);
     }
 
     #[test]

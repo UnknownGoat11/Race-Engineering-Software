@@ -288,7 +288,9 @@ async fn driver_session_over_real_tcp_resumes_after_the_connection_is_dropped() 
                 assert_eq!((id, kind), (session_id, SessionReadyKind::Resumed));
                 break;
             }
-            DriverEvent::SnapshotNeeded { .. } | DriverEvent::RelayError { .. } => {}
+            DriverEvent::SnapshotNeeded { .. }
+            | DriverEvent::RelayError { .. }
+            | DriverEvent::SessionEnded { .. } => {}
         }
     }
     wait_state(&mut status, ConnectionState::Connected).await;
@@ -358,7 +360,7 @@ async fn connectivity_test_passes_every_stage_without_side_effects() {
     let after_restart =
         test_relay_connection(&transport, &config, &restarted, ClientRole::Engineer).await;
     assert!(after_restart.passed(), "{after_restart:#?}");
-    assert!(restarted.is_logged_in().expect("store"));
+    assert!(restarted.is_logged_in(ClientRole::Engineer).expect("store"));
 }
 
 #[tokio::test]
@@ -410,7 +412,8 @@ async fn connectivity_test_reports_the_failing_stage_and_skips_the_rest() {
     assert_failed_at(&report, Stage::Auth, "Not logged in");
     assert_eq!(relay.auth_attempts(), 0);
 
-    // AUTH: the account is not an engineer account.
+    // AUTH: only a driver login exists; engineer mode never presents it (F7, logins are kept per
+    // role), so the engineer test asks for a login.
     let (_store, auth) = new_app(&config);
     login(
         &transport,
@@ -422,6 +425,12 @@ async fn connectivity_test_reports_the_failing_stage_and_skips_the_rest() {
     )
     .await
     .expect("login");
+    let attempts = relay.auth_attempts();
     let report = test_relay_connection(&transport, &config, &auth, ClientRole::Engineer).await;
-    assert_failed_at(&report, Stage::Auth, "not an engineer account");
+    assert_failed_at(&report, Stage::Auth, "Not logged in");
+    assert_eq!(
+        relay.auth_attempts(),
+        attempts,
+        "the driver token is not sent"
+    );
 }

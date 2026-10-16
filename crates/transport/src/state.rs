@@ -185,6 +185,9 @@ pub enum EngineerEndReason {
     UserDisconnected,
     /// The login is no longer valid; after logging in again a new code is needed.
     ReloginRequired,
+    /// The relay refused this client's protocol version (`ERROR(INCOMPATIBLE)`): an update is
+    /// required; retrying cannot succeed.
+    Incompatible,
 }
 
 impl EngineerEndReason {
@@ -201,6 +204,9 @@ impl EngineerEndReason {
             EngineerEndReason::UserDisconnected => "Disconnected.",
             EngineerEndReason::ReloginRequired => {
                 "Your login is no longer valid. Log in, then enter a new code from the driver."
+            }
+            EngineerEndReason::Incompatible => {
+                "This app version is not compatible with the relay. Update the app, then enter a new code from the driver."
             }
         }
     }
@@ -417,6 +423,25 @@ impl StatePublisher {
 mod tests {
     use super::*;
     use ConnectionState as S;
+
+    #[test]
+    fn engineer_end_messages_have_no_runs_of_spaces() {
+        use EngineerEndReason as E;
+        for reason in [
+            E::TicketExpired,
+            E::Kicked,
+            E::DriverEndedSession,
+            E::SessionExpired,
+            E::Replaced,
+            E::UserDisconnected,
+            E::ReloginRequired,
+            E::Incompatible,
+        ] {
+            let text = reason.message();
+            assert!(!text.contains("  "), "{reason:?}: {text:?}");
+            assert_eq!(text.trim(), text, "{reason:?}");
+        }
+    }
 
     #[test]
     fn numeric_values_round_trip() {

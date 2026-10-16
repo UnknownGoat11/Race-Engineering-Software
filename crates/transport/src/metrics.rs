@@ -95,6 +95,9 @@ pub struct LinkMetrics {
     pub not_live: u64,
     /// Outbound frames refused because they exceed the relay's payload limit.
     pub oversize_dropped: u64,
+    /// Outbound messages dropped by the writer because they could not be encoded (producers are
+    /// normally told up front with `QueueError::Unencodable` / `QueueError::TooLarge`).
+    pub unencodable_dropped: u64,
     /// Application events dropped because the event channel was full, or (engineer) because the
     /// buffer of reliable stream messages held before the identity was confirmed overflowed.
     pub events_dropped: u64,
@@ -109,6 +112,7 @@ pub struct LinkMetrics {
 pub struct WriterCounters {
     frames_out: AtomicU64,
     oversize_dropped: AtomicU64,
+    unencodable_dropped: AtomicU64,
 }
 
 impl WriterCounters {
@@ -122,6 +126,18 @@ impl WriterCounters {
         self.oversize_dropped
             .fetch_add(1, Ordering::Relaxed)
             .saturating_add(1)
+    }
+
+    /// Counts one message that could not be encoded; returns the new total.
+    pub fn unencodable(&self) -> u64 {
+        self.unencodable_dropped
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1)
+    }
+
+    /// Messages that could not be encoded so far.
+    pub fn unencodable_dropped(&self) -> u64 {
+        self.unencodable_dropped.load(Ordering::Relaxed)
     }
 
     /// Frames written so far.
@@ -211,13 +227,19 @@ impl MetricsState {
         self.last_arrival = None;
     }
 
-    /// The current connection ended: its byte counts move into the totals.
+    /// The current connection ended: its byte counts move into the totals, and the link rates go
+    /// back to "not measured" (`None`) until the next connection measured them: a rate of the
+    /// lost connection must not look current during a reconnect or backoff.
     pub fn connection_ended(&mut self) {
         if let Some(stats) = self.connection.take() {
             self.base_in = self.base_in.saturating_add(stats.bytes_in());
             self.base_out = self.base_out.saturating_add(stats.bytes_out());
         }
         self.connection_since = None;
+        self.bytes_in_rate = RateMeter::default();
+        self.bytes_out_rate = RateMeter::default();
+        self.frames_in_rate = RateMeter::default();
+        self.frames_out_rate = RateMeter::default();
     }
 
     /// Counts a reconnect.
@@ -312,15 +334,25 @@ impl MetricsState {
         self.m.bytes_in_total = self.base_in.saturating_add(cur_in);
         self.m.bytes_out_total = self.base_out.saturating_add(cur_out);
         self.m.frames_out_total = inputs.frames_out_total;
-        self.m.bytes_in_per_s = self.bytes_in_rate.observe(now, self.m.bytes_in_total);
-        self.m.bytes_out_per_s = self.bytes_out_rate.observe(now, self.m.bytes_out_total);
-        self.m.frames_in_per_s = self.frames_in_rate.observe(now, self.m.frames_in_total);
-        self.m.frames_out_per_s = self.frames_out_rate.observe(now, self.m.frames_out_total);
+        if self.connection.is_some() {
+            self.m.bytes_in_per_s = self.bytes_in_rate.observe(now, self.m.bytes_in_total);
+            self.m.bytes_out_per_s = self.bytes_out_rate.observe(now, self.m.bytes_out_total);
+            self.m.frames_in_per_s = self.frames_in_rate.observe(now, self.m.frames_in_total);
+            self.m.frames_out_per_s = self.frames_out_rate.observe(now, self.m.frames_out_total);
+        } else {
+            // No link: no rate (not a measured 0, and not the last connection's value). The
+            // meters start afresh with the next connection.
+            self.m.bytes_in_per_s = None;
+            self.m.bytes_out_per_s = None;
+            self.m.frames_in_per_s = None;
+            self.m.frames_out_per_s = None;
+        }
         self.m.clock = inputs.clock;
         self.m.dropped_obsolete = inputs.dropped_obsolete;
         self.m.reliable_discarded = inputs.reliable_discarded;
         self.m.send_queue_depth = inputs.send_queue_depth;
         self.m.oversize_dropped = inputs.oversize_dropped;
+        self.m.unencodable_dropped = inputs.unencodable_dropped;
         self.m.sequence = inputs.sequence;
         self.m.sequence_totals = self.sequence_totals(inputs.sequence.as_ref());
         self.m.connected_for = self
@@ -335,6 +367,7 @@ impl MetricsState {
 pub struct MetricsInputs {
     pub frames_out_total: u64,
     pub oversize_dropped: u64,
+    pub unencodable_dropped: u64,
     pub dropped_obsolete: u64,
     pub reliable_discarded: u64,
     pub send_queue_depth: usize,
@@ -361,6 +394,31 @@ mod tests {
         assert_eq!(second.frames_in_per_s, Some(100.0));
         assert_eq!(second.bytes_in_per_s, Some(0.0));
         assert_eq!(second.connected_for, Some(Duration::from_millis(500)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rates_of_a_lost_connection_do_not_stay_current_while_reconnecting() {
+        let mut m = MetricsState::new();
+        let t0 = Instant::now();
+        m.connection_started(Arc::new(TransportStats::default()), t0);
+        m.snapshot(t0, &MetricsInputs::default());
+        for _ in 0..60 {
+            m.frame_in();
+        }
+        let live = m.snapshot(t0 + Duration::from_secs(1), &MetricsInputs::default());
+        assert_eq!(live.frames_in_per_s, Some(60.0));
+        // The link drops: the snapshot published at the end (and kept during the backoff) shows
+        // no rate instead of the last measured one.
+        m.connection_ended();
+        let lost = m.snapshot(t0 + Duration::from_secs(2), &MetricsInputs::default());
+        assert_eq!(lost.frames_in_per_s, None);
+        assert_eq!(lost.bytes_out_per_s, None);
+        assert_eq!(lost.connected_for, None);
+        assert_eq!(lost.frames_in_total, 60, "totals are kept");
+        // Later snapshots during the outage (each backoff publishes one) stay unmeasured.
+        let later = m.snapshot(t0 + Duration::from_secs(10), &MetricsInputs::default());
+        assert_eq!(later.frames_in_per_s, None);
+        assert_eq!(later.bytes_in_per_s, None);
     }
 
     #[test]

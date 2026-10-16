@@ -95,7 +95,7 @@ async fn login_once_create_session_stream_heartbeat_and_clock_sync() {
     let (store, auth) = logged_in_app(&relay, &config, ClientRole::Driver, DRIVER).await;
     // Only the refresh token is persisted by a login (never the password or access token).
     let ns = auth.namespace().to_owned();
-    assert_eq!(store.keys(), vec![format!("{ns}#refresh_token")]);
+    assert_eq!(store.keys(), vec![format!("{ns}#driver_refresh_token")]);
 
     let (client, mut events) =
         DriverClient::spawn(config.clone(), relay.transport(), auth).expect("valid config");
@@ -221,6 +221,10 @@ async fn app_restart_resumes_the_stored_session_silently_with_a_new_sequence_spa
     client.start(session_create()).await.expect("start");
     let (session_id, _) = session_ready(&mut events).await;
     client
+        .send_reliable(schema_negotiate())
+        .await
+        .expect("schema");
+    client
         .send_live(Message::TelemetryDelta(tlv(1, 1)), FramePriority::P0)
         .expect("delta");
     client
@@ -229,7 +233,7 @@ async fn app_restart_resumes_the_stored_session_silently_with_a_new_sequence_spa
     advance(Duration::from_millis(100)).await;
     client.shutdown().await;
     let refresh_before = store
-        .load(&ns, CredentialKind::RefreshToken)
+        .load(&ns, CredentialKind::DriverRefreshToken)
         .expect("store")
         .expect("refresh token");
 
@@ -257,7 +261,7 @@ async fn app_restart_resumes_the_stored_session_silently_with_a_new_sequence_spa
         Message::Auth(protocol::messages::Auth::RefreshToken { token }) if *token == refresh_before
     ));
     let refresh_after = store
-        .load(&ns, CredentialKind::RefreshToken)
+        .load(&ns, CredentialKind::DriverRefreshToken)
         .expect("store")
         .expect("refresh token");
     assert_ne!(
@@ -270,14 +274,41 @@ async fn app_restart_resumes_the_stored_session_silently_with_a_new_sequence_spa
         &resumes.last().expect("resume").message,
         Message::SessionResume(SessionResume::Driver { session_id: s, new_sequence_space: true, .. }) if *s == session_id
     ));
+    // The telemetry producer keeps running while the application has not reacted to
+    // SessionReady yet: the new space's telemetry and events are held until SCHEMA_NEGOTIATE is
+    // out, so the schema is its first stream frame (sequence 1, §5) and engineers never see the
+    // space's telemetry before its capability map (nor a false "restart" from 2-then-1).
+    let first_run = driver_stream(&relay).len();
     client
         .send_live(Message::TelemetryDelta(tlv(3, 1)), FramePriority::P0)
         .expect("delta");
+    client
+        .send_live(Message::WeatherUpdate(tlv(4, 1)), FramePriority::P2)
+        .expect("weather");
+    client.send_reliable(session_event()).await.expect("event");
+    advance(Duration::from_millis(100)).await;
+    assert_eq!(
+        driver_stream(&relay).len(),
+        first_run,
+        "nothing of the new space is written before its schema"
+    );
+    client
+        .send_reliable(schema_negotiate())
+        .await
+        .expect("schema");
     advance(Duration::from_millis(100)).await;
     let stream = driver_stream(&relay);
     assert_eq!(
-        stream.iter().map(|s| (s.0, s.3)).collect::<Vec<_>>(),
-        vec![(1, Some(1)), (2, Some(2)), (1, Some(3))]
+        stream.iter().map(|s| (s.0, s.2, s.3)).collect::<Vec<_>>(),
+        vec![
+            (1, MsgType::SchemaNegotiate, None),
+            (2, MsgType::TelemetryDelta, Some(1)),
+            (3, MsgType::TelemetryDelta, Some(2)),
+            (1, MsgType::SchemaNegotiate, None),
+            (2, MsgType::SessionEvent, None),
+            (3, MsgType::TelemetryDelta, Some(3)),
+            (4, MsgType::WeatherUpdate, Some(4)),
+        ]
     );
     assert_eq!(relay.header_violations(), 0);
     client.shutdown().await;
@@ -345,6 +376,10 @@ async fn stalled_relay_goes_degraded_then_stale_then_reconnects_and_resumes() {
     let (session_id, _) = session_ready(&mut events).await;
     wait_state(&mut status, ConnectionState::Connected).await;
     client
+        .send_reliable(schema_negotiate())
+        .await
+        .expect("schema");
+    client
         .send_live(Message::TelemetryDelta(tlv(1, 1)), FramePriority::P0)
         .expect("delta");
     advance(Duration::from_secs(3)).await;
@@ -409,10 +444,11 @@ async fn stalled_relay_goes_degraded_then_stale_then_reconnects_and_resumes() {
         .send_live(Message::TelemetryDelta(tlv(2, 1)), FramePriority::P0)
         .expect("delta");
     advance(Duration::from_secs(2)).await;
+    // Same space: no new schema is needed, telemetry flows at once and continues the sequence.
     let stream = driver_stream(&relay);
     assert_eq!(
         stream.iter().map(|s| (s.0, s.3)).collect::<Vec<_>>(),
-        vec![(1, Some(1)), (2, Some(2))]
+        vec![(1, None), (2, Some(1)), (3, Some(2))]
     );
     assert_eq!(client.metrics().borrow().reconnects, 1);
     assert_eq!(relay.header_violations(), 0);
@@ -492,6 +528,11 @@ async fn latest_wins_drops_obsolete_frames_under_a_slow_reader_and_never_loses_o
     client.start(session_create()).await.expect("start");
     session_ready(&mut events).await;
     wait_state(&mut status, ConnectionState::Connected).await;
+    client
+        .send_reliable(schema_negotiate())
+        .await
+        .expect("schema");
+    advance(Duration::from_millis(100)).await;
 
     // The relay reads slowly (not at all for a moment): the driver's writer blocks on the full
     // stream while the application keeps producing ~4.4 kB deltas.
@@ -505,7 +546,10 @@ async fn latest_wins_drops_obsolete_frames_under_a_slow_reader_and_never_loses_o
     }
     relay.pause_reading(false);
     advance(Duration::from_secs(2)).await;
-    let stream = driver_stream(&relay);
+    let stream: Vec<_> = driver_stream(&relay)
+        .into_iter()
+        .filter(|s| s.2 != MsgType::SchemaNegotiate)
+        .collect();
     let tags: Vec<u64> = stream.iter().filter_map(|s| s.3).collect();
     let dropped = client.metrics().borrow().dropped_obsolete;
     assert!(dropped > 0, "the slow reader forced latest-wins drops");
@@ -530,7 +574,7 @@ async fn latest_wins_drops_obsolete_frames_under_a_slow_reader_and_never_loses_o
     );
 
     // A snapshot supersedes pending deltas and is never superseded by later ones.
-    let delivered_before = stream.len();
+    let delivered_before = driver_stream(&relay).len();
     relay.pause_reading(true);
     client
         .send_live(Message::TelemetryDelta(tlv(1_000, 1)), FramePriority::P1)
@@ -662,7 +706,7 @@ async fn revoked_refresh_token_is_a_clear_relogin_state_without_retry_loop() {
     // The refused refresh token is gone; the driver session survives for the next login.
     assert_eq!(
         store
-            .load(&ns, CredentialKind::RefreshToken)
+            .load(&ns, CredentialKind::DriverRefreshToken)
             .expect("store"),
         None
     );
@@ -672,7 +716,7 @@ async fn revoked_refresh_token_is_a_clear_relogin_state_without_retry_loop() {
             .expect("store")
             .is_some()
     );
-    assert!(!auth.is_logged_in().expect("store"));
+    assert!(!auth.is_logged_in(ClientRole::Driver).expect("store"));
 
     // Logging in again (explicit user action) and starting again resumes the session.
     login(
@@ -795,6 +839,14 @@ async fn stop_keeps_the_session_and_end_session_forgets_it() {
             .expect("store"),
         None
     );
+    assert_eq!(
+        next_event(&mut events).await,
+        DriverEvent::SessionEnded {
+            session_id,
+            outcome: transport::SessionEndOutcome::Delivered,
+        },
+        "the close was written while connected"
+    );
     // The next start creates a new session.
     client.start(session_create()).await.expect("start");
     let (new_id, kind) = session_ready(&mut events).await;
@@ -833,7 +885,7 @@ async fn stopping_during_auth_never_strands_the_rotated_refresh_token() {
     drop(auth);
     let stored = || {
         store
-            .load(&ns, CredentialKind::RefreshToken)
+            .load(&ns, CredentialKind::DriverRefreshToken)
             .expect("store")
             .expect("refresh token")
     };
@@ -903,7 +955,7 @@ async fn a_login_with_an_account_of_the_other_role_stores_nothing() {
     ));
     assert_eq!(error.to_string(), "this account is not a driver account");
     assert!(store.keys().is_empty(), "nothing was stored");
-    assert!(!auth.is_logged_in().expect("store"));
+    assert!(!auth.is_logged_in(ClientRole::Driver).expect("store"));
 
     // A previous login stays exactly as it was.
     login(
@@ -919,13 +971,13 @@ async fn a_login_with_an_account_of_the_other_role_stores_nothing() {
     let keys = store.keys();
     let ns = auth.namespace().to_owned();
     let before = store
-        .load(&ns, CredentialKind::RefreshToken)
+        .load(&ns, CredentialKind::DriverRefreshToken)
         .expect("store");
     wrong_role().await.expect_err("still the wrong role");
     assert_eq!(store.keys(), keys);
     assert_eq!(
         store
-            .load(&ns, CredentialKind::RefreshToken)
+            .load(&ns, CredentialKind::DriverRefreshToken)
             .expect("store"),
         before
     );
@@ -1009,18 +1061,19 @@ async fn reliable_messages_are_accepted_only_while_streaming_and_never_delivered
     relay.set_down(true);
     relay.disconnect_all();
     wait_state(&mut status, ConnectionState::Reconnecting).await;
+    // (SESSION_EVENTs: SCHEMA_NEGOTIATE has its own latest-wins slot outside the capacity.)
     for _ in 0..4 {
         client
-            .try_send_reliable(schema_negotiate())
+            .try_send_reliable(session_event())
             .expect("queued during the outage");
     }
     assert_eq!(
-        client.try_send_reliable(schema_negotiate()),
+        client.try_send_reliable(session_event()),
         Err(QueueError::Full { capacity: 4 })
     );
     // ... a producer waits for space, and stopping releases it instead of leaving it hanging
     // until some later session drains the queue.
-    let (waited, ()) = tokio::join!(client.send_reliable(schema_negotiate()), async {
+    let (waited, ()) = tokio::join!(client.send_reliable(session_event()), async {
         advance(Duration::from_millis(100)).await;
         client.stop().await.expect("stop");
     });
@@ -1101,7 +1154,7 @@ async fn a_refused_access_token_falls_back_to_the_refresh_token_on_the_same_conn
     wait_state(&mut status, ConnectionState::Connected).await;
     let refresh = || {
         store
-            .load(&ns, CredentialKind::RefreshToken)
+            .load(&ns, CredentialKind::DriverRefreshToken)
             .expect("store")
             .expect("refresh token")
     };
@@ -1217,24 +1270,34 @@ async fn frames_above_the_relay_limit_are_dropped_counted_and_leave_no_sequence_
     client.start(session_create()).await.expect("start");
     session_ready(&mut events).await;
     wait_state(&mut status, ConnectionState::Connected).await;
-    // About 22 kB: above the announced 16 kB.
     client
-        .send_live(Message::TelemetryDelta(tlv(1, 2_000)), FramePriority::P0)
-        .expect("queued");
+        .send_reliable(schema_negotiate())
+        .await
+        .expect("schema");
+    // About 22 kB: above the announced 16 kB. The producer is told at once instead of the frame
+    // vanishing in the writer.
+    let refused = client.send_live(Message::TelemetryDelta(tlv(1, 2_000)), FramePriority::P0);
+    assert!(
+        matches!(
+            refused,
+            Err(QueueError::TooLarge { msg_type: MsgType::TelemetryDelta, len, limit })
+                if len > limit && limit == transport::handshake::MIN_RELAY_PAYLOAD_LIMIT
+        ),
+        "{refused:?}"
+    );
     advance(Duration::from_millis(100)).await;
     client
         .send_live(Message::TelemetryDelta(tlv(2, 2)), FramePriority::P0)
         .expect("queued");
-    let m = wait_metrics(&client, "the oversize drop is counted", |m| {
-        m.oversize_dropped == 1
-    })
-    .await;
+    advance(Duration::from_millis(100)).await;
+    let m = client.metrics().borrow().clone();
+    assert_eq!((m.oversize_dropped, m.unencodable_dropped), (0, 0));
     assert_eq!(m.dropped_obsolete, 0);
     let stream = driver_stream(&relay);
     assert_eq!(
         stream.iter().map(|s| (s.0, s.3)).collect::<Vec<_>>(),
-        vec![(1, Some(2))],
-        "the dropped frame consumed no sequence number"
+        vec![(1, None), (2, Some(2))],
+        "the refused frame consumed no sequence number"
     );
     assert_eq!(status.borrow().state, ConnectionState::Connected);
     assert_eq!(relay.header_violations(), 0);
@@ -1258,10 +1321,14 @@ async fn an_unannounced_payload_limit_means_the_maximum_and_an_unusable_one_is_i
     session_ready(&mut events).await;
     wait_state(&mut status, ConnectionState::Connected).await;
     client
+        .send_reliable(schema_negotiate())
+        .await
+        .expect("schema");
+    client
         .send_live(Message::TelemetryDelta(tlv(1, 2_000)), FramePriority::P0)
         .expect("queued");
     advance(Duration::from_millis(100)).await;
-    assert_eq!(driver_stream(&relay).len(), 1, "0 means not announced");
+    assert_eq!(driver_stream(&relay).len(), 2, "0 means not announced");
     assert_eq!(client.metrics().borrow().oversize_dropped, 0);
     client.shutdown().await;
 
@@ -1361,7 +1428,7 @@ async fn overlapping_access_token_auths_applied_out_of_order_keep_the_login() {
     let ns = auth.namespace().to_owned();
     let stored = || {
         store
-            .load(&ns, CredentialKind::RefreshToken)
+            .load(&ns, CredentialKind::DriverRefreshToken)
             .expect("store")
             .expect("refresh token")
     };
@@ -1432,7 +1499,7 @@ async fn a_lost_access_token_auth_reply_does_not_force_a_relogin() {
     let (store, auth) = logged_in_app(&relay, &config, ClientRole::Driver, DRIVER).await;
     let ns = auth.namespace().to_owned();
     let before = store
-        .load(&ns, CredentialKind::RefreshToken)
+        .load(&ns, CredentialKind::DriverRefreshToken)
         .expect("store")
         .expect("refresh token");
     let (client, _events) = DriverClient::spawn(
@@ -1458,7 +1525,7 @@ async fn a_lost_access_token_auth_reply_does_not_force_a_relogin() {
     advance(Duration::from_millis(100)).await;
     assert_eq!(
         store
-            .load(&ns, CredentialKind::RefreshToken)
+            .load(&ns, CredentialKind::DriverRefreshToken)
             .expect("store")
             .as_ref(),
         Some(&before),
@@ -1480,5 +1547,165 @@ async fn a_lost_access_token_auth_reply_does_not_force_a_relogin() {
         auths(&relay).last(),
         Some(protocol::messages::Auth::RefreshToken { .. })
     ));
+    client.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_schema_gets_through_when_held_events_fill_the_queue_of_a_new_session() {
+    // F11: events queued during an outage before the first binding fill the reliable queue; the
+    // new session holds them until its SCHEMA_NEGOTIATE was written, so the schema must not wait
+    // for space they would free (that was a permanent stall on a connected link).
+    let relay = FakeRelay::new(Environment::Development);
+    let mut config = dev_config(&relay);
+    config.reliable_queue_capacity = 2;
+    let (_store, auth) = logged_in_app(&relay, &config, ClientRole::Driver, DRIVER).await;
+    let (client, mut events) =
+        DriverClient::spawn(config, relay.transport(), auth).expect("valid config");
+    let mut status = client.status();
+    relay.set_down(true);
+    client.start(session_create()).await.expect("start");
+    advance(Duration::from_millis(100)).await;
+    for _ in 0..2 {
+        client
+            .try_send_reliable(session_event())
+            .expect("queued during the outage");
+    }
+    assert!(matches!(
+        client.try_send_reliable(session_event()),
+        Err(QueueError::Full { .. })
+    ));
+    relay.set_down(false);
+    let (_, kind) = session_ready(&mut events).await;
+    assert_eq!(kind, SessionReadyKind::Created);
+    wait_state(&mut status, ConnectionState::Connected).await;
+    tokio::time::timeout(WAIT, client.send_reliable(schema_negotiate()))
+        .await
+        .expect("the schema never waits behind held messages")
+        .expect("accepted");
+    client
+        .send_live(Message::TelemetryDelta(tlv(7, 2)), FramePriority::P0)
+        .expect("queued");
+    advance(Duration::from_millis(200)).await;
+    let stream: Vec<(u64, MsgType)> = driver_stream(&relay)
+        .into_iter()
+        .map(|s| (s.0, s.2))
+        .collect();
+    assert_eq!(
+        stream,
+        vec![
+            (1, MsgType::SchemaNegotiate),
+            (2, MsgType::SessionEvent),
+            (3, MsgType::SessionEvent),
+            (4, MsgType::TelemetryDelta),
+        ]
+    );
+    assert_eq!(relay.header_violations(), 0);
+    client.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_schema_the_new_space_waits_for_that_is_dropped_asks_the_app_for_a_new_one() {
+    // F12: a schema queued under the protocol maximum is dropped by the writer because the relay
+    // announces a smaller limit. The held stream would wait forever: the app is told instead.
+    let relay = FakeRelay::new(Environment::Development);
+    let limit = u32::try_from(transport::handshake::MIN_RELAY_PAYLOAD_LIMIT).expect("fits");
+    relay.set_max_payload_bytes(limit);
+    let config = dev_config(&relay);
+    let (_store, auth) = logged_in_app(&relay, &config, ClientRole::Driver, DRIVER).await;
+    let (client, mut events) =
+        DriverClient::spawn(config, relay.transport(), auth).expect("valid config");
+    let mut status = client.status();
+    relay.set_down(true);
+    client.start(session_create()).await.expect("start");
+    advance(Duration::from_millis(100)).await;
+    // Accepted: no connection announced a smaller limit yet.
+    client
+        .try_send_reliable(big_schema(
+            transport::handshake::MIN_RELAY_PAYLOAD_LIMIT + 1_000,
+        ))
+        .expect("queued during the outage");
+    relay.set_down(false);
+    session_ready(&mut events).await;
+    wait_state(&mut status, ConnectionState::Connected).await;
+    client
+        .send_live(Message::TelemetryDelta(tlv(1, 2)), FramePriority::P0)
+        .expect("queued");
+    match next_event(&mut events).await {
+        DriverEvent::SnapshotNeeded {
+            trigger: SnapshotTrigger::SchemaDropped,
+        } => {}
+        other => panic!("expected SnapshotNeeded(SchemaDropped), got {other:?}"),
+    }
+    let m = wait_metrics(&client, "the drop is counted", |m| m.oversize_dropped == 1).await;
+    assert_eq!(m.unencodable_dropped, 0);
+    assert!(driver_stream(&relay).is_empty(), "telemetry stays held");
+    // The app sends a fitting schema: the stream flows, schema first.
+    client
+        .send_reliable(schema_negotiate())
+        .await
+        .expect("schema");
+    client
+        .send_live(Message::TelemetryDelta(tlv(2, 2)), FramePriority::P0)
+        .expect("queued");
+    advance(Duration::from_millis(200)).await;
+    let stream: Vec<(u64, MsgType, Option<u64>)> = driver_stream(&relay)
+        .into_iter()
+        .map(|s| (s.0, s.2, s.3))
+        .collect();
+    assert_eq!(
+        stream,
+        vec![
+            (1, MsgType::SchemaNegotiate, None),
+            (2, MsgType::TelemetryDelta, Some(2))
+        ]
+    );
+    client.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn metrics_during_an_outage_show_no_link_rates_and_current_counters() {
+    // F6: rates of the lost connection must not look current while reconnecting, and the
+    // snapshot published at each backoff carries the current counters.
+    let relay = FakeRelay::new(Environment::Development);
+    let config = dev_config(&relay);
+    let (_store, auth) = logged_in_app(&relay, &config, ClientRole::Driver, DRIVER).await;
+    let (client, mut events) =
+        DriverClient::spawn(config, relay.transport(), auth).expect("valid config");
+    let mut status = client.status();
+    client.start(session_create()).await.expect("start");
+    session_ready(&mut events).await;
+    wait_state(&mut status, ConnectionState::Connected).await;
+    client
+        .send_reliable(schema_negotiate())
+        .await
+        .expect("schema");
+    for tag in 0..40 {
+        client
+            .send_live(Message::TelemetryDelta(tlv(tag, 2)), FramePriority::P0)
+            .expect("queued");
+        advance(Duration::from_millis(100)).await;
+    }
+    wait_metrics(&client, "an outbound rate is measured", |m| {
+        m.frames_out_per_s.is_some_and(|r| r > 0.0)
+    })
+    .await;
+    relay.set_down(true);
+    relay.disconnect_all();
+    wait_state(&mut status, ConnectionState::Reconnecting).await;
+    let m = wait_metrics(&client, "the rates are cleared", |m| {
+        m.frames_out_per_s.is_none() && m.connected_for.is_none()
+    })
+    .await;
+    assert!(m.frames_out_total > 0, "totals are kept");
+    // Queued during the outage: the next failed attempt's backoff publishes the new depth.
+    client
+        .try_send_reliable(session_event())
+        .expect("queued during the outage");
+    let m = wait_metrics(&client, "the backoff publishes the current depth", |m| {
+        m.send_queue_depth == 1
+    })
+    .await;
+    assert_eq!(m.frames_out_per_s, None);
+    assert_eq!(m.bytes_in_per_s, None);
     client.shutdown().await;
 }

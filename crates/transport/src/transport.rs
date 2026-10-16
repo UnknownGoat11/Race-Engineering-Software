@@ -37,6 +37,29 @@ pub const DEFAULT_DNS_TIMEOUT: Duration = Duration::from_secs(5);
 pub const DEFAULT_TCP_TIMEOUT: Duration = Duration::from_secs(5);
 /// Default TLS handshake timeout.
 pub const DEFAULT_TLS_TIMEOUT: Duration = Duration::from_secs(10);
+/// Delay between the starts of two TCP connection attempts (RFC 8305 §5 recommends 250 ms).
+pub const CONNECTION_ATTEMPT_DELAY: Duration = Duration::from_millis(250);
+
+/// Orders `addrs` for connection attempts (RFC 8305 §4): the resolver's order within each address
+/// family, alternating families, starting with the family of the resolver's first address.
+fn interleave_families(addrs: &[SocketAddr]) -> Vec<SocketAddr> {
+    let Some(first) = addrs.first() else {
+        return Vec::new();
+    };
+    let (mut preferred, mut other): (Vec<_>, Vec<_>) = addrs
+        .iter()
+        .copied()
+        .partition(|a| a.is_ipv6() == first.is_ipv6());
+    preferred.reverse();
+    other.reverse();
+    let mut ordered = Vec::with_capacity(addrs.len());
+    loop {
+        match (preferred.pop(), other.pop()) {
+            (None, None) => return ordered,
+            (a, b) => ordered.extend(a.into_iter().chain(b)),
+        }
+    }
+}
 
 /// Byte counters of one connection, updated by its reader and writer (plaintext frame bytes, not
 /// TLS record overhead).
@@ -293,28 +316,69 @@ impl TcpTlsTelemetryTransport {
         Ok(addrs)
     }
 
-    /// Stage 2: connects to the first reachable address (in resolver order).
+    /// Stage 2: connects to the first reachable address, Happy-Eyeballs style (RFC 8305 §5): the
+    /// addresses are tried in resolver order with the families interleaved, a new attempt starts
+    /// every [`CONNECTION_ATTEMPT_DELAY`] (or as soon as one fails) while earlier ones continue,
+    /// and the first established connection wins (the others are dropped). A blackholed address
+    /// family therefore costs at most the attempt delay instead of a full TCP timeout. Each
+    /// attempt is bounded by the TCP timeout.
     pub async fn connect_tcp(&self, addrs: &[SocketAddr]) -> Result<TcpStream, ConnectError> {
+        let tcp_timeout = self.timeouts.tcp;
+        let mut pending = interleave_families(addrs).into_iter().peekable();
+        // Dropping the set (on success or error) aborts the attempts still running.
+        let mut attempts = tokio::task::JoinSet::new();
         let mut last_error = None;
-        for &addr in addrs {
-            match timeout(self.timeouts.tcp, TcpStream::connect(addr)).await {
-                Ok(Ok(stream)) => {
-                    // Frames are small and latency-critical: never wait for Nagle coalescing.
-                    if let Err(e) = stream.set_nodelay(true) {
-                        tracing::debug!(component = "transport", error = %e, "TCP_NODELAY not set");
+        let start = |attempts: &mut tokio::task::JoinSet<_>, addr: SocketAddr| {
+            attempts
+                .spawn(async move { (addr, timeout(tcp_timeout, TcpStream::connect(addr)).await) });
+        };
+        loop {
+            if attempts.is_empty() {
+                match pending.next() {
+                    Some(addr) => start(&mut attempts, addr),
+                    None => break,
+                }
+            }
+            let more = pending.peek().is_some();
+            tokio::select! {
+                Some(joined) = attempts.join_next() => {
+                    let failure = match joined {
+                        Ok((_, Ok(Ok(stream)))) => {
+                            // Frames are small and latency-critical: never wait for Nagle
+                            // coalescing.
+                            if let Err(e) = stream.set_nodelay(true) {
+                                tracing::debug!(component = "transport", error = %e, "TCP_NODELAY not set");
+                            }
+                            return Ok(stream);
+                        }
+                        Ok((addr, Ok(Err(source)))) => {
+                            tracing::debug!(component = "transport", %addr, error = %source, "TCP connect failed");
+                            ConnectError::Tcp { addr, source }
+                        }
+                        Ok((addr, Err(_))) => {
+                            tracing::debug!(component = "transport", %addr, "TCP connect timed out");
+                            ConnectError::Timeout {
+                                stage: ConnectStage::Tcp,
+                                timeout: tcp_timeout,
+                            }
+                        }
+                        Err(e) => {
+                            // The attempt task panicked or was cancelled: the address stays
+                            // untried; the others decide.
+                            tracing::warn!(component = "transport", error = %e, "TCP connect attempt aborted");
+                            continue;
+                        }
+                    };
+                    last_error = Some(failure);
+                    // A failure starts the next attempt at once (RFC 8305 §5).
+                    if let Some(addr) = pending.next() {
+                        start(&mut attempts, addr);
                     }
-                    return Ok(stream);
                 }
-                Ok(Err(source)) => {
-                    tracing::debug!(component = "transport", %addr, error = %source, "TCP connect failed");
-                    last_error = Some(ConnectError::Tcp { addr, source });
-                }
-                Err(_) => {
-                    tracing::debug!(component = "transport", %addr, "TCP connect timed out");
-                    last_error = Some(ConnectError::Timeout {
-                        stage: ConnectStage::Tcp,
-                        timeout: self.timeouts.tcp,
-                    });
+                () = tokio::time::sleep(CONNECTION_ATTEMPT_DELAY), if more => {
+                    if let Some(addr) = pending.next() {
+                        start(&mut attempts, addr);
+                    }
                 }
             }
         }
@@ -403,6 +467,65 @@ mod tests {
             &vec![seq as u8; len],
         )
         .expect("frame")
+    }
+
+    #[test]
+    fn address_families_are_interleaved_starting_with_the_resolvers_first() {
+        let v6a: SocketAddr = "[2001:db8::1]:443".parse().expect("addr");
+        let v6b: SocketAddr = "[2001:db8::2]:443".parse().expect("addr");
+        let v6c: SocketAddr = "[2001:db8::3]:443".parse().expect("addr");
+        let v4a: SocketAddr = "192.0.2.1:443".parse().expect("addr");
+        let v4b: SocketAddr = "192.0.2.2:443".parse().expect("addr");
+        assert_eq!(
+            interleave_families(&[v6a, v6b, v6c, v4a, v4b]),
+            vec![v6a, v4a, v6b, v4b, v6c]
+        );
+        assert_eq!(interleave_families(&[v4a, v6a, v4b]), vec![v4a, v6a, v4b]);
+        assert_eq!(interleave_families(&[v4a, v4b]), vec![v4a, v4b]);
+        assert!(interleave_families(&[]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_first_address_does_not_cost_the_tcp_timeout() {
+        // F10: the first address never answers (TEST-NET-1 is not routed; depending on the host it
+        // hangs or fails at once). The live second address must win long before the TCP timeout.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let live = listener.local_addr().expect("addr");
+        let dead: SocketAddr = "192.0.2.1:9".parse().expect("addr");
+        let transport = TcpTlsTelemetryTransport::new();
+        let started = std::time::Instant::now();
+        let stream = transport
+            .connect_tcp(&[dead, live])
+            .await
+            .expect("connected via the second address");
+        assert_eq!(stream.peer_addr().expect("peer"), live);
+        assert!(
+            started.elapsed() < DEFAULT_TCP_TIMEOUT / 2,
+            "took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn every_address_failing_reports_the_last_error() {
+        // A closed port on loopback is refused at once.
+        let closed = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            l.local_addr().expect("addr")
+        };
+        let transport = TcpTlsTelemetryTransport::new();
+        assert!(matches!(
+            transport.connect_tcp(&[closed]).await,
+            Err(ConnectError::Tcp { addr, .. }) if addr == closed
+        ));
+        assert!(matches!(
+            transport.connect_tcp(&[]).await,
+            Err(ConnectError::NoAddress { .. })
+        ));
     }
 
     #[tokio::test]

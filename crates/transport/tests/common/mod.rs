@@ -329,8 +329,8 @@ struct State {
     families: HashMap<u64, VecDeque<String>>,
     revoked_families: HashSet<u64>,
     expired_refresh: HashSet<String>,
-    /// Access token → (username, login family).
-    access: HashMap<String, (String, u64)>,
+    /// Access token → (username, login family, access expiry ns).
+    access: HashMap<String, (String, u64, u64)>,
     sessions: BTreeMap<u64, Session>,
     joins: HashMap<String, u32>,
     next: u64,
@@ -437,6 +437,8 @@ struct Inner {
     /// A relay bug: SESSION_JOIN is answered with a SESSION_INFO carrying a driver token.
     join_reply_without_ticket: AtomicBool,
     join_limit: Mutex<Option<u32>>,
+    /// While set, engineer SESSION_JOIN / SESSION_RESUME are refused with this (non-fatal) code.
+    refuse_engineer_binds: Mutex<Option<ErrorCode>>,
     state: Mutex<State>,
     conns: Mutex<BTreeMap<u64, Arc<ConnCtl>>>,
     log: Mutex<Vec<Received>>,
@@ -510,6 +512,7 @@ impl FakeRelay {
                 ticket_grace: Mutex::new(Some(PREVIOUS_TICKET_GRACE)),
                 join_reply_without_ticket: AtomicBool::new(false),
                 join_limit: Mutex::new(None),
+                refuse_engineer_binds: Mutex::new(None),
                 state: Mutex::new(state),
                 conns: Mutex::new(BTreeMap::new()),
                 log: Mutex::new(Vec::new()),
@@ -669,6 +672,11 @@ impl FakeRelay {
         *self.inner.ticket_grace.lock() = grace;
     }
 
+    /// While `Some`, engineer SESSION_JOIN / SESSION_RESUME are refused with that code.
+    pub fn refuse_engineer_binds(&self, code: Option<ErrorCode>) {
+        *self.inner.refuse_engineer_binds.lock() = code;
+    }
+
     /// Simulates a relay bug: joins are answered with a SESSION_INFO without an engineer ticket
     /// (the slot is still taken).
     pub fn set_join_reply_without_ticket(&self, broken: bool) {
@@ -790,6 +798,24 @@ impl FakeRelay {
         };
         self.inner.flush(out);
         token
+    }
+
+    /// Sends `frame` to every engineer connection holding a slot.
+    pub fn send_to_engineers(&self, frame: &Frame) {
+        let ids: Vec<u64> = self
+            .inner
+            .state
+            .lock()
+            .sessions
+            .values()
+            .flat_map(|s| s.engineers.values().filter_map(|slot| slot.conn))
+            .collect();
+        let conns = self.inner.conns.lock();
+        for id in ids {
+            if let Some(ctl) = conns.get(&id) {
+                ctl.send(frame.clone());
+            }
+        }
     }
 
     /// Sends `frame` to every driver connection bound to a session.
@@ -1128,6 +1154,13 @@ impl Inner {
                 now,
                 out,
             ),
+            Message::SessionResume(SessionResume::Engineer { .. }) | Message::SessionJoin(_)
+                if self.refuse_engineer_binds.lock().is_some() =>
+            {
+                if let Some(code) = *self.refuse_engineer_binds.lock() {
+                    out.push(me, self.error(code, false));
+                }
+            }
             Message::SessionResume(SessionResume::Engineer { session_id, ticket }) => {
                 self.resume_engineer(conn, session_id, &ticket, now, out);
             }
@@ -1168,15 +1201,17 @@ impl Inner {
 
     /// AUTH with the real relay's token rules (see the module docs). A password or refresh-token
     /// AUTH_OK carries a new refresh token of the login's family; an access-token AUTH_OK carries
-    /// none (empty token, expiry 0) and changes no refresh token.
+    /// none (empty token, expiry 0), changes no refresh token and keeps the presented access
+    /// token's expiry.
     fn authenticate(&self, auth: &Auth, now: u64) -> Result<AuthOk, ErrorCode> {
         let mut guard = self.state.lock();
         let st = &mut *guard;
-        let (username, family, issue_refresh) = match auth {
+        let full_access_expiry = now + duration_ns(ACCESS_TTL);
+        let (username, family, issue_refresh, access_expires_at_ns) = match auth {
             Auth::Password { username, password } => match st.accounts.get(username) {
                 Some(a) if a.password == password.expose() => {
                     let family = st.next();
-                    (username.clone(), family, true)
+                    (username.clone(), family, true, full_access_expiry)
                 }
                 _ => return Err(ErrorCode::AuthFailed),
             },
@@ -1204,12 +1239,14 @@ impl Inner {
                         return Err(ErrorCode::AuthFailed);
                     }
                 }
-                (username, family, true)
+                (username, family, true, full_access_expiry)
             }
             // No refresh token is issued and none is touched: the client keeps the one it holds.
+            // The new access token keeps the presented one's expiry: it never renews itself.
             Auth::AccessToken { token } => match st.access.get(token.expose()) {
-                Some((u, family)) if !st.revoked_families.contains(family) => {
-                    (u.clone(), *family, false)
+                Some((_, _, exp)) if *exp <= now => return Err(ErrorCode::TokenExpired),
+                Some((u, family, exp)) if !st.revoked_families.contains(family) => {
+                    (u.clone(), *family, false, *exp)
                 }
                 _ => return Err(ErrorCode::AuthFailed),
             },
@@ -1223,7 +1260,10 @@ impl Inner {
             (String::new(), 0)
         };
         let access = format!("access-{}", st.next());
-        st.access.insert(access.clone(), (username.clone(), family));
+        st.access.insert(
+            access.clone(),
+            (username.clone(), family, access_expires_at_ns),
+        );
         let account = st
             .accounts
             .get(&username)
@@ -1236,7 +1276,7 @@ impl Inner {
             role: account.role,
             access_token: Secret::new(access),
             refresh_token: Secret::new(refresh),
-            access_expires_at_ns: now + duration_ns(ACCESS_TTL),
+            access_expires_at_ns,
             refresh_expires_at_ns,
         })
     }
@@ -1564,7 +1604,8 @@ impl Inner {
     }
 
     fn end_session(&self, conn: &mut ConnState, out: &mut Outbox) {
-        let Some(sid) = conn.bound else {
+        // Like the relay: the connection stays open but is no longer bound.
+        let Some(sid) = conn.bound.take() else {
             return;
         };
         let Some(s) = self.state.lock().sessions.remove(&sid) else {
@@ -1870,6 +1911,31 @@ pub fn schema_negotiate() -> Message {
     })
 }
 
+/// SESSION_EVENT: a completed lap (synthetic test data).
+#[allow(dead_code)] // not every test binary uses it
+pub fn session_event() -> Message {
+    use protocol::messages::{CaptureTime, SessionEventMsg};
+    use telemetry_model::events::{EventRecord, EventTime, SessionEvent};
+    Message::SessionEvent(SessionEventMsg {
+        capture: CaptureTime {
+            mono_ns: 11,
+            relay_ns_est: None,
+        },
+        record: EventRecord::new(
+            EventTime {
+                source_et_s: Some(12.5),
+                mono_ns: 11,
+            },
+            Some(3),
+            SessionEvent::LapCompleted {
+                lap: 3,
+                time_s: Some(98.765),
+                valid: true,
+            },
+        ),
+    })
+}
+
 /// A valid TLV block (PROTOCOL.md §4) whose `capture_mono_ns` is `tag`, with `records` f64
 /// records of a channel id receivers skip.
 pub fn tlv(tag: u64, records: u16) -> TelemetryPayload {
@@ -1999,6 +2065,18 @@ pub fn relay_frame(message: &Message, session_id: u64, sequence: u64) -> Frame {
         FrameMeta::control(session_id, 0)
     };
     message.to_frame(&meta).expect("injected frame")
+}
+
+/// `frame` with its message type id rewritten to `id` (a type of a newer minor), re-sealed.
+pub fn with_raw_type(frame: &Frame, id: u8) -> Frame {
+    /// Offset of the message type id in the frame header (PROTOCOL.md §1).
+    const MSG_TYPE_OFFSET: usize = 4;
+    let mut raw = frame.as_bytes().to_vec();
+    raw[MSG_TYPE_OFFSET] = id;
+    let body = raw.len() - protocol::frame::CRC_BYTES;
+    let crc = crc32c::crc32c(&raw[..body]);
+    raw[body..].copy_from_slice(&crc.to_le_bytes());
+    Frame::decode(Bytes::from(raw)).expect("valid framing")
 }
 
 /// Shuts a reader/writer pair down (helper for raw-transport tests).

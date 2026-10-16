@@ -31,8 +31,15 @@ const KEY_SEPARATOR: char = '#';
 /// The kinds of credentials the transport stores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CredentialKind {
-    /// The account's rotating refresh token.
+    /// Refresh token stored before tokens were kept per role (role unknown). Read only as a
+    /// fallback; the first successful AUTH with it moves it to the slot of its account's role.
     RefreshToken,
+    /// The rotating refresh token of the driver account. Relay accounts have one role, so the
+    /// driver and the engineer login are kept apart: switching modes never presents the other
+    /// role's token (D-020: log in once per mode).
+    DriverRefreshToken,
+    /// The rotating refresh token of the engineer account.
+    EngineerRefreshToken,
     /// The driver's session id and resume token ([`StoredDriverSession`]).
     DriverSession,
 }
@@ -42,7 +49,17 @@ impl CredentialKind {
     pub const fn key(self) -> &'static str {
         match self {
             CredentialKind::RefreshToken => "refresh_token",
+            CredentialKind::DriverRefreshToken => "driver_refresh_token",
+            CredentialKind::EngineerRefreshToken => "engineer_refresh_token",
             CredentialKind::DriverSession => "driver_session",
+        }
+    }
+
+    /// The refresh-token slot of `role`.
+    pub const fn refresh_token(role: protocol::messages::ClientRole) -> Self {
+        match role {
+            protocol::messages::ClientRole::Driver => CredentialKind::DriverRefreshToken,
+            protocol::messages::ClientRole::Engineer => CredentialKind::EngineerRefreshToken,
         }
     }
 }

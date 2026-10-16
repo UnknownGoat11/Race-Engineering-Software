@@ -51,13 +51,13 @@ pub use credentials::{
     CredentialError, CredentialKind, CredentialStore, KeyringCredentialStore, MemoryCredentialStore,
 };
 pub use driver::{
-    ClientClosed, DriverClient, DriverEvent, SessionReadyKind, SnapshotTrigger, code_expires_in,
-    display_connect_code,
+    ClientClosed, DriverClient, DriverEvent, SessionEndOutcome, SessionReadyKind, SnapshotTrigger,
+    code_expires_in, display_connect_code,
 };
 pub use endpoint::{EndpointError, Environment, ExtraCa, RelayEndpoint};
 pub use engineer::{
     EngineerClient, EngineerError, EngineerEvent, EngineerPhase, IdentityCard, InboundFrame,
-    JoinError,
+    JoinError, StreamGap,
 };
 pub use error::{ConnectError, ConnectStage, TlsConfigError, TransportError};
 pub use handshake::HandshakeError;
