@@ -113,6 +113,7 @@ dependencies = [
  "lmu-normalizer",
  "lmu-reader",
  "parking_lot",
+ "postcard",
  "protocol",
  "race-engines",
  "recorder",

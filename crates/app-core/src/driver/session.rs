@@ -492,8 +492,16 @@ impl DriverSessionMachine {
                     }
                 }
 
-                if id_complete && self.stage == DriverSessionStage::TelemetryAvailable {
-                    self.stage = DriverSessionStage::SessionReady;
+                if id_complete
+                    && (self.stage == DriverSessionStage::TelemetryAvailable
+                        || self.stage == DriverSessionStage::Stalled
+                        || self.stage == DriverSessionStage::Connecting)
+                {
+                    if self.stage != DriverSessionStage::Streaming {
+                        self.stage = DriverSessionStage::SessionReady;
+                    }
+                } else if !id_complete && self.stage == DriverSessionStage::Stalled {
+                    self.stage = DriverSessionStage::TelemetryAvailable;
                 }
 
                 // 4. Auto-stream check
