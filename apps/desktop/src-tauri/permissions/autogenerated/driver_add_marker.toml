@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-driver-add-marker"
+description = "Enables the driver_add_marker command without any pre-configured scope."
+commands.allow = ["driver_add_marker"]
+
+[[permission]]
+identifier = "deny-driver-add-marker"
+description = "Denies the driver_add_marker command without any pre-configured scope."
+commands.deny = ["driver_add_marker"]

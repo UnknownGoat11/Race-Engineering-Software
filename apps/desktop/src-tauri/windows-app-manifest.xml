@@ -1,0 +1,17 @@
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <!-- Same content as tauri-build's default manifest. Embedded by the linker (build.rs) instead of the resource
+       file so that test executables get it too: tauri-plugin-dialog (rfd) imports TaskDialogIndirect, which only
+       exists in Common Controls v6. Without this, test binaries fail with STATUS_ENTRYPOINT_NOT_FOUND. -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity
+        type="win32"
+        name="Microsoft.Windows.Common-Controls"
+        version="6.0.0.0"
+        processorArchitecture="*"
+        publicKeyToken="6595b64144ccf1df"
+        language="*"
+      />
+    </dependentAssembly>
+  </dependency>
+</assembly>

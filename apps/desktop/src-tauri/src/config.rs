@@ -95,6 +95,15 @@ impl Environment {
             Environment::Production => "production",
         }
     }
+
+    /// The transport's view of this environment (the relay must announce the same one).
+    pub const fn to_transport(self) -> transport::endpoint::Environment {
+        match self {
+            Environment::Development => transport::endpoint::Environment::Development,
+            Environment::Staging => transport::endpoint::Environment::Staging,
+            Environment::Production => transport::endpoint::Environment::Production,
+        }
+    }
 }
 
 impl fmt::Display for Environment {
@@ -122,6 +131,9 @@ pub struct AppConfig {
     pub telemetry: TelemetryConfig,
     pub fuel: FuelConfig,
     pub ui: UiConfig,
+    pub driver: DriverConfig,
+    pub engines: EnginesConfig,
+    pub window: WindowConfig,
 }
 
 impl Default for AppConfig {
@@ -133,6 +145,9 @@ impl Default for AppConfig {
             telemetry: TelemetryConfig::default(),
             fuel: FuelConfig::default(),
             ui: UiConfig::default(),
+            driver: DriverConfig::default(),
+            engines: EnginesConfig::default(),
+            window: WindowConfig::default(),
         }
     }
 }
@@ -238,6 +253,134 @@ impl Default for UiConfig {
             scale: DEFAULT_UI_SCALE,
             max_refresh_hz: DEFAULT_UI_MAX_REFRESH_HZ,
         }
+    }
+}
+
+/// Driver-mode behaviour.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DriverConfig {
+    /// Start streaming automatically once LMU telemetry is available and the user is logged in.
+    /// Off by default (owner decision Q7); recording runs regardless (Q9).
+    pub auto_stream: bool,
+}
+
+/// Race-engine options.
+///
+/// Persisted only: the running `EngineHub` still uses its built-in defaults (`EngineHubConfig::default()`),
+/// so these values are not yet applied (tracked in DEFERRED). Tyre and brake thresholds deliberately have no
+/// field here: `race-engines` has no universal default for them (engineer-defined `AlertRule`s).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EnginesConfig {
+    /// Evaluate the default alert rules (fuel/energy reserve, stream age, packet loss, latency).
+    pub default_alerts_enabled: bool,
+}
+
+impl Default for EnginesConfig {
+    fn default() -> Self {
+        Self {
+            default_alerts_enabled: true,
+        }
+    }
+}
+
+/// Main-window geometry, in physical pixels, saved when the window closes and restored at start-up.
+/// All fields are optional: `None` keeps the default from `tauri.conf.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowConfig {
+    /// Outer position of the top-left corner.
+    pub x: Option<i32>,
+    pub y: Option<i32>,
+    /// Inner (client-area) size.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub maximized: bool,
+}
+
+pub const WINDOW_MIN_WIDTH: u32 = 400;
+pub const WINDOW_MIN_HEIGHT: u32 = 300;
+/// Larger than any real display arrangement; anything beyond is a corrupt value.
+pub const WINDOW_MAX_EXTENT: u32 = 32_768;
+
+/// Why the persisted configuration cannot be turned into [`app_core::settings::CoreSettings`].
+#[derive(Debug, thiserror::Error)]
+pub enum CoreSettingsError {
+    #[error("could not read the extra CA file {}: {source}", .path.display())]
+    ExtraCaUnreadable {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+}
+
+impl NetworkConfig {
+    /// The relay address in the form `app_core` expects (`host:port`, `[ipv6]:port`), or `None` if no relay
+    /// host is configured.
+    pub fn relay_address(&self) -> Option<String> {
+        let host = self.relay_host.trim();
+        if host.is_empty() {
+            return None;
+        }
+        Some(match host.parse::<IpAddr>() {
+            Ok(IpAddr::V6(_)) => format!("[{host}]:{}", self.relay_port),
+            _ => format!("{host}:{}", self.relay_port),
+        })
+    }
+}
+
+impl AppConfig {
+    /// The headless `app-core` settings for this configuration.
+    ///
+    /// `default_recording_dir` is used as-is when `telemetry.recording_dir` is unset. The extra CA file is read
+    /// only in development builds (see [`NetworkConfig::trusted_extra_ca_file`]); an unreadable file is an
+    /// error, never silently ignored.
+    pub fn to_core_settings(
+        &self,
+        default_recording_dir: &Path,
+    ) -> Result<app_core::settings::CoreSettings, CoreSettingsError> {
+        let mode = match self.application.mode {
+            Some(Mode::Engineer) => app_core::bridge::status::AppMode::Engineer,
+            Some(Mode::Driver) | None => app_core::bridge::status::AppMode::Driver,
+        };
+
+        let extra_ca_pem = match self
+            .network
+            .trusted_extra_ca_file(self.application.environment)
+        {
+            Some(path) => Some(std::fs::read(path).map_err(|source| {
+                CoreSettingsError::ExtraCaUnreadable {
+                    path: path.to_path_buf(),
+                    source,
+                }
+            })?),
+            None => None,
+        };
+
+        let recording_dir = self
+            .telemetry
+            .recording_dir
+            .clone()
+            .unwrap_or_else(|| default_recording_dir.to_path_buf());
+
+        Ok(app_core::settings::CoreSettings {
+            mode,
+            driver: app_core::settings::DriverSettings {
+                auto_stream: self.driver.auto_stream,
+                recording_enabled: self.telemetry.recording_enabled,
+                recording_dir,
+            },
+            network: app_core::settings::NetworkSettings {
+                relay_url: self.network.relay_address(),
+                connect_timeout_ms: self.network.connect_timeout_ms,
+                extra_ca_pem,
+            },
+            ui: app_core::settings::UiSettings {
+                max_refresh_hz: self.ui.max_refresh_hz,
+                scale: self.ui.scale,
+            },
+        })
     }
 }
 
@@ -404,6 +547,32 @@ impl AppConfig {
             self.ui.max_refresh_hz,
             UI_MAX_REFRESH_HZ_RANGE,
         );
+
+        for (field, value) in [
+            ("window.width", self.window.width),
+            ("window.height", self.window.height),
+        ] {
+            let min = if field == "window.width" {
+                WINDOW_MIN_WIDTH
+            } else {
+                WINDOW_MIN_HEIGHT
+            };
+            if let Some(v) = value {
+                check_u32_range(&mut errors, field, v, (min, WINDOW_MAX_EXTENT));
+            }
+        }
+        // The extent bound fits in i32, so the cast cannot wrap.
+        let max_pos = WINDOW_MAX_EXTENT as i32;
+        for (field, value) in [("window.x", self.window.x), ("window.y", self.window.y)] {
+            if let Some(v) = value
+                && !(-max_pos..=max_pos).contains(&v)
+            {
+                errors.push(FieldError::new(
+                    field,
+                    format!("must be between -{max_pos} and {max_pos} (got {v})"),
+                ));
+            }
+        }
 
         if errors.is_empty() {
             Ok(())
@@ -878,9 +1047,169 @@ mod tests {
                 scale: 1.25,
                 max_refresh_hz: 30,
             },
+            driver: DriverConfig { auto_stream: true },
+            engines: EnginesConfig {
+                default_alerts_enabled: false,
+            },
+            window: WindowConfig {
+                x: Some(-100),
+                y: Some(200),
+                width: Some(1920),
+                height: Some(1080),
+                maximized: true,
+            },
         };
         let text = serde_json::to_string_pretty(&config).expect("serialize");
         assert_eq!(parse_config(&text), Ok(config));
+    }
+
+    // --- Lane H sections (driver / engines / window) ---------------------------------------------------------
+
+    #[test]
+    fn schema_1_file_without_new_sections_loads_with_defaults() {
+        // A config written before the driver/engines/window sections existed: still schema 1 (no migration).
+        let config = parse_config(
+            r#"{ "schema_version": 1, "application": { "mode": "driver" }, "ui": { "scale": 1.5 } }"#,
+        )
+        .expect("old schema-1 file must load");
+        assert_eq!(config.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(config.ui.scale, 1.5);
+        assert_eq!(config.driver, DriverConfig::default());
+        assert!(!config.driver.auto_stream, "auto-stream defaults OFF (Q7)");
+        assert!(
+            config.telemetry.recording_enabled,
+            "recording defaults ON (Q9)"
+        );
+        assert_eq!(config.engines, EnginesConfig::default());
+        assert_eq!(config.window, WindowConfig::default());
+    }
+
+    #[test]
+    fn partial_new_sections_fill_missing_fields_and_reject_unknown_ones() {
+        let config =
+            parse_config(r#"{ "schema_version": 1, "driver": {}, "window": { "width": 1280 } }"#)
+                .expect("partial sections");
+        assert_eq!(config.window.width, Some(1280));
+        assert_eq!(config.window.height, None);
+
+        let rejected =
+            parse_config(r#"{ "schema_version": 1, "engines": { "tyre_wear_alert_pct": 15 } }"#)
+                .expect_err("invented fields are rejected");
+        assert_eq!(rejected.kind, ConfigIssueKind::Invalid);
+    }
+
+    #[test]
+    fn window_geometry_is_validated() {
+        let mut config = AppConfig::defaults_for(Environment::Development);
+        config.window.width = Some(WINDOW_MIN_WIDTH - 1);
+        config.window.height = Some(WINDOW_MAX_EXTENT + 1);
+        config.window.x = Some(-(WINDOW_MAX_EXTENT as i32) - 1);
+        let errors = config.validate().expect_err("invalid geometry");
+        let fields: Vec<&str> = errors.iter().map(|e| e.field.as_str()).collect();
+        assert_eq!(fields, vec!["window.width", "window.height", "window.x"]);
+    }
+
+    #[test]
+    fn core_settings_map_every_field() {
+        let mut config = AppConfig::defaults_for(Environment::Production);
+        config.application.mode = Some(Mode::Engineer);
+        config.network.relay_host = "relay.example.com".to_owned();
+        config.network.relay_port = 8443;
+        config.network.connect_timeout_ms = 2_000;
+        config.driver.auto_stream = true;
+        config.telemetry.recording_enabled = false;
+        config.ui.max_refresh_hz = 30;
+        config.ui.scale = 1.25;
+        let default_dir = absolute_path("data").join("recordings");
+
+        let core = config
+            .to_core_settings(&default_dir)
+            .expect("core settings");
+        assert_eq!(core.mode, app_core::bridge::status::AppMode::Engineer);
+        assert_eq!(
+            core.network.relay_url.as_deref(),
+            Some("relay.example.com:8443")
+        );
+        assert_eq!(core.network.connect_timeout_ms, 2_000);
+        assert_eq!(core.network.extra_ca_pem, None);
+        assert!(core.driver.auto_stream);
+        assert!(!core.driver.recording_enabled);
+        assert_eq!(
+            core.driver.recording_dir, default_dir,
+            "default dir used as-is"
+        );
+        assert_eq!(core.ui.max_refresh_hz, 30);
+        assert_eq!(core.ui.scale, 1.25);
+        assert_eq!(core.validate(), Ok(()));
+
+        config.telemetry.recording_dir = Some(absolute_path("custom"));
+        let core = config
+            .to_core_settings(&default_dir)
+            .expect("core settings");
+        assert_eq!(core.driver.recording_dir, absolute_path("custom"));
+
+        config.application.mode = None;
+        let core = config
+            .to_core_settings(&default_dir)
+            .expect("core settings");
+        assert_eq!(core.mode, app_core::bridge::status::AppMode::Driver);
+    }
+
+    #[test]
+    fn relay_address_handles_unset_ipv4_ipv6_and_names() {
+        let mut network = NetworkConfig::default();
+        assert_eq!(network.relay_address(), None);
+        network.relay_host = "10.0.0.5".to_owned();
+        assert_eq!(network.relay_address().as_deref(), Some("10.0.0.5:443"));
+        network.relay_host = "::1".to_owned();
+        network.relay_port = 9000;
+        assert_eq!(network.relay_address().as_deref(), Some("[::1]:9000"));
+        network.relay_host = "relay.example.com".to_owned();
+        assert_eq!(
+            network.relay_address().as_deref(),
+            Some("relay.example.com:9000")
+        );
+
+        // The address must be accepted by the transport's parser.
+        for host in ["10.0.0.5", "::1", "relay.example.com"] {
+            network.relay_host = host.to_owned();
+            let address = network.relay_address().expect("address");
+            transport::endpoint::RelayEndpoint::parse(
+                &address,
+                "test",
+                transport::endpoint::Environment::Development,
+            )
+            .unwrap_or_else(|e| panic!("{address:?} rejected: {e}"));
+        }
+    }
+
+    #[test]
+    fn unreadable_extra_ca_is_an_error_in_development_and_ignored_elsewhere() {
+        let (tmp, store) = store();
+        let missing = tmp.path().join("missing-ca.pem");
+        let mut config = AppConfig::defaults_for(Environment::Development);
+        config.network.extra_ca_file = Some(missing.clone());
+        let error = config
+            .to_core_settings(store.dir())
+            .expect_err("missing CA file must not be ignored");
+        assert!(
+            matches!(error, CoreSettingsError::ExtraCaUnreadable { ref path, .. } if *path == missing)
+        );
+
+        std::fs::write(&missing, b"-----BEGIN CERTIFICATE-----\n").expect("write");
+        let core = config.to_core_settings(store.dir()).expect("readable");
+        assert_eq!(
+            core.network.extra_ca_pem.as_deref(),
+            Some(&b"-----BEGIN CERTIFICATE-----\n"[..])
+        );
+
+        // Outside development the file is never read (D-016), even if it is missing.
+        std::fs::remove_file(&missing).expect("remove");
+        config.application.environment = Environment::Production;
+        let core = config
+            .to_core_settings(store.dir())
+            .expect("production ignores CA");
+        assert_eq!(core.network.extra_ca_pem, None);
     }
 
     #[test]

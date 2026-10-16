@@ -31,8 +31,11 @@ function snapshot(mode: Mode | null): ConfigSnapshot {
     telemetry: { recording_enabled: true, recording_dir: null },
     fuel: { window_laps: 5, reserve_laps: 1 },
     ui: { scale: 1, max_refresh_hz: 60 },
+    driver: { auto_stream: false },
+    engines: { default_alerts_enabled: true },
+    window: { x: null, y: null, width: null, height: null, maximized: false },
   };
-  return { config, path: 'C:\\config\\config.json', issue: null };
+  return { config, path: 'C:\\config\\config.json', issue: null, restart_required: false, core_issue: null };
 }
 
 describe('App', () => {

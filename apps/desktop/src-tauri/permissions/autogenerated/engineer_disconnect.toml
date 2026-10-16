@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-engineer-disconnect"
+description = "Enables the engineer_disconnect command without any pre-configured scope."
+commands.allow = ["engineer_disconnect"]
+
+[[permission]]
+identifier = "deny-engineer-disconnect"
+description = "Denies the engineer_disconnect command without any pre-configured scope."
+commands.deny = ["engineer_disconnect"]

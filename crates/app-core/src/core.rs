@@ -21,20 +21,20 @@ use std::time::Duration;
 use crossbeam_channel::Sender;
 use parking_lot::{Mutex, RwLock};
 use thiserror::Error;
-use tracing::info;
+use tracing::{info, warn};
 
 use transport::auth::AuthManager;
 use transport::credentials::CredentialStore;
 use transport::driver::DriverClient;
 use transport::endpoint::{Environment, ExtraCa, RelayEndpoint};
-use transport::engineer::EngineerClient;
+use transport::engineer::{EngineerClient, IdentityCard, JoinError};
 
 use crate::bridge::hub::UiHub;
 use crate::bridge::pacer::{PacerConfig, UiBridgePacer};
 use crate::bridge::sink::UiSink;
 use crate::bridge::status::{
-    AlertDto, AlertLevel, AppMode, CoreStatus, DropsDto, LmuSourceStatus, NetworkStatusDto, Origin,
-    RatesDto, RecordingStatusDto, SessionStatusDto, UiEvent,
+    AlertDto, AlertLevel, AppMode, CoreStatus, DropsDto, ErrorDto, LmuSourceStatus,
+    NetworkStatusDto, Origin, RatesDto, RecordingStatusDto, SessionStatusDto, UiEvent,
 };
 use crate::clock::AppClock;
 use crate::driver::engines::EngineHubConfig;
@@ -87,6 +87,19 @@ pub enum CoreError {
 
     #[error("core has already been shut down")]
     ShutDown,
+
+    /// Redeeming a connection code failed (typed, so the UI can show the specific reason).
+    #[error("join failed: {0}")]
+    Join(#[from] JoinError),
+
+    /// Local recording is not available: disabled in the settings, failed to open, or the
+    /// active pipeline is the display-only demo.
+    #[error("local recording is not available")]
+    RecorderUnavailable,
+
+    /// The live LMU driver pipeline is not connected to the relay.
+    #[error("the driver is not connected to the relay")]
+    NetworkUnavailable,
 }
 
 /// Active driver runtime components.
@@ -96,6 +109,8 @@ struct DriverRun {
     cmd_tx: Sender<PipelineCommand>,
     stop_flag: Arc<AtomicBool>,
     client: Option<Arc<DriverClient>>,
+    /// Whether the pipeline owns a recorder (recording enabled and the store opened).
+    recorder_attached: bool,
 }
 
 /// Active demo runtime components (display-only, feature `demo`).
@@ -135,9 +150,26 @@ pub struct AppCore {
 }
 
 impl AppCore {
-    /// Constructs a new `AppCore` instance.
+    /// Constructs a new `AppCore` instance for a development relay.
+    ///
+    /// Equivalent to [`AppCore::new_with_environment`] with [`Environment::Development`]; the
+    /// desktop app passes its build environment instead so the relay environment check matches.
     pub fn new(
         settings: CoreSettings,
+        sink: Arc<dyn UiSink>,
+        credential_store: Arc<dyn CredentialStore>,
+    ) -> Result<Self, CoreError> {
+        Self::new_with_environment(settings, Environment::Development, sink, credential_store)
+    }
+
+    /// Constructs a new `AppCore` whose relay endpoint expects the given deployment environment.
+    ///
+    /// The transport refuses a relay that announces a different environment, so a production
+    /// build must pass [`Environment::Production`]. An extra trusted CA is only accepted in
+    /// [`Environment::Development`] (D-016).
+    pub fn new_with_environment(
+        settings: CoreSettings,
+        environment: Environment,
         sink: Arc<dyn UiSink>,
         credential_store: Arc<dyn CredentialStore>,
     ) -> Result<Self, CoreError> {
@@ -151,9 +183,9 @@ impl AppCore {
             .map_err(|e| CoreError::Runtime(e.to_string()))?;
 
         let mut endpoint = match &settings.network.relay_url {
-            Some(url) => RelayEndpoint::parse(url, "Configured", Environment::Development)
+            Some(url) => RelayEndpoint::parse(url, "Configured", environment)
                 .map_err(|e| CoreError::Settings(SettingsError::InvalidEndpoint(e.to_string())))?,
-            None => RelayEndpoint::new("127.0.0.1", 443, "Local", Environment::Development)
+            None => RelayEndpoint::new("127.0.0.1", 443, "Local", environment)
                 .map_err(|e| CoreError::Settings(SettingsError::InvalidEndpoint(e.to_string())))?,
         };
         if let Some(ref pem) = settings.network.extra_ca_pem {
@@ -265,6 +297,66 @@ impl AppCore {
         Ok(())
     }
 
+    /// Validates and stores new settings, then pushes the live-changeable driver session
+    /// settings (`auto_stream`) into the running LMU driver pipeline.
+    ///
+    /// The display-only demo pipeline is never touched (its origin stays synthetic and its
+    /// auto-stream stays off). Settings that need a new pipeline or endpoint (recording
+    /// directory, relay endpoint, UI refresh rate) take effect on the next driver start or
+    /// app start respectively.
+    pub fn apply_settings(&self, patch: CoreSettings) -> Result<(), CoreError> {
+        if self.is_shutdown.load(Ordering::Relaxed) {
+            return Err(CoreError::ShutDown);
+        }
+        patch.validate()?;
+        let session_settings = DriverSessionSettings {
+            origin: Origin::Lmu,
+            auto_stream: patch.driver.auto_stream,
+            ..DriverSessionSettings::default()
+        };
+        *self.settings.write() = patch;
+
+        let driver_guard = self.driver_run.lock();
+        if let Some(ref run) = *driver_guard {
+            run.cmd_tx
+                .send(PipelineCommand::UpdateSettings(session_settings))
+                .map_err(|e| CoreError::Pipeline(PipelineError::Channel(e.to_string())))?;
+        }
+        Ok(())
+    }
+
+    /// Makes `mode` the active mode and guarantees its services run.
+    ///
+    /// Unlike [`AppCore::set_mode`], this also starts the services when `mode` is already the
+    /// active mode but nothing runs yet (first start, or after a failed start). Driver mode
+    /// with a running demo counts as running (the demo is stopped explicitly by the user).
+    pub fn activate_mode(&self, mode: AppMode) -> Result<(), CoreError> {
+        self.set_mode(mode)?;
+        match mode {
+            AppMode::Driver => {
+                #[cfg(feature = "demo")]
+                let demo_running = self.is_demo_running();
+                #[cfg(not(feature = "demo"))]
+                let demo_running = false;
+                if !demo_running && !self.is_driver_running() {
+                    match self.start_driver() {
+                        Ok(()) | Err(CoreError::DriverAlreadyRunning) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+            AppMode::Engineer => {
+                if !self.is_engineer_running() {
+                    match self.start_engineer() {
+                        Ok(()) | Err(CoreError::EngineerAlreadyRunning) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Switches the operating mode between Driver and Engineer.
     ///
     /// Shuts down the previous mode's services before activating the new one (§10).
@@ -355,10 +447,28 @@ impl AppCore {
                 recorder: recorder::RecorderConfig::new(&settings.driver.recording_dir),
                 enabled: true,
             };
-            RecorderSupervisor::open(config, None, None).ok()
+            match RecorderSupervisor::open(config, None, None) {
+                Ok(rec) => Some(rec),
+                Err(err) => {
+                    // Never silent: live telemetry continues, but the UI is told that nothing
+                    // is being recorded and why.
+                    warn!(
+                        component = COMPONENT,
+                        error = %err,
+                        "local recording could not be opened; driver runs without recording"
+                    );
+                    self.sink.emit(UiEvent::Error(ErrorDto {
+                        category: "recording".to_string(),
+                        message: format!("Local recording could not be started: {err}"),
+                        fatal: false,
+                    }));
+                    None
+                }
+            }
         } else {
             None
         };
+        let recorder_attached = recorder.is_some();
 
         let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(16);
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -388,9 +498,13 @@ impl AppCore {
             cmd_tx,
             stop_flag,
             client: None,
+            recorder_attached,
         });
 
-        info!(component = COMPONENT, "driver mode started");
+        info!(
+            component = COMPONENT,
+            recorder_attached, "driver mode started"
+        );
         Ok(())
     }
 
@@ -647,6 +761,32 @@ impl AppCore {
         self.send_driver_command(PipelineCommand::SnapshotNeeded)
     }
 
+    /// Whether driver commands currently reach a pipeline that records to disk.
+    ///
+    /// `false` while the display-only demo runs (it can never record), when no live driver
+    /// pipeline runs, or when recording is disabled or its store failed to open.
+    pub fn driver_recorder_attached(&self) -> bool {
+        #[cfg(feature = "demo")]
+        if self.is_demo_running() {
+            return false;
+        }
+        self.driver_run
+            .lock()
+            .as_ref()
+            .is_some_and(|r| r.recorder_attached)
+    }
+
+    /// Whether the live LMU driver pipeline has a relay client attached.
+    ///
+    /// `false` while the display-only demo runs (it is never streamed).
+    pub fn driver_network_attached(&self) -> bool {
+        #[cfg(feature = "demo")]
+        if self.is_demo_running() {
+            return false;
+        }
+        self.driver_client().is_some()
+    }
+
     /// Connects the driver transport client to the relay and binds the session.
     pub fn spawn_driver_client(&self) -> Result<Arc<DriverClient>, CoreError> {
         if *self.active_mode.read() != AppMode::Driver {
@@ -747,11 +887,23 @@ impl AppCore {
             .map_err(|e| CoreError::Runtime(format!("{e:?}")))
     }
 
-    /// Joins a driver session using a one-time connection code.
-    pub fn engineer_join(
-        &self,
-        code: &str,
-    ) -> Result<transport::engineer::IdentityCard, CoreError> {
+    /// Joins a driver session using a one-time connection code and confirms the identity card
+    /// at once (headless use and tests). The desktop UI uses
+    /// [`AppCore::engineer_join_unconfirmed`] followed by [`AppCore::engineer_confirm`] so the
+    /// user sees the identity card before any telemetry is delivered (D-022).
+    pub fn engineer_join(&self, code: &str) -> Result<IdentityCard, CoreError> {
+        let card = self.engineer_join_unconfirmed(code)?;
+        self.engineer_confirm()?;
+        Ok(card)
+    }
+
+    /// Redeems a one-time connection code and returns the driver's identity card WITHOUT
+    /// confirming it: the transport holds the stream until [`AppCore::engineer_confirm`];
+    /// [`AppCore::engineer_cancel`] declines it (the code stays used).
+    ///
+    /// This is the only path that joins a driver: it requires a user-supplied code and is
+    /// never called automatically (D-019/D-022). The code is neither logged nor persisted.
+    pub fn engineer_join_unconfirmed(&self, code: &str) -> Result<IdentityCard, CoreError> {
         if *self.active_mode.read() != AppMode::Engineer {
             return Err(CoreError::InvalidMode(*self.active_mode.read()));
         }
@@ -760,6 +912,10 @@ impl AppCore {
             let run = guard.as_ref().ok_or(CoreError::EngineerNotRunning)?;
             (Arc::clone(&run.core), Arc::clone(&run.client))
         };
+        if client_slot.lock().is_some() {
+            // One driver at a time: a second join must not orphan the current connection.
+            return Err(CoreError::Join(JoinError::Busy));
+        }
 
         let _guard = self.runtime.enter();
 
@@ -778,16 +934,10 @@ impl AppCore {
         // Attempt join:
         let join_client = Arc::clone(&client);
         let code_str = code.to_string();
-        let card = self
-            .block_on_runtime(async move { join_client.join(&code_str).await })?
-            .map_err(|e| CoreError::Runtime(format!("{e:?}")))?;
+        let card = self.block_on_runtime(async move { join_client.join(&code_str).await })??;
 
-        // Confirm stream delivery:
-        let confirm_client = Arc::clone(&client);
-        self.block_on_runtime(async move { confirm_client.confirm().await })?
-            .map_err(|e| CoreError::Runtime(format!("{e:?}")))?;
-
-        // Spawn background consumer piping events into EngineerCore:
+        // Spawn background consumer piping events into EngineerCore (the transport delivers
+        // stream frames only after confirmation):
         let clock = self.clock;
         self.runtime.spawn(async move {
             while let Some(event) = events_rx.recv().await {
@@ -798,6 +948,19 @@ impl AppCore {
 
         *client_slot.lock() = Some(client);
         Ok(card)
+    }
+
+    /// Declines the identity card (or aborts a pending join): the transport sends DISCONNECT and
+    /// the code stays used, so reconnecting needs a new code from the driver (D-022).
+    pub fn engineer_cancel(&self) -> Result<(), CoreError> {
+        let client_opt = {
+            let guard = self.engineer_run.lock();
+            let run = guard.as_ref().ok_or(CoreError::EngineerNotRunning)?;
+            run.client.lock().take()
+        };
+        let client = client_opt.ok_or(CoreError::EngineerNotRunning)?;
+        self.block_on_runtime(async move { client.cancel().await })?
+            .map_err(|e| CoreError::Runtime(e.to_string()))
     }
 
     /// Disconnects the active engineer client from the driver session.
@@ -832,6 +995,15 @@ impl AppCore {
                 .await
         })?
         .map_err(|e| CoreError::Runtime(format!("{e:?}")))
+    }
+
+    /// Confirms stream reception after viewing driver identity card.
+    pub fn engineer_confirm(&self) -> Result<(), CoreError> {
+        let client = self
+            .engineer_client()
+            .ok_or(CoreError::EngineerNotRunning)?;
+        self.block_on_runtime(async move { client.confirm().await })?
+            .map_err(|e| CoreError::Runtime(format!("{e:?}")))
     }
 
     /// Returns a composite snapshot of the core status.

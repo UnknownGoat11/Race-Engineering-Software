@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-engineer-request-snapshot"
+description = "Enables the engineer_request_snapshot command without any pre-configured scope."
+commands.allow = ["engineer_request_snapshot"]
+
+[[permission]]
+identifier = "deny-engineer-request-snapshot"
+description = "Denies the engineer_request_snapshot command without any pre-configured scope."
+commands.deny = ["engineer_request_snapshot"]

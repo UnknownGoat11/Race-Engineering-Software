@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-driver-end-session"
+description = "Enables the driver_end_session command without any pre-configured scope."
+commands.allow = ["driver_end_session"]
+
+[[permission]]
+identifier = "deny-driver-end-session"
+description = "Denies the driver_end_session command without any pre-configured scope."
+commands.deny = ["driver_end_session"]
