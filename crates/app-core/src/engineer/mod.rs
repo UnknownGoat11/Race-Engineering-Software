@@ -5,3 +5,9 @@
 
 pub mod age;
 pub mod core;
+
+pub use age::{StreamAgeReport, StreamAgeTracker, StreamHealth};
+pub use core::{
+    COALESCE_TIMEOUT_NS, EngineerCore, EngineerCoreStats, EngineerStatusSnapshot,
+    EngineerTickOutput, MAX_ENGINEER_SESSION_EVENTS,
+};
