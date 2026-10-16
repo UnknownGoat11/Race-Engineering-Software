@@ -35,7 +35,7 @@ use crate::bridge::hub::UiHub;
 use crate::bridge::sink::UiSink;
 use crate::bridge::status::{
     AlertDto, AlertLevel, AppMode, CoreStatus, DropsDto, ErrorDto, NetworkStatusDto, Origin,
-    RatesDto, UiEvent,
+    RatesDto, RecordingStatusDto, UiEvent,
 };
 use crate::clock::{AppClock, SkewStatus, SkewTracker};
 use crate::driver::engines::{EngineHub, EngineHubConfig};
@@ -106,6 +106,9 @@ pub struct PipelineLmuInput {
 pub enum PipelineInput {
     /// Raw snapshot arrived from the reader thread.
     Lmu(Box<PipelineLmuInput>),
+    /// Synthetic demo tick.
+    #[cfg(feature = "demo")]
+    Demo(Box<synthetic::SyntheticTick>),
     /// Discrete control or lifecycle command.
     Command(PipelineCommand),
     /// Periodic housekeeping tick (100 ms timeout = 10 Hz).
@@ -130,7 +133,7 @@ pub struct DriverPipeline {
     normalizer: Normalizer,
     engines: EngineHub,
     session_machine: DriverSessionMachine,
-    recorder: RecorderSupervisor,
+    recorder: Option<RecorderSupervisor>,
     net: Option<NetPublisher>,
     ui_hub: Arc<UiHub>,
     sink: Option<Arc<dyn UiSink>>,
@@ -169,12 +172,18 @@ impl DriverPipeline {
         clock: AppClock,
         session_settings: DriverSessionSettings,
         engine_config: EngineHubConfig,
-        recorder: RecorderSupervisor,
+        recorder: Option<RecorderSupervisor>,
         net: Option<NetPublisher>,
         ui_hub: Arc<UiHub>,
         sink: Option<Arc<dyn UiSink>>,
     ) -> Result<Self, PipelineError> {
         let origin = session_settings.origin;
+        if origin == Origin::Synthetic && (recorder.is_some() || net.is_some()) {
+            return Err(PipelineError::Channel(
+                "synthetic pipeline must not have recorder or network sinks".into(),
+            ));
+        }
+
         let normalizer = Normalizer::new();
         let engines = EngineHub::with_config(engine_config)
             .map_err(|e| PipelineError::Channel(e.to_string()))?;
@@ -236,14 +245,14 @@ impl DriverPipeline {
         &self.session_machine
     }
 
-    /// Returns a mutable reference to the inner recorder supervisor.
-    pub fn recorder_mut(&mut self) -> &mut RecorderSupervisor {
-        &mut self.recorder
+    /// Returns a mutable reference to the inner recorder supervisor, if configured.
+    pub fn recorder_mut(&mut self) -> Option<&mut RecorderSupervisor> {
+        self.recorder.as_mut()
     }
 
-    /// Returns a reference to the inner recorder supervisor.
-    pub fn recorder(&self) -> &RecorderSupervisor {
-        &self.recorder
+    /// Returns a reference to the inner recorder supervisor, if configured.
+    pub fn recorder(&self) -> Option<&RecorderSupervisor> {
+        self.recorder.as_ref()
     }
 
     /// Returns a reference to the inner normalizer.
@@ -262,6 +271,8 @@ impl DriverPipeline {
             PipelineInput::Lmu(lmu_in) => {
                 self.process_lmu_snapshot(&lmu_in.snapshot, lmu_in.overrun_before, lmu_in.stats)
             }
+            #[cfg(feature = "demo")]
+            PipelineInput::Demo(demo_tick) => self.process_demo_tick(*demo_tick),
             PipelineInput::Command(cmd) => self.process_command(cmd),
             PipelineInput::Tick => self.process_housekeeping_tick(),
         }
@@ -318,10 +329,10 @@ impl DriverPipeline {
             if let Some(ref mut net) = self.net {
                 net.publish_scoring(scoring_state, snapshot.capture_mono_ns);
             }
-            if let Ok(bytes) = postcard::to_stdvec(scoring_state) {
-                let _ = self
-                    .recorder
-                    .append_scoring(snapshot.capture_mono_ns, &bytes);
+            if let Some(ref mut rec) = self.recorder
+                && let Ok(bytes) = postcard::to_stdvec(scoring_state)
+            {
+                let _ = rec.append_scoring(snapshot.capture_mono_ns, &bytes);
             }
             if let Some(ref sink) = self.sink
                 && let Ok(v) = serde_json::to_value(scoring_state)
@@ -412,11 +423,13 @@ impl DriverPipeline {
                 Value::U64(norm_stats.invalid_samples),
             );
 
-            let rec_dto = self.recorder.status_dto();
-            let _ = frame.set_valid(ch::REC_BYTES, Value::U64(rec_dto.bytes_written));
-            let _ = frame.set_valid(ch::REC_FRAMES_DROPPED, Value::U64(rec_dto.frames_lost));
-            if let Some(free) = rec_dto.disk_free_bytes {
-                let _ = frame.set_valid(ch::REC_DISK_FREE, Value::U64(free));
+            if let Some(ref rec) = self.recorder {
+                let rec_dto = rec.status_dto();
+                let _ = frame.set_valid(ch::REC_BYTES, Value::U64(rec_dto.bytes_written));
+                let _ = frame.set_valid(ch::REC_FRAMES_DROPPED, Value::U64(rec_dto.frames_lost));
+                if let Some(free) = rec_dto.disk_free_bytes {
+                    let _ = frame.set_valid(ch::REC_DISK_FREE, Value::U64(free));
+                }
             }
 
             // Canonical TLV block encoding (shared between Recorder and UiHub):
@@ -442,9 +455,9 @@ impl DriverPipeline {
             let block: Arc<[u8]> = Arc::from(canonical_buf.into_boxed_slice());
 
             // FanOut (non-blocking):
-            let _ = self
-                .recorder
-                .append_telemetry(frame.capture_mono_ns, &block);
+            if let Some(ref mut rec) = self.recorder {
+                let _ = rec.append_telemetry(frame.capture_mono_ns, &block);
+            }
             self.ui_hub
                 .push_block_with_gap(Arc::clone(&block), is_keyframe, self.gap_before);
             self.gap_before = false;
@@ -493,7 +506,9 @@ impl DriverPipeline {
         }
 
         // 3. Recorder events drain:
-        let _rec_events = self.recorder.poll_events();
+        if let Some(ref mut rec) = self.recorder {
+            let _ = rec.poll_events();
+        }
 
         // 4. Clock skew tracking (sleep/resume):
         if let SkewStatus::Discontinuity { skew, .. } = self.skew_tracker.check() {
@@ -546,7 +561,9 @@ impl DriverPipeline {
         let _ = enc.finish();
 
         let block: Arc<[u8]> = Arc::from(buf.into_boxed_slice());
-        let _ = self.recorder.append_telemetry(now_mono_ns, &block);
+        if let Some(ref mut rec) = self.recorder {
+            let _ = rec.append_telemetry(now_mono_ns, &block);
+        }
         self.ui_hub.push_block(Arc::clone(&block), false);
     }
 
@@ -600,8 +617,10 @@ impl DriverPipeline {
         mono_ns: u64,
         source_et_s: Option<f64>,
     ) {
-        if let Ok(bytes) = postcard::to_stdvec(event) {
-            let _ = self.recorder.append_session_event(mono_ns, &bytes);
+        if let Some(ref mut rec) = self.recorder
+            && let Ok(bytes) = postcard::to_stdvec(event)
+        {
+            let _ = rec.append_session_event(mono_ns, &bytes);
         }
 
         // If this is a completed lap, also index it in the recorder:
@@ -617,7 +636,9 @@ impl DriverPipeline {
                 pit_lap: None,
                 metrics_json: None,
             };
-            let _ = self.recorder.record_lap(lap_rec);
+            if let Some(ref mut rec) = self.recorder {
+                let _ = rec.record_lap(lap_rec);
+            }
         }
 
         if let Some(ref mut net) = self.net {
@@ -675,12 +696,30 @@ impl DriverPipeline {
                 .as_ref()
                 .map_or(0, |n| n.stats().reliable_events_dropped);
 
+            let recording_status = self
+                .recorder
+                .as_ref()
+                .map(|r| r.status_dto())
+                .unwrap_or_else(|| RecordingStatusDto {
+                    state: "disabled".into(),
+                    recording_id: None,
+                    bytes_written: 0,
+                    frames_written: 0,
+                    frames_lost: 0,
+                    disk_free_bytes: None,
+                    error: None,
+                });
+            let recorder_overrun = self
+                .recorder
+                .as_ref()
+                .map_or(0, |r| r.status_dto().frames_lost);
+
             let core_status = CoreStatus {
                 mode: AppMode::Driver,
                 origin: self.origin,
                 lmu: self.session_machine.lmu_source_status(),
                 session: self.session_machine.session_status_dto(),
-                recording: self.recorder.status_dto(),
+                recording: recording_status,
                 network: network_status,
                 rates: RatesDto {
                     telemetry_read_hz: telem_rate,
@@ -692,7 +731,7 @@ impl DriverPipeline {
                 drops: DropsDto {
                     reader_overrun: self.reader_overruns,
                     pipeline_overrun: self.pipeline_overruns,
-                    recorder_overrun: self.recorder.status_dto().frames_lost,
+                    recorder_overrun,
                     net_dropped_obsolete,
                     ui_dropped: self.ui_hub.total_ui_dropped(),
                 },
@@ -728,13 +767,19 @@ impl DriverPipeline {
                     .session_machine
                     .step(SessionInputEvent::ManualEndSession);
                 self.execute_session_actions(actions);
-                let _ = self.recorder.on_session_end();
+                if let Some(ref mut rec) = self.recorder {
+                    let _ = rec.on_session_end();
+                }
             }
             PipelineCommand::SetRecording(enabled) => {
-                let _ = self.recorder.set_enabled(enabled);
+                if let Some(ref mut rec) = self.recorder {
+                    let _ = rec.set_enabled(enabled);
+                }
             }
             PipelineCommand::AddMarker(text) => {
-                let _ = self.recorder.append_marker(self.clock.now_ns(), &text);
+                if let Some(ref mut rec) = self.recorder {
+                    let _ = rec.append_marker(self.clock.now_ns(), &text);
+                }
             }
             PipelineCommand::UpdateSettings(settings) => {
                 let actions = self
@@ -743,7 +788,9 @@ impl DriverPipeline {
                 self.execute_session_actions(actions);
             }
             PipelineCommand::Shutdown => {
-                let _ = self.recorder.on_session_end();
+                if let Some(ref mut rec) = self.recorder {
+                    let _ = rec.on_session_end();
+                }
             }
         }
         Ok(())
@@ -754,7 +801,9 @@ impl DriverPipeline {
         for action in actions {
             match action {
                 SessionAction::StartRecording(meta) => {
-                    if let Err(err) = self.recorder.on_session_ready(meta) {
+                    if let Some(ref mut rec) = self.recorder
+                        && let Err(err) = rec.on_session_ready(meta)
+                    {
                         warn!(
                             component = COMPONENT,
                             error = %err,
@@ -763,7 +812,9 @@ impl DriverPipeline {
                     }
                 }
                 SessionAction::FinishRecordingSegment | SessionAction::FinishRecordingSession => {
-                    let _ = self.recorder.on_session_stalled();
+                    if let Some(ref mut rec) = self.recorder {
+                        let _ = rec.on_session_stalled();
+                    }
                 }
                 SessionAction::ResumeRecordingSegment => {
                     // Segment resumes automatically on next appended frame
@@ -874,7 +925,9 @@ impl DriverPipeline {
             component = COMPONENT,
             "pipeline thread stopping; finalizing recording"
         );
-        let _ = self.recorder.on_session_end();
+        if let Some(ref mut rec) = self.recorder {
+            let _ = rec.on_session_end();
+        }
 
         PipelineSummary {
             frames_processed: self.frames_processed,
@@ -893,5 +946,173 @@ impl DriverPipeline {
         Builder::new()
             .name("pipeline".to_string())
             .spawn(move || self.run(snapshot_rx, cmd_rx, stop_flag))
+    }
+
+    /// Processes a single synthetic demo tick arriving from the synthetic provider.
+    #[cfg(feature = "demo")]
+    fn process_demo_tick(&mut self, tick: synthetic::SyntheticTick) -> Result<(), PipelineError> {
+        let now_mono_ns = self.clock.now_ns();
+        self.last_frame_received_mono_ns = Some(now_mono_ns);
+
+        // Scoring updates:
+        if let Some(ref scoring) = tick.scoring {
+            self.last_scoring = Some(scoring.state.clone());
+            self.last_scoring_change_mono_ns = Some(tick.capture_mono_ns);
+            if let Some(ref sink) = self.sink
+                && let Ok(v) = serde_json::to_value(&scoring.state)
+            {
+                sink.emit(UiEvent::Scoring(v));
+            }
+        }
+
+        // Stale state / no frame:
+        if tick.stale.is_some() || tick.frame.is_none() {
+            if !self.stalled_notified {
+                self.emit_stale_block();
+                self.stalled_notified = true;
+            }
+            return Ok(());
+        }
+
+        let mut frame = match tick.frame {
+            Some(f) => f,
+            None => return Ok(()),
+        };
+
+        self.stalled_notified = false;
+        self.last_telemetry_mono_ns = Some(frame.capture_mono_ns);
+        self.pipeline_latency_ns = now_mono_ns.saturating_sub(frame.capture_mono_ns);
+
+        // Process through EngineHub:
+        let engine_out = self
+            .engines
+            .process_frame(&mut frame, self.last_scoring.as_ref());
+
+        // Session events and alerts:
+        for evt in &engine_out.events {
+            self.route_session_event(evt, frame.capture_mono_ns, frame.source_et_s);
+        }
+        for alert in &engine_out.alert_notices {
+            self.route_alert_notice(alert);
+        }
+
+        // App channels:
+        let latency_s = self.pipeline_latency_ns as f64 / 1_000_000_000.0;
+        let _ = frame.set_valid(ch::PIPELINE_LATENCY, Value::F64(latency_s));
+        let _ = frame.set_valid(ch::SRC_TELEMETRY_AGE, Value::F64(0.0));
+        let scoring_age_s = self.last_scoring_change_mono_ns.map_or(0.0, |t| {
+            (frame.capture_mono_ns.saturating_sub(t) as f64) / 1e9
+        });
+        let _ = frame.set_valid(ch::SRC_SCORING_AGE, Value::F64(scoring_age_s));
+        let _ = frame.set_valid(ch::NORMALIZER_FORMULA_VERSION, Value::U32(1));
+
+        // Canonical TLV block encoding (shared between Recorder and UiHub):
+        let is_keyframe = self.is_first_frame
+            || self.discontinuity_pending
+            || (frame
+                .capture_mono_ns
+                .saturating_sub(self.last_keyframe_mono_ns)
+                >= 1_000_000_000);
+
+        let mut canonical_buf = Vec::new();
+        if is_keyframe {
+            frame.encode_snapshot(&mut canonical_buf, RELAY_NS_UNKNOWN)?;
+            self.last_keyframe_mono_ns = frame.capture_mono_ns;
+            self.discontinuity_pending = false;
+        } else if let Some(ref prev) = self.last_frame {
+            frame.encode_delta(prev, &mut canonical_buf, RELAY_NS_UNKNOWN)?;
+        } else {
+            frame.encode_snapshot(&mut canonical_buf, RELAY_NS_UNKNOWN)?;
+            self.last_keyframe_mono_ns = frame.capture_mono_ns;
+        }
+
+        let block: Arc<[u8]> = Arc::from(canonical_buf.into_boxed_slice());
+
+        // FanOut (non-blocking):
+        if let Some(ref mut rec) = self.recorder {
+            let _ = rec.append_telemetry(frame.capture_mono_ns, &block);
+        }
+        self.ui_hub
+            .push_block_with_gap(Arc::clone(&block), is_keyframe, self.gap_before);
+        self.gap_before = false;
+
+        if let Some(ref mut net) = self.net {
+            net.publish_frame(&frame, frame.capture_mono_ns);
+        }
+
+        self.last_frame = Some(frame);
+        self.frames_processed = self.frames_processed.saturating_add(1);
+        self.is_first_frame = false;
+
+        Ok(())
+    }
+
+    /// Runs the demo pipeline loop taking ticks from `demo_rx`.
+    #[cfg(feature = "demo")]
+    pub fn run_demo(
+        mut self,
+        demo_rx: Receiver<Box<synthetic::SyntheticTick>>,
+        cmd_rx: Receiver<PipelineCommand>,
+        stop_flag: Arc<AtomicBool>,
+    ) -> PipelineSummary {
+        info!(
+            component = COMPONENT,
+            "pipeline demo thread started (Origin::Synthetic, display-only)"
+        );
+
+        while !stop_flag.load(Ordering::Relaxed) {
+            crossbeam_channel::select! {
+                recv(demo_rx) -> msg => {
+                    match msg {
+                        Ok(tick) => {
+                            if let Err(err) = self.step(PipelineInput::Demo(tick)) {
+                                error!(component = COMPONENT, error = %err, "pipeline error processing demo tick");
+                            }
+                        }
+                        Err(_) => {
+                            debug!(component = COMPONENT, "demo stream closed; exiting loop");
+                            break;
+                        }
+                    }
+                }
+                recv(cmd_rx) -> msg => {
+                    if let Ok(cmd) = msg {
+                        let is_shutdown = matches!(cmd, PipelineCommand::Shutdown);
+                        if let Err(err) = self.step(PipelineInput::Command(cmd)) {
+                            error!(component = COMPONENT, error = %err, "pipeline error processing command");
+                        }
+                        if is_shutdown {
+                            break;
+                        }
+                    }
+                }
+                default(Duration::from_millis(100)) => {
+                    if let Err(err) = self.step(PipelineInput::Tick) {
+                        error!(component = COMPONENT, error = %err, "pipeline housekeeping tick error");
+                    }
+                }
+            }
+        }
+
+        info!(component = COMPONENT, "pipeline demo thread stopping");
+
+        PipelineSummary {
+            frames_processed: self.frames_processed,
+            reader_overruns: self.reader_overruns,
+            discontinuities: self.discontinuities,
+        }
+    }
+
+    /// Spawns the dedicated `"pipeline-demo"` OS thread.
+    #[cfg(feature = "demo")]
+    pub fn spawn_demo(
+        self,
+        demo_rx: Receiver<Box<synthetic::SyntheticTick>>,
+        cmd_rx: Receiver<PipelineCommand>,
+        stop_flag: Arc<AtomicBool>,
+    ) -> Result<JoinHandle<PipelineSummary>, std::io::Error> {
+        Builder::new()
+            .name("pipeline-demo".to_string())
+            .spawn(move || self.run_demo(demo_rx, cmd_rx, stop_flag))
     }
 }

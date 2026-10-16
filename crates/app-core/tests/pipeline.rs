@@ -155,7 +155,7 @@ fn test_pipeline_replay_pitstop_and_recorder_roundtrip() {
         clock,
         session_settings,
         engine_config,
-        recorder,
+        Some(recorder),
         None,
         ui_hub.clone(),
         Some(sink.clone()),
@@ -192,7 +192,7 @@ fn test_pipeline_replay_pitstop_and_recorder_roundtrip() {
         .step(PipelineInput::Command(PipelineCommand::EndSession))
         .expect("end session");
 
-    let recorder = pipeline.recorder();
+    let recorder = pipeline.recorder().expect("recorder configured");
     let status_dto = recorder.status_dto();
     assert!(
         status_dto.frames_written > 0,
@@ -269,7 +269,7 @@ fn test_pipeline_stall_and_resume_lifecycle() {
         clock,
         session_settings,
         EngineHubConfig::default(),
-        recorder,
+        Some(recorder),
         None,
         ui_hub.clone(),
         Some(sink.clone()),
@@ -431,7 +431,7 @@ fn test_pipeline_100hz_throughput_and_bounded_latency() {
         clock,
         session_settings,
         EngineHubConfig::default(),
-        recorder,
+        Some(recorder),
         None,
         ui_hub.clone(),
         Some(sink.clone()),
@@ -526,7 +526,7 @@ fn test_pipeline_thread_spawn_and_command_shutdown() {
         clock,
         session_settings,
         EngineHubConfig::default(),
-        recorder,
+        Some(recorder),
         None,
         ui_hub.clone(),
         Some(sink.clone()),

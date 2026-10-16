@@ -31,6 +31,9 @@ pub mod engineer;
 pub mod hires;
 pub mod settings;
 
+pub use core::{AppCore, CoreError};
+pub use settings::{CoreSettings, DriverSettings, NetworkSettings, SettingsError, UiSettings};
+
 #[cfg(test)]
 mod tests {
     /// Blueprint decision 1: app-core must stay testable headlessly, so it never depends on Tauri.
