@@ -108,6 +108,7 @@ name = "app-core"
 version = "0.1.0"
 dependencies = [
  "arc-swap",
+ "bytes",
  "crossbeam-channel",
  "lmu-normalizer",
  "lmu-reader",

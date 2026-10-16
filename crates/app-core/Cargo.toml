@@ -21,6 +21,7 @@ protocol.workspace = true
 transport.workspace = true
 synthetic = { workspace = true, optional = true }
 tokio.workspace = true
+bytes.workspace = true
 crossbeam-channel.workspace = true
 parking_lot.workspace = true
 arc-swap.workspace = true
