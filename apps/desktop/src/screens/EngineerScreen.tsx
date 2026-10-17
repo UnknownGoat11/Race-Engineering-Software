@@ -64,6 +64,19 @@ const GRAPH_SERIES_PRESETS: Record<GraphPreset, readonly GraphSeries[]> = {
   ],
 };
 
+function parseVehicleClass(className: string | null): VehicleClass {
+  const lower = className?.toLowerCase();
+  switch (lower) {
+    case 'hypercar':
+    case 'lmp2':
+    case 'gt3':
+    case 'gte':
+      return lower;
+    default:
+      return 'unknown';
+  }
+}
+
 export function EngineerScreen(): JSX.Element {
   const { status, error: coreError } = useCoreStatus();
   const scoring = useScoring();
@@ -132,7 +145,7 @@ export function EngineerScreen(): JSX.Element {
           z: v.pos_z_m,
           carNumber: v.vehicle_name ?? '',
           driverName: v.driver ?? '',
-          vehicleClass: (v.class_name?.toLowerCase() as VehicleClass) || 'unknown',
+          vehicleClass: parseVehicleClass(v.class_name),
           isDriver: false,
         });
       }

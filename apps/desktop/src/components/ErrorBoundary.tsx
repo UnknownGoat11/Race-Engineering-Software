@@ -1,4 +1,5 @@
 import { Component, Fragment, type ErrorInfo, type ReactNode } from 'react';
+import { logUiError } from '../lib/ipc';
 
 function describeError(error: unknown): string {
   if (error instanceof Error) {
@@ -29,6 +30,11 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
 
   override componentDidCatch(error: unknown, info: ErrorInfo): void {
     console.error('[AppErrorBoundary] unrecoverable UI error', error, info.componentStack);
+    logUiError({
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? (error.stack ?? null) : null,
+      component: 'AppErrorBoundary',
+    }).catch(() => undefined);
   }
 
   private readonly reload = (): void => {
@@ -82,6 +88,11 @@ export class PanelErrorBoundary extends Component<PanelErrorBoundaryProps, Panel
 
   override componentDidCatch(error: unknown, info: ErrorInfo): void {
     console.error(`[PanelErrorBoundary] panel "${this.props.name}" failed`, error, info.componentStack);
+    logUiError({
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? (error.stack ?? null) : null,
+      component: `Panel:${this.props.name}`,
+    }).catch(() => undefined);
     this.props.onError?.(error, info);
   }
 

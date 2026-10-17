@@ -1,7 +1,12 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { JSX } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { logUiError } from '../lib/ipc';
 import { AppErrorBoundary, PanelErrorBoundary } from './ErrorBoundary';
+
+vi.mock('../lib/ipc', () => ({
+  logUiError: vi.fn().mockResolvedValue({ logged: true, dropped_before: 0 }),
+}));
 
 const failure = { enabled: true };
 
@@ -14,6 +19,7 @@ function Unstable(): JSX.Element {
 
 describe('PanelErrorBoundary', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     failure.enabled = true;
     // React reports caught errors via console.error; keep test output clean.
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -60,6 +66,21 @@ describe('PanelErrorBoundary', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(screen.getByText('Panel unavailable')).toBeInTheDocument();
   });
+
+  it('forwards the caught panel error to logUiError', () => {
+    render(
+      <PanelErrorBoundary name="Tyres">
+        <Unstable />
+      </PanelErrorBoundary>,
+    );
+
+    expect(logUiError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'boom',
+        component: 'Panel:Tyres',
+      }),
+    );
+  });
 });
 
 describe('AppErrorBoundary', () => {
@@ -74,4 +95,21 @@ describe('AppErrorBoundary', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('User interface error');
     expect(screen.getByRole('button', { name: 'Reload interface' })).toBeInTheDocument();
   });
+
+  it('forwards unrecoverable app error to logUiError', () => {
+    failure.enabled = true;
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    render(
+      <AppErrorBoundary>
+        <Unstable />
+      </AppErrorBoundary>,
+    );
+    expect(logUiError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'boom',
+        component: 'AppErrorBoundary',
+      }),
+    );
+  });
 });
+
