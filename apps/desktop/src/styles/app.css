@@ -88,6 +88,13 @@ code {
   color: var(--color-accent-strong);
 }
 
+.btn-sm {
+  height: var(--control-height-sm, 22px);
+  padding: 0 var(--space-2);
+  font-size: var(--font-size-xs);
+  line-height: var(--control-height-sm, 22px);
+}
+
 .btn-primary {
   border-color: var(--color-accent);
   background: var(--color-accent);
@@ -101,6 +108,57 @@ code {
 .btn-primary:disabled {
   border-color: var(--color-border-strong);
   background: var(--color-surface-raised);
+}
+
+.btn-danger {
+  border-color: var(--color-error);
+  background: var(--color-error-bg);
+  color: var(--color-error);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: rgba(255, 95, 95, 0.25);
+  border-color: var(--color-error);
+  color: #ff8585;
+}
+
+.btn-danger:disabled {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text-dim);
+}
+
+/* ---------------------------------------------------------------- Form inputs */
+
+.input,
+.select {
+  height: var(--control-height);
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  box-sizing: border-box;
+}
+
+.input:focus,
+.select:focus {
+  outline: var(--focus-ring-width) solid var(--color-focus);
+  outline-offset: 1px;
+  border-color: var(--color-accent);
+}
+
+.input::placeholder {
+  color: var(--color-text-dim);
+}
+
+.input:disabled,
+.select:disabled {
+  cursor: not-allowed;
+  color: var(--color-text-dim);
+  border-color: var(--color-border);
 }
 
 /* ---------------------------------------------------------------- Status / alerts */
@@ -265,7 +323,16 @@ code {
 
 .shell-content {
   overflow: auto;
+  min-height: 0;
+}
+
+.shell-content--page {
   padding: var(--space-4);
+}
+
+.shell-content--screen {
+  padding: 0;
+  overflow: hidden;
 }
 
 .page {

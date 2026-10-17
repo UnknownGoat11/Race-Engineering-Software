@@ -127,6 +127,7 @@
   /* Layout */
   --header-height: 40px;
   --control-height: 28px;
+  --control-height-sm: 22px;
   --control-height-lg: 48px;
   --content-max-width: 1200px;
 }

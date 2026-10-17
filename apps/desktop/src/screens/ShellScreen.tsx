@@ -59,7 +59,7 @@ export function ShellScreen({ info, snapshot, mode, onChangeMode }: ShellScreenP
 
       <div className="shell-banner">{snapshot.issue !== null && <ConfigIssueBanner issue={snapshot.issue} />}</div>
 
-      <main className="shell-content">
+      <main className={`shell-content ${page === 'overview' ? 'shell-content--screen' : 'shell-content--page'}`}>
         {page === 'overview' ? (
           mode === 'driver' ? (
             <PanelErrorBoundary name="Driver Screen">

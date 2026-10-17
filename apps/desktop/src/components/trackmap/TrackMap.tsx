@@ -72,7 +72,7 @@ export function TrackMap({
     if (!bounds) {
       return null;
     }
-    return fitMapTransform(bounds, map.points, dimensions.width, dimensions.height, 28, rotationRad);
+    return fitMapTransform(bounds, map.points, dimensions.width, dimensions.height, 36, rotationRad);
   })();
 
   // Driver marker coordinates

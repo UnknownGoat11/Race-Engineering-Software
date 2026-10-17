@@ -347,7 +347,7 @@ export function EngineerScreen(): JSX.Element {
         {/* Pitwall 3-Column Ergonomic Workspace */}
         <div className="engineer-workspace" data-testid="engineer-workspace">
           {/* Left Column: Standings Tower */}
-          <div className="engineer-col" style={{ width: '280px' }}>
+          <div className="engineer-col engineer-col-left">
             <PanelErrorBoundary name="Standings Tower">
               <TimingTower
                 scoring={scoring}
@@ -360,7 +360,7 @@ export function EngineerScreen(): JSX.Element {
           </div>
 
           {/* Center Column: Track Map & Telemetry Graph */}
-          <div className="engineer-col" style={{ flex: 1, minWidth: 0 }}>
+          <div className="engineer-col engineer-col-center">
             {/* Active alerts banner */}
             <AlertsBanner
               alerts={alerts}
@@ -477,7 +477,7 @@ export function EngineerScreen(): JSX.Element {
           </div>
 
           {/* Right Column: Telemetry Calculation Panels */}
-          <div className="engineer-col" style={{ width: '340px' }}>
+          <div className="engineer-col engineer-col-right">
             <div className="card" style={{ padding: '4px 8px', marginBottom: '-4px' }}>
               <div style={{ display: 'flex', gap: '4px', width: '100%' }}>
                 <button

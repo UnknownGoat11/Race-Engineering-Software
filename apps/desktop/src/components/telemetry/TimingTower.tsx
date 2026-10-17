@@ -116,7 +116,7 @@ export function TimingTower({ scoring, selectedSlotId, onSelectSlot }: TimingTow
                   <td className="standings-col-cpos">{v.class_place ?? NO_VALUE}</td>
                   <td className="standings-col-driver">
                     <div className="standings-driver-name" title={v.driver ?? 'Unknown'}>
-                      {v.driver ?? 'Unknown'}
+                      <span className="standings-driver-name-text">{v.driver ?? 'Unknown'}</span>
                       {isDriver && <span className="driver-pill">YOU</span>}
                     </div>
                     <div className="standings-sub-info">

@@ -226,6 +226,7 @@ export function ChannelSelectorModal({
         style={{
           maxWidth: '880px',
           width: '95vw',
+          height: 'min(640px, 90vh)',
           maxHeight: '90vh',
           display: 'flex',
           flexDirection: 'column',

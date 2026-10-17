@@ -57,7 +57,15 @@
 .trackmap-controls {
   display: flex;
   gap: 4px;
+  align-items: center;
   pointer-events: auto;
+}
+
+.trackmap-controls .btn {
+  height: 20px;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
 }
 
 .trackmap-svg {
