@@ -145,6 +145,22 @@
   display: flex;
   align-items: center;
   gap: var(--space-1);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  transition: opacity 0.15s ease;
+}
+
+.telemetry-graph__legend-item:hover {
+  background-color: var(--color-surface-hover);
+}
+
+.telemetry-graph__legend-item[data-enabled='false'] {
+  opacity: 0.55;
+}
+
+.telemetry-graph__legend-item[data-enabled='false'] .telemetry-graph__swatch {
+  opacity: 0.35;
+  filter: grayscale(100%);
 }
 
 .telemetry-graph__legend-item[data-enabled='false'] .telemetry-graph__series-name {
@@ -157,6 +173,7 @@
   align-items: center;
   gap: var(--space-1);
   cursor: pointer;
+  user-select: none;
 }
 
 .telemetry-graph__series-name {

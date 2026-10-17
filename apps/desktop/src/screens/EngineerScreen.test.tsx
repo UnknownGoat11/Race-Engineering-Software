@@ -193,4 +193,31 @@ describe('EngineerScreen', () => {
       expect(screen.getByTestId('driver-away-badge')).toBeInTheDocument();
     });
   });
+
+  it('opens MoTeC channel selector, allows choosing channels, and updates graph with custom series', async () => {
+    render(<EngineerScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('open-channel-selector-btn')).toBeInTheDocument();
+    });
+
+    // Click "+ Channels..." button
+    fireEvent.click(screen.getByTestId('open-channel-selector-btn'));
+
+    // Modal should be visible
+    expect(screen.getByTestId('channel-selector-modal')).toBeInTheDocument();
+
+    // Select Tyres preset in the modal
+    fireEvent.click(screen.getByTestId('preset-tyres-btn'));
+
+    // Apply channels
+    fireEvent.click(screen.getByTestId('channel-selector-apply-btn'));
+
+    // Modal should close and custom preset indicator should be visible
+    await waitFor(() => {
+      expect(screen.queryByTestId('channel-selector-modal')).not.toBeInTheDocument();
+      expect(screen.getByTestId('preset-custom-badge')).toHaveTextContent('CUSTOM (4 CH)');
+    });
+  });
 });
+

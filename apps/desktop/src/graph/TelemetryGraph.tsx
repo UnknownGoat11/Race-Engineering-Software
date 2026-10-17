@@ -50,6 +50,8 @@ export interface TelemetryGraphProps {
   readonly className?: string;
   /** Receives the engine once mounted and null on unmount (diagnostics, benchmark). */
   readonly onEngine?: (engine: GraphEngine | null) => void;
+  /** Optional callback when a channel series visibility is toggled on/off (MoTeC i2 style). */
+  readonly onToggleSeries?: (channelId: number, enabled: boolean) => void;
 }
 
 const NO_REFERENCES: readonly ReferenceSeries[] = [];
@@ -152,6 +154,14 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
   const [disabled, setDisabled] = useState<ReadonlySet<number>>(
     () => new Set(series.filter((s) => s.enabled === false).map((s) => s.channelId)),
   );
+  const seriesIdsKey = useMemo(() => series.map((s) => `${s.channelId}:${s.enabled ?? true}`).join(','), [series]);
+  const prevSeriesIdsKey = useRef(seriesIdsKey);
+  useEffect(() => {
+    if (prevSeriesIdsKey.current !== seriesIdsKey) {
+      prevSeriesIdsKey.current = seriesIdsKey;
+      setDisabled(new Set(series.filter((s) => s.enabled === false).map((s) => s.channelId)));
+    }
+  }, [series, seriesIdsKey]);
   const [yScales, setYScales] = useState<Readonly<Record<string, YScaleSetting>>>(props.yScales ?? NO_SCALES);
   const effectiveSeries = useMemo(
     () => series.map((s) => ({ ...s, enabled: !disabled.has(s.channelId) })),
@@ -220,8 +230,10 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
   const toggle = (id: number): void => {
     setDisabled((prev) => {
       const next = new Set(prev);
+      const willBeEnabled = next.has(id);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      props.onToggleSeries?.(id, willBeEnabled);
       return next;
     });
   };
@@ -290,9 +302,9 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
               key={s.channelId}
               className="telemetry-graph__legend-item"
               data-enabled={enabled}
-              title={`Source: ${labelOf(source, s.channelId)}`}
+              title={`Source: ${labelOf(source, s.channelId)} · Click to ${enabled ? 'hide' : 'show'}`}
             >
-              <label className="telemetry-graph__toggle">
+              <label className="telemetry-graph__toggle" title={enabled ? `Hide ${label}` : `Show ${label}`}>
                 <input
                   type="checkbox"
                   checked={enabled}
@@ -304,9 +316,27 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
                 <span className="telemetry-graph__swatch" data-slot={seriesColorSlot(s, i)} aria-hidden="true" />
               </label>
               {enabled && sample !== null ? (
-                <LegendReadout readout={sample} label={label} at={snapshot.cursorLabel} />
+                <span
+                  className="telemetry-graph__readout-click"
+                  onClick={() => {
+                    toggle(s.channelId);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                  title={`Click to hide ${label}`}
+                >
+                  <LegendReadout readout={sample} label={label} at={snapshot.cursorLabel} />
+                </span>
               ) : (
-                <span className="telemetry-graph__series-name">{label}</span>
+                <span
+                  className="telemetry-graph__series-name"
+                  onClick={() => {
+                    toggle(s.channelId);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                  title={`Click to show ${label}`}
+                >
+                  {label}
+                </span>
               )}
               <SeriesBadge id={s.channelId} sourceLabel={labelOf(source, s.channelId)} />
             </li>

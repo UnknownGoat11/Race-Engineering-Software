@@ -32,13 +32,15 @@ import { NO_VALUE } from '../lib/units';
 import { connectTauriTelemetry } from '../telemetry/bridge';
 import { TelemetryStoreContext } from '../telemetry/hooks';
 import { TelemetryStore } from '../telemetry/store';
+import { ChannelSelectorModal } from '../components/telemetry/ChannelSelectorModal';
 import { JoinSessionModal } from './JoinSessionModal';
 import '../styles/screens.css';
 
-type GraphPreset = 'inputs' | 'powertrain' | 'tyres' | 'brakes';
+type StandardGraphPreset = 'inputs' | 'powertrain' | 'tyres' | 'brakes';
+type GraphPreset = StandardGraphPreset | 'custom';
 type RightPanelTab = 'timing_fuel' | 'tyres_brakes' | 'inputs_energy';
 
-const GRAPH_SERIES_PRESETS: Record<GraphPreset, readonly GraphSeries[]> = {
+const GRAPH_SERIES_PRESETS: Record<StandardGraphPreset, readonly GraphSeries[]> = {
   inputs: [
     { channelId: ch.SPEED, color: 1 },
     { channelId: ch.THROTTLE, color: 2 },
@@ -84,10 +86,29 @@ export function EngineerScreen(): JSX.Element {
 
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
   const [graphPreset, setGraphPreset] = useState<GraphPreset>('inputs');
+  const [customSeries, setCustomSeries] = useState<readonly GraphSeries[]>(GRAPH_SERIES_PRESETS.inputs);
+  const [showChannelModal, setShowChannelModal] = useState<boolean>(false);
   const [rightTab, setRightTab] = useState<RightPanelTab>('timing_fuel');
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [showJoinModal, setShowJoinModal] = useState<boolean>(false);
+
+  const activeSeries = useMemo(() => {
+    if (graphPreset === 'custom') {
+      return customSeries;
+    }
+    return GRAPH_SERIES_PRESETS[graphPreset];
+  }, [graphPreset, customSeries]);
+
+  const handleApplyCustomChannels = (selectedIds: readonly number[]) => {
+    const newSeries: GraphSeries[] = selectedIds.map((channelId, index) => ({
+      channelId,
+      color: (index % 8) + 1,
+      enabled: true,
+    }));
+    setCustomSeries(newSeries);
+    setGraphPreset('custom');
+  };
 
   // Live TelemetryStore & Bridge connection
   const store = useMemo(() => new TelemetryStore(), []);
@@ -311,6 +332,18 @@ export function EngineerScreen(): JSX.Element {
           />
         )}
 
+        {/* Channel Selector Modal (MoTeC i2 Pro style) */}
+        {showChannelModal && (
+          <ChannelSelectorModal
+            isOpen={showChannelModal}
+            activeChannelIds={activeSeries.map((s) => s.channelId)}
+            onClose={() => {
+              setShowChannelModal(false);
+            }}
+            onApply={handleApplyCustomChannels}
+          />
+        )}
+
         {/* Pitwall 3-Column Ergonomic Workspace */}
         <div className="engineer-workspace" data-testid="engineer-workspace">
           {/* Left Column: Standings Tower */}
@@ -355,8 +388,19 @@ export function EngineerScreen(): JSX.Element {
             {/* Synchronized Telemetry Graph */}
             <div className="card" style={{ flex: 1, minHeight: '320px', display: 'flex', flexDirection: 'column' }}>
               <div className="card-header" style={{ padding: '6px 12px' }}>
-                <span className="card-header-title">SYNCHRONIZED TELEMETRY GRAPH</span>
-                <div style={{ display: 'flex', gap: '4px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className="card-header-title">SYNCHRONIZED TELEMETRY GRAPH</span>
+                  {graphPreset === 'custom' && (
+                    <span
+                      className="status-badge status-badge-live"
+                      style={{ fontSize: '9px', padding: '1px 5px' }}
+                      data-testid="preset-custom-badge"
+                    >
+                      CUSTOM ({activeSeries.length} CH)
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                   <button
                     type="button"
                     className={`btn btn-xs ${graphPreset === 'inputs' ? 'btn-primary' : ''}`}
@@ -393,6 +437,31 @@ export function EngineerScreen(): JSX.Element {
                   >
                     Brakes
                   </button>
+                  {graphPreset === 'custom' && (
+                    <button
+                      type="button"
+                      className="btn btn-xs btn-primary"
+                      onClick={() => {
+                        setGraphPreset('custom');
+                      }}
+                      data-testid="preset-custom-btn"
+                    >
+                      Custom
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-xs"
+                    onClick={() => {
+                      setShowChannelModal(true);
+                    }}
+                    title="Configure / select channels to plot (MoTeC i2 Pro style)"
+                    data-testid="open-channel-selector-btn"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}
+                  >
+                    <span>⚙</span>
+                    <span>Channels...</span>
+                  </button>
                 </div>
               </div>
               <div style={{ flex: 1, minHeight: '260px', padding: '8px' }}>
@@ -400,7 +469,7 @@ export function EngineerScreen(): JSX.Element {
                   <TelemetryGraph
                     source={liveSource}
                     xMode="time"
-                    series={GRAPH_SERIES_PRESETS[graphPreset]}
+                    series={activeSeries}
                   />
                 </PanelErrorBoundary>
               </div>
