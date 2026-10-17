@@ -675,8 +675,10 @@ impl AppCore {
         run.stop_flag.store(true, Ordering::Relaxed);
 
         // 2. Stop reader thread (join within 1 s per §10)
-        if let Some(reader) = run.reader.take() {
-            let _ = reader.join();
+        if let Some(reader) = run.reader.take()
+            && let Err(e) = reader.join()
+        {
+            warn!(component = COMPONENT, error = ?e, "reader thread join failed or panicked");
         }
 
         // 3. Send Shutdown command to pipeline to drain and finalize recording
@@ -685,8 +687,10 @@ impl AppCore {
             .send_timeout(PipelineCommand::Shutdown, COMMAND_SEND_TIMEOUT);
 
         // 4. Join pipeline thread
-        if let Some(pipeline_thread) = run.pipeline_thread.take() {
-            let _ = pipeline_thread.join();
+        if let Some(pipeline_thread) = run.pipeline_thread.take()
+            && let Err(e) = pipeline_thread.join()
+        {
+            warn!(component = COMPONENT, error = ?e, "pipeline thread join failed or panicked");
         }
 
         // 5. Close the relay link (the relay session is kept for a resume)
@@ -794,7 +798,10 @@ impl AppCore {
             return Err(CoreError::EngineerAlreadyRunning);
         }
 
-        let engineer_core = Arc::new(Mutex::new(EngineerCore::new(Arc::clone(&self.ui_hub))));
+        let engineer_core = Arc::new(Mutex::new(EngineerCore::with_sink(
+            Arc::clone(&self.ui_hub),
+            Some(Arc::clone(&self.sink)),
+        )));
         let client_slot: EngineerClientSlot = Arc::new(Mutex::new(None));
 
         let core_ticker = Arc::clone(&engineer_core);
@@ -1225,6 +1232,7 @@ impl AppCore {
                 .unwrap_or_else(|| self.idle_driver_status(Origin::Synthetic));
             // The demo is never streamed: no relay applies to it.
             status.network = network_status_dto(None, false, false);
+            status.drops.ui_dropped = self.ui_hub.total_ui_dropped();
             return status;
         }
 

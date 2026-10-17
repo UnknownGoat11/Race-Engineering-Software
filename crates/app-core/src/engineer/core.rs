@@ -20,6 +20,8 @@ use transport::engineer::{EngineerEvent, IdentityCard};
 use transport::state::EngineerEndReason;
 
 use crate::bridge::hub::UiHub;
+use crate::bridge::sink::UiSink;
+use crate::bridge::status::{ErrorDto, UiEvent};
 use crate::engineer::age::{StreamAgeReport, StreamAgeTracker, StreamHealth};
 
 /// Timeout before an uncompleted coalesced capture is flushed to UI (8 ms).
@@ -61,6 +63,7 @@ pub struct EngineerTickOutput {
 /// Engineer core processing engine.
 pub struct EngineerCore {
     hub: Arc<UiHub>,
+    sink: Option<Arc<dyn UiSink>>,
     age_tracker: StreamAgeTracker,
     alert_engine: Option<AlertEngine>,
 
@@ -90,10 +93,16 @@ pub struct EngineerCore {
 impl EngineerCore {
     /// Creates a new `EngineerCore` feeding the provided [`UiHub`].
     pub fn new(hub: Arc<UiHub>) -> Self {
+        Self::with_sink(hub, None)
+    }
+
+    /// Creates a new `EngineerCore` feeding both [`UiHub`] and an optional [`UiSink`].
+    pub fn with_sink(hub: Arc<UiHub>, sink: Option<Arc<dyn UiSink>>) -> Self {
         let alert_engine = AlertEngine::new(&AlertConfig::default()).ok();
 
         Self {
             hub,
+            sink,
             age_tracker: StreamAgeTracker::new(),
             alert_engine,
             current_capture_mono_ns: None,
@@ -114,6 +123,11 @@ impl EngineerCore {
             last_status: None,
             stats: EngineerCoreStats::default(),
         }
+    }
+
+    /// Attaches or updates the UI sink for structured events.
+    pub fn set_sink(&mut self, sink: Option<Arc<dyn UiSink>>) {
+        self.sink = sink;
     }
 
     /// Access diagnostic statistics.
@@ -180,6 +194,11 @@ impl EngineerCore {
                     }
                     Message::ScoringUpdate(scoring) => {
                         self.flush();
+                        if let Some(ref sink) = self.sink
+                            && let Ok(v) = serde_json::to_value(&scoring.scoring)
+                        {
+                            sink.emit(UiEvent::Scoring(v));
+                        }
                         self.latest_scoring = Some(scoring);
                     }
                     Message::DriverStatus(status) => {
@@ -193,6 +212,11 @@ impl EngineerCore {
                         self.latest_recording_status = Some(status);
                     }
                     Message::SessionEvent(event_msg) => {
+                        if let Some(ref sink) = self.sink
+                            && let Ok(v) = serde_json::to_value(&event_msg.record.event)
+                        {
+                            sink.emit(UiEvent::SessionEvent(v));
+                        }
                         if self.session_events.len() >= MAX_ENGINEER_SESSION_EVENTS {
                             self.session_events.pop_front();
                         }
@@ -208,6 +232,15 @@ impl EngineerCore {
                             self.incompatible_schema = true;
                         } else {
                             self.schema = Some(schema);
+                        }
+                    }
+                    Message::Error(err) => {
+                        if let Some(ref sink) = self.sink {
+                            sink.emit(UiEvent::Error(ErrorDto {
+                                category: "relay".to_string(),
+                                message: format!("{:?}: {}", err.code, err.message),
+                                fatal: err.fatal,
+                            }));
                         }
                     }
                     _ => {}
@@ -236,6 +269,13 @@ impl EngineerCore {
                 self.driver_away = None;
             }
             EngineerEvent::RelayError { code, message } => {
+                if let Some(ref sink) = self.sink {
+                    sink.emit(UiEvent::Error(ErrorDto {
+                        category: "relay".to_string(),
+                        message: format!("{code:?}: {message}"),
+                        fatal: false,
+                    }));
+                }
                 self.latest_relay_error = Some((code, message));
             }
         }

@@ -16,6 +16,7 @@ use transport::credentials::MemoryCredentialStore;
 use app_core::bridge::sink::{SinkClosed, SubscriptionId, UiSink};
 use app_core::bridge::status::{AppMode, Origin, UiEvent};
 use app_core::core::{AppCore, CoreError};
+#[cfg(feature = "demo")]
 use app_core::driver::pipeline::CommandRejected;
 use app_core::driver::reader_thread::SnapshotSource;
 use app_core::settings::CoreSettings;
@@ -138,7 +139,12 @@ fn test_core_demo_mode_lifecycle_and_commands() {
     core.start_demo(synthetic::Scenario::normal_lap(1))
         .expect("start demo");
     assert!(core.is_demo_running());
-    assert_eq!(core.status().origin, Origin::Synthetic);
+    let status = core.status();
+    assert_eq!(status.origin, Origin::Synthetic);
+    assert_eq!(
+        status.drops.ui_dropped, 0,
+        "Finding 8: ui_dropped must be refreshed in demo status"
+    );
 
     // 2. Starting demo again must fail
     let second_start = core.start_demo(synthetic::Scenario::normal_lap(1));

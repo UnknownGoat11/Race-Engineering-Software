@@ -106,6 +106,7 @@ pub enum SessionInputEvent {
         et_s: f64,
         identity: SessionIdentity,
         session_id: Option<u64>,
+        now_unix_s: Option<u64>,
     },
     /// Periodic housekeeping tick expired without receiving a frame (staleness detection).
     FrameTimeout { in_realtime: bool },
@@ -371,6 +372,7 @@ impl DriverSessionMachine {
                     ReaderState::Incompatible => {
                         self.lmu_source_state = LmuSourceState::Error;
                         self.stage = DriverSessionStage::Incompatible;
+                        self.session_started_at_unix_s = None;
                         actions.push(SessionAction::SendStaleBlock);
                         actions.push(SessionAction::FinishRecordingSession);
                         if self.streaming {
@@ -394,6 +396,7 @@ impl DriverSessionMachine {
                 et_s,
                 identity,
                 session_id,
+                now_unix_s,
             } => {
                 if let Some(sid) = session_id {
                     self.active_session_id = Some(sid);
@@ -470,6 +473,8 @@ impl DriverSessionMachine {
                         // Per owner decision Q3: KEEP the relay session!
                         // Finish old local recording session and start a new one.
                         actions.push(SessionAction::FinishRecordingSession);
+                        self.session_started_at_unix_s =
+                            if id_complete { now_unix_s } else { None };
 
                         if track_changed {
                             actions.push(SessionAction::EmitSessionEvent(
@@ -523,15 +528,18 @@ impl DriverSessionMachine {
                     }
                 }
 
-                if id_complete
-                    && (self.stage == DriverSessionStage::TelemetryAvailable
+                if id_complete {
+                    if self.session_started_at_unix_s.is_none() {
+                        self.session_started_at_unix_s = now_unix_s;
+                    }
+                    if (self.stage == DriverSessionStage::TelemetryAvailable
                         || self.stage == DriverSessionStage::Stalled
                         || self.stage == DriverSessionStage::Connecting)
-                {
-                    if self.stage != DriverSessionStage::Streaming {
+                        && self.stage != DriverSessionStage::Streaming
+                    {
                         self.stage = DriverSessionStage::SessionReady;
                     }
-                } else if !id_complete && self.stage == DriverSessionStage::Stalled {
+                } else if self.stage == DriverSessionStage::Stalled {
                     self.stage = DriverSessionStage::TelemetryAvailable;
                 }
 
@@ -637,6 +645,7 @@ impl DriverSessionMachine {
                 self.stage = DriverSessionStage::Idle;
                 self.active_identity = None;
                 self.last_et_s = None;
+                self.session_started_at_unix_s = None;
             }
         }
 

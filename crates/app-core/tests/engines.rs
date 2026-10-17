@@ -394,4 +394,77 @@ fn engine_state_dto_json_serialization() {
     assert!(json.contains("\"tyre\""));
     assert!(json.contains("\"brake\""));
     assert!(json.contains("\"energy\""));
+    assert!(json.contains("\"aids\""));
+}
+
+#[test]
+fn test_finding_4_aids_engine_and_extended_channels_published() {
+    let mut hub = EngineHub::new().expect("create engine hub");
+
+    // Frame 1: Before any lap completes, duty cycle is Unavailable (never 0)
+    let mut f1 = make_base_frame(1_000_000_000, 10.0, 1, 0.0, 0.1);
+    f1.set_valid(ch::TC_ACTIVE, Value::Bool(true))
+        .expect("set tc");
+    f1.set_valid(ch::ABS_ACTIVE, Value::Bool(true))
+        .expect("set abs");
+    let out1 = hub.process_frame(&mut f1, None);
+    assert_eq!(out1.publish_errors, 0);
+
+    let tc_duty_initial = f1.get(ch::TC_DUTY);
+    assert_eq!(
+        tc_duty_initial.quality,
+        Quality::Unavailable,
+        "TC_DUTY must be Unavailable before first observed lap completes (Finding 4)"
+    );
+
+    // Complete Lap 1 to establish observed start boundary
+    let mut f2 = make_base_frame(100_000_000_000, 100.0, 2, 100.0, 0.01);
+    f2.set_valid(ch::TC_ACTIVE, Value::Bool(true))
+        .expect("set tc");
+    f2.set_valid(ch::ABS_ACTIVE, Value::Bool(true))
+        .expect("set abs");
+    hub.process_frame(&mut f2, None);
+
+    // Progress through Lap 2 with TC and ABS active
+    let mut f3 = make_base_frame(150_000_000_000, 150.0, 2, 100.0, 0.5);
+    f3.set_valid(ch::TC_ACTIVE, Value::Bool(true))
+        .expect("set tc");
+    f3.set_valid(ch::ABS_ACTIVE, Value::Bool(true))
+        .expect("set abs");
+    hub.process_frame(&mut f3, None);
+
+    // Complete Lap 2 -> Lap 3 starts
+    let mut f4 = make_base_frame(200_000_000_000, 200.0, 3, 200.0, 0.01);
+    f4.set_valid(ch::TC_ACTIVE, Value::Bool(true))
+        .expect("set tc");
+    f4.set_valid(ch::ABS_ACTIVE, Value::Bool(true))
+        .expect("set abs");
+    let out4 = hub.process_frame(&mut f4, None);
+    assert_eq!(
+        out4.publish_errors, 0,
+        "All extended channels must publish without errors"
+    );
+
+    // TC and ABS duty cycle channels must now be published as valid 1.0 (100% active)
+    let tc_duty = f4.get(ch::TC_DUTY);
+    assert!(
+        tc_duty.is_valid(),
+        "TC_DUTY must be published and valid after observed lap (Finding 4)"
+    );
+    assert_eq!(tc_duty.value, Value::F32(1.0));
+
+    let abs_duty = f4.get(ch::ABS_DUTY);
+    assert!(
+        abs_duty.is_valid(),
+        "ABS_DUTY must be published and valid after observed lap (Finding 4)"
+    );
+    assert_eq!(abs_duty.value, Value::F32(1.0));
+
+    // Tyre extended bands should be published with Unavailable when unmeasured
+    let tyre_delta = f4.get(ch::TYRE_TEMP_DELTA_FL);
+    assert_eq!(
+        tyre_delta.quality,
+        Quality::Unavailable,
+        "Unmeasured extended channel must be Unavailable, never 0 (Finding 4)"
+    );
 }

@@ -32,6 +32,7 @@ use lmu_reader::{
 };
 use parking_lot::Mutex;
 use recorder::{RecordKind, RecorderConfig, TimeRange};
+use telemetry_model::events::SessionEvent;
 use telemetry_model::frame::TelemetryFrame;
 
 fn make_temp_store_dir(test_name: &str) -> PathBuf {
@@ -240,6 +241,15 @@ fn test_pipeline_replay_pitstop_and_recorder_roundtrip() {
         scoring_records > 0,
         "Expected scoring records, got {scoring_records}"
     );
+
+    // Finding 7: Every recorded lap must have stint_number populated
+    let laps = store.laps(session_id).expect("query laps");
+    for lap in &laps {
+        assert!(
+            lap.stint_number.is_some(),
+            "LapRecord must have stint_number populated (Finding 7)"
+        );
+    }
 
     let _ = std::fs::remove_dir_all(&store_dir);
 }
@@ -576,6 +586,113 @@ fn test_pipeline_thread_spawn_and_command_shutdown() {
         "Pipeline thread must report exactly 10 frames processed"
     );
     assert_eq!(summary.reader_overruns, 0);
+
+    // Finding 3: Recorder lifecycle events routed to sink
+    let events = sink.events.lock().clone();
+    let session_events: Vec<SessionEvent> = events
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::SessionEvent(val) => serde_json::from_value(val).ok(),
+            _ => None,
+        })
+        .collect();
+    let has_started = session_events
+        .iter()
+        .any(|e| matches!(e, SessionEvent::RecordingStarted { .. }));
+    let has_stopped = session_events
+        .iter()
+        .any(|e| matches!(e, SessionEvent::RecordingStopped { .. }));
+    assert!(
+        has_started,
+        "RecordingStarted must be routed to UiSink (Finding 3)"
+    );
+    assert!(
+        has_stopped,
+        "RecordingStopped must be routed to UiSink (Finding 3)"
+    );
+
+    let _ = std::fs::remove_dir_all(&store_dir);
+}
+
+#[test]
+fn test_finding_2_recorder_disk_alerts_routed_to_sink() {
+    use app_core::driver::recorder_sup::{DiskProbeFactory, SimulatedDiskProbe};
+
+    let store_dir = make_temp_store_dir("finding2_alerts");
+    let clock = AppClock::new();
+    let session_settings = DriverSessionSettings {
+        auto_stream: false,
+        origin: Origin::Lmu,
+        ..Default::default()
+    };
+    let mut recorder_config = RecorderSupervisorConfig {
+        recorder: RecorderConfig::new(&store_dir),
+        enabled: true,
+    };
+    recorder_config.recorder.disk_check_interval = Duration::from_millis(10);
+    // Start with critically low disk space (10 MB < 500 MB default critical threshold)
+    let probe = Arc::new(SimulatedDiskProbe::new(10 * 1024 * 1024));
+    let p_factory: DiskProbeFactory = {
+        let p = Arc::clone(&probe);
+        Arc::new(move || Box::new((*p).clone()))
+    };
+    let recorder =
+        RecorderSupervisor::open(recorder_config, Some(p_factory), None).expect("open supervisor");
+    let ui_hub = Arc::new(UiHub::new());
+    let sink = Arc::new(TestUiSink::new());
+
+    let mut pipeline = DriverPipeline::new(
+        clock,
+        session_settings,
+        EngineHubConfig::default(),
+        Some(recorder),
+        None,
+        ui_hub,
+        Some(sink.clone()),
+    )
+    .expect("create pipeline");
+
+    let capture_path = test_capture_path();
+    let mut replay = CaptureReplay::open(&capture_path).expect("open capture replay");
+    let snap = replay
+        .next_snapshot()
+        .expect("read")
+        .expect("valid snapshot");
+
+    // Feed a frame so recorder session starts
+    pipeline
+        .step(PipelineInput::Lmu(Box::new(PipelineLmuInput {
+            snapshot: Box::new(snap),
+            overrun_before: false,
+            stats: None,
+        })))
+        .expect("step");
+
+    // Wait for disk check interval to trigger
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Send housekeeping tick which polls events via rec.poll_events()
+    pipeline.step(PipelineInput::Tick).expect("tick");
+
+    let events = sink.events.lock().clone();
+    let session_events: Vec<SessionEvent> = events
+        .into_iter()
+        .filter_map(|e| match e {
+            UiEvent::SessionEvent(val) => serde_json::from_value(val).ok(),
+            _ => None,
+        })
+        .collect();
+    let alert_found = session_events.iter().any(|e| {
+        matches!(
+            e,
+            SessionEvent::AlertRaised { alert_id, .. }
+                if alert_id == "disk_space_critical"
+        )
+    });
+    assert!(
+        alert_found,
+        "Critical disk space alert from rec.poll_events() must be routed to UiSink (Finding 2)"
+    );
 
     let _ = std::fs::remove_dir_all(&store_dir);
 }

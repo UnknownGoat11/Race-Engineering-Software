@@ -31,20 +31,26 @@ use telemetry_model::uibatch::{FLAG_GAP_BEFORE, parse};
 use telemetry_model::value::{Sample, Value};
 use transport::engineer::{EngineerEvent, IdentityCard, InboundFrame};
 
-/// Test mock sink that records received UI batches.
+/// Test mock sink that records received UI batches and events.
 struct MockUiSink {
     batches: Mutex<Vec<Vec<u8>>>,
+    events: Mutex<Vec<UiEvent>>,
 }
 
 impl MockUiSink {
     fn new() -> Self {
         Self {
             batches: Mutex::new(Vec::new()),
+            events: Mutex::new(Vec::new()),
         }
     }
 
     fn batches(&self) -> Vec<Vec<u8>> {
         self.batches.lock().clone()
+    }
+
+    fn events(&self) -> Vec<UiEvent> {
+        self.events.lock().clone()
     }
 }
 
@@ -54,7 +60,9 @@ impl UiSink for MockUiSink {
         Ok(())
     }
 
-    fn emit(&self, _event: UiEvent) {}
+    fn emit(&self, event: UiEvent) {
+        self.events.lock().push(event);
+    }
 
     fn is_visible(&self) -> bool {
         true
@@ -468,4 +476,85 @@ fn scoring_driver_status_and_presence_updates() {
     core.handle_event(EngineerEvent::DriverBack, 2_005_000_000);
     let tick = core.tick(2_005_000_000, None, None);
     assert!(!tick.status.driver_away);
+}
+
+#[test]
+fn test_finding_5_engineer_core_emits_scoring_events_and_errors_to_ui_sink() {
+    let hub = Arc::new(UiHub::new());
+    let sink = Arc::new(MockUiSink::new());
+    let mut core = EngineerCore::with_sink(hub, Some(sink.clone() as Arc<dyn UiSink>));
+
+    // 1. Scoring update -> UiEvent::Scoring
+    let scoring = ScoringUpdate {
+        capture: protocol::messages::CaptureTime {
+            mono_ns: 1_000_000_000,
+            relay_ns_est: None,
+        },
+        scoring: ScoringState::default(),
+    };
+    core.handle_event(
+        EngineerEvent::Frame(Box::new(make_inbound_frame(
+            Message::ScoringUpdate(scoring),
+            1_000_000_000,
+        ))),
+        1_000_000_000,
+    );
+
+    let events = sink.events();
+    let has_scoring = events.iter().any(|e| matches!(e, UiEvent::Scoring(_)));
+    assert!(
+        has_scoring,
+        "EngineerCore must emit UiEvent::Scoring on ScoringUpdate (Finding 5)"
+    );
+
+    // 2. Session event -> UiEvent::SessionEvent
+    let event = EventRecord::new(
+        EventTime {
+            source_et_s: Some(10.0),
+            mono_ns: 1_000_000_000,
+        },
+        Some(1),
+        SessionEvent::LmuConnected {
+            game_version: Some(10402),
+        },
+    );
+    let msg = SessionEventMsg {
+        capture: protocol::messages::CaptureTime {
+            mono_ns: 1_000_000_000,
+            relay_ns_est: None,
+        },
+        record: event,
+    };
+    core.handle_event(
+        EngineerEvent::Frame(Box::new(make_inbound_frame(
+            Message::SessionEvent(msg),
+            1_000_000_000,
+        ))),
+        1_000_000_000,
+    );
+
+    let events = sink.events();
+    let has_session_event = events.iter().any(|e| matches!(e, UiEvent::SessionEvent(_)));
+    assert!(
+        has_session_event,
+        "EngineerCore must emit UiEvent::SessionEvent on SessionEventMsg (Finding 5)"
+    );
+
+    // 3. Relay error -> UiEvent::Error
+    core.handle_event(
+        EngineerEvent::RelayError {
+            code: protocol::messages::ErrorCode::NotAuthorized,
+            message: "Unauthorized".to_string(),
+        },
+        1_000_000_000,
+    );
+
+    let events = sink.events();
+    let has_error = events
+        .iter()
+        .any(|e| matches!(e, UiEvent::Error(err) if err.message.contains("Unauthorized")));
+    assert!(
+        has_error,
+        "EngineerCore must emit UiEvent::Error on RelayError (Finding 5)"
+    );
 }

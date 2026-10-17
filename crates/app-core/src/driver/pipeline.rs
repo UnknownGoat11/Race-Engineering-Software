@@ -449,8 +449,9 @@ impl DriverPipeline {
             }
             if let Some(ref mut rec) = self.recorder
                 && let Ok(bytes) = postcard::to_stdvec(scoring_state)
+                && let Err(err) = rec.append_scoring(snapshot.capture_mono_ns, &bytes)
             {
-                let _ = rec.append_scoring(snapshot.capture_mono_ns, &bytes);
+                warn!(component = COMPONENT, error = %err, "failed to append scoring record to recorder");
             }
             if let Some(ref sink) = self.sink
                 && let Ok(v) = serde_json::to_value(scoring_state)
@@ -481,6 +482,7 @@ impl DriverPipeline {
 
         if let Some(mut frame) = output.frame {
             let now_mono_ns = self.clock.now_ns();
+            let now_unix_s = self.clock.now_unix_s();
             self.pipeline_latency_ns = now_mono_ns.saturating_sub(frame.capture_mono_ns);
             self.last_telemetry_mono_ns = Some(frame.capture_mono_ns);
             self.last_frame_received_mono_ns = Some(now_mono_ns);
@@ -495,6 +497,7 @@ impl DriverPipeline {
                 et_s: frame.source_et_s.unwrap_or(0.0),
                 identity,
                 session_id: None,
+                now_unix_s: Some(now_unix_s),
             });
             self.execute_session_actions(actions);
 
@@ -506,6 +509,26 @@ impl DriverPipeline {
             // Route engine session events:
             for event in &engine_outcome.events {
                 self.route_session_event(event, frame.capture_mono_ns, frame.source_et_s);
+            }
+
+            // Route stint completions to recorder index:
+            for stint_ev in &engine_outcome.stint_events {
+                if let race_engines::stint::StintEvent::Ended { number, .. } = stint_ev
+                    && let Some(ref mut rec) = self.recorder
+                {
+                    let rec_stint = recorder::StintRecord {
+                        stint_number: *number,
+                        start_capture_ns: frame.capture_mono_ns,
+                        end_capture_ns: Some(frame.capture_mono_ns),
+                        start_lap: None,
+                        end_lap: None,
+                        driver: None,
+                        metrics_json: None,
+                    };
+                    if let Err(e) = rec.record_stint(rec_stint) {
+                        warn!(component = COMPONENT, error = %e, "failed to record stint in session index");
+                    }
+                }
             }
 
             // Route alerts to UI:
@@ -581,8 +604,10 @@ impl DriverPipeline {
             let block: Arc<[u8]> = Arc::from(canonical_buf.into_boxed_slice());
 
             // FanOut (non-blocking):
-            if let Some(ref mut rec) = self.recorder {
-                let _ = rec.append_telemetry(frame.capture_mono_ns, &block);
+            if let Some(ref mut rec) = self.recorder
+                && let Err(err) = rec.append_telemetry(frame.capture_mono_ns, &block)
+            {
+                warn!(component = COMPONENT, error = %err, "failed to append telemetry record to recorder");
             }
             self.ui_hub
                 .push_block_with_gap(Arc::clone(&block), is_keyframe, self.gap_before);
@@ -840,7 +865,11 @@ impl DriverPipeline {
 
         // 3. Recorder events drain:
         if let Some(ref mut rec) = self.recorder {
-            let _ = rec.poll_events();
+            let outcome = rec.poll_events();
+            let source_et_s = self.last_frame.as_ref().and_then(|f| f.source_et_s);
+            for evt in outcome.session_events {
+                self.route_session_event(&evt, now_mono_ns, source_et_s);
+            }
         }
 
         // 4. Clock skew tracking (sleep/resume):
@@ -950,17 +979,25 @@ impl DriverPipeline {
         mono_ns: u64,
         source_et_s: Option<f64>,
     ) {
-        if let Some(ref mut rec) = self.recorder
-            && let Ok(bytes) = postcard::to_stdvec(event)
-        {
-            let _ = rec.append_session_event(mono_ns, &bytes);
+        if let Some(ref mut rec) = self.recorder {
+            match postcard::to_stdvec(event) {
+                Ok(bytes) => {
+                    if let Err(err) = rec.append_session_event(mono_ns, &bytes) {
+                        warn!(component = COMPONENT, error = %err, "failed to append session event to recorder");
+                    }
+                }
+                Err(err) => {
+                    warn!(component = COMPONENT, error = %err, "failed to encode session event with postcard");
+                }
+            }
         }
 
         // If this is a completed lap, also index it in the recorder:
         if let SessionEvent::LapCompleted { lap, time_s, valid } = event {
+            let stint_no = self.engines.stint.snapshot().number.value;
             let lap_rec = LapRecord {
                 lap_number: *lap,
-                stint_number: None,
+                stint_number: stint_no,
                 start_capture_ns: mono_ns,
                 end_capture_ns: Some(mono_ns),
                 lap_time_s: *time_s,
@@ -969,8 +1006,10 @@ impl DriverPipeline {
                 pit_lap: None,
                 metrics_json: None,
             };
-            if let Some(ref mut rec) = self.recorder {
-                let _ = rec.record_lap(lap_rec);
+            if let Some(ref mut rec) = self.recorder
+                && let Err(err) = rec.record_lap(lap_rec)
+            {
+                warn!(component = COMPONENT, error = %err, "failed to record lap in session index");
             }
         }
 
@@ -1127,7 +1166,12 @@ impl DriverPipeline {
                 let ends_relay = actions.contains(&SessionAction::EndStreamingSession);
                 let result = self.execute_session_actions_checked(actions);
                 if let Some(ref mut rec) = self.recorder {
-                    let _ = rec.on_session_end();
+                    let events = rec.on_session_end();
+                    let now_mono_ns = self.clock.now_ns();
+                    let source_et_s = self.last_frame.as_ref().and_then(|f| f.source_et_s);
+                    for evt in events {
+                        self.route_session_event(&evt, now_mono_ns, source_et_s);
+                    }
                 }
                 // A relay session kept for a resume (streaming stopped) is ended as well.
                 if !ends_relay
@@ -1142,8 +1186,14 @@ impl DriverPipeline {
                     .recorder
                     .as_mut()
                     .ok_or(CommandRejected::RecorderUnavailable)?;
-                rec.set_enabled(enabled)
+                let events = rec
+                    .set_enabled(enabled)
                     .map_err(|e| CommandRejected::Recorder(e.to_string()))?;
+                let now_mono_ns = self.clock.now_ns();
+                let source_et_s = self.last_frame.as_ref().and_then(|f| f.source_et_s);
+                for evt in events {
+                    self.route_session_event(&evt, now_mono_ns, source_et_s);
+                }
                 Ok(())
             }
             PipelineCommand::AddMarker(text) => {
@@ -1205,7 +1255,12 @@ impl DriverPipeline {
             }
             PipelineCommand::Shutdown => {
                 if let Some(ref mut rec) = self.recorder {
-                    let _ = rec.on_session_end();
+                    let events = rec.on_session_end();
+                    let now_mono_ns = self.clock.now_ns();
+                    let source_et_s = self.last_frame.as_ref().and_then(|f| f.source_et_s);
+                    for evt in events {
+                        self.route_session_event(&evt, now_mono_ns, source_et_s);
+                    }
                 }
                 Ok(())
             }
@@ -1242,19 +1297,34 @@ impl DriverPipeline {
         {
             match action {
                 SessionAction::StartRecording(meta) => {
-                    if let Some(ref mut rec) = self.recorder
-                        && let Err(err) = rec.on_session_ready(meta)
-                    {
-                        warn!(
-                            component = COMPONENT,
-                            error = %err,
-                            "failed to start local recording session"
-                        );
+                    if let Some(ref mut rec) = self.recorder {
+                        match rec.on_session_ready(meta) {
+                            Ok(events) => {
+                                let now_mono_ns = self.clock.now_ns();
+                                let source_et_s =
+                                    self.last_frame.as_ref().and_then(|f| f.source_et_s);
+                                for evt in events {
+                                    self.route_session_event(&evt, now_mono_ns, source_et_s);
+                                }
+                            }
+                            Err(err) => {
+                                warn!(
+                                    component = COMPONENT,
+                                    error = %err,
+                                    "failed to start local recording session"
+                                );
+                            }
+                        }
                     }
                 }
                 SessionAction::FinishRecordingSegment | SessionAction::FinishRecordingSession => {
                     if let Some(ref mut rec) = self.recorder {
-                        let _ = rec.on_session_stalled();
+                        let events = rec.on_session_stalled();
+                        let now_mono_ns = self.clock.now_ns();
+                        let source_et_s = self.last_frame.as_ref().and_then(|f| f.source_et_s);
+                        for evt in events {
+                            self.route_session_event(&evt, now_mono_ns, source_et_s);
+                        }
                     }
                 }
                 SessionAction::ResumeRecordingSegment => {
@@ -1393,7 +1463,12 @@ impl DriverPipeline {
             "pipeline thread stopping; finalizing recording"
         );
         if let Some(ref mut rec) = self.recorder {
-            let _ = rec.on_session_end();
+            let events = rec.on_session_end();
+            let now_mono_ns = self.clock.now_ns();
+            let source_et_s = self.last_frame.as_ref().and_then(|f| f.source_et_s);
+            for evt in events {
+                self.route_session_event(&evt, now_mono_ns, source_et_s);
+            }
         }
 
         PipelineSummary {
@@ -1491,14 +1566,23 @@ impl DriverPipeline {
         }
 
         // App channels:
-        let latency_s = self.pipeline_latency_ns as f64 / 1_000_000_000.0;
-        let _ = frame.set_valid(ch::PIPELINE_LATENCY, Value::F64(latency_s));
-        let _ = frame.set_valid(ch::SRC_TELEMETRY_AGE, Value::F64(0.0));
-        let scoring_age_s = self.last_scoring_change_mono_ns.map_or(0.0, |t| {
-            (frame.capture_mono_ns.saturating_sub(t) as f64) / 1e9
+        let latency_s = (self.pipeline_latency_ns as f32) / 1e9;
+        let scoring_age_s = self.last_scoring_change_mono_ns.map_or(0.0f32, |t| {
+            (frame.capture_mono_ns.saturating_sub(t) as f32) / 1e9
         });
-        let _ = frame.set_valid(ch::SRC_SCORING_AGE, Value::F64(scoring_age_s));
-        let _ = frame.set_valid(ch::NORMALIZER_FORMULA_VERSION, Value::U32(1));
+
+        if let Err(err) = frame.set_valid(ch::PIPELINE_LATENCY, Value::F32(latency_s)) {
+            warn!(component = COMPONENT, error = %err, "failed to set demo PIPELINE_LATENCY");
+        }
+        if let Err(err) = frame.set_valid(ch::SRC_TELEMETRY_AGE, Value::F32(0.0)) {
+            warn!(component = COMPONENT, error = %err, "failed to set demo SRC_TELEMETRY_AGE");
+        }
+        if let Err(err) = frame.set_valid(ch::SRC_SCORING_AGE, Value::F32(scoring_age_s)) {
+            warn!(component = COMPONENT, error = %err, "failed to set demo SRC_SCORING_AGE");
+        }
+        if let Err(err) = frame.set_valid(ch::NORMALIZER_FORMULA_VERSION, Value::U32(1)) {
+            warn!(component = COMPONENT, error = %err, "failed to set demo NORMALIZER_FORMULA_VERSION");
+        }
 
         // Canonical TLV block encoding (shared between Recorder and UiHub):
         let is_keyframe = self.is_first_frame

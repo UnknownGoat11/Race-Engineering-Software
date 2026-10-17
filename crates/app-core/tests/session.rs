@@ -94,6 +94,7 @@ fn session_lifecycle_lmu_exit_and_restart() {
         et_s: 12.5,
         identity: id.clone(),
         session_id: Some(100),
+        now_unix_s: Some(1_700_000_000),
     });
 
     assert_eq!(machine.stage(), DriverSessionStage::SessionReady);
@@ -153,6 +154,7 @@ fn session_lifecycle_lmu_exit_and_restart() {
         et_s: 1.0, // Regressed from 12.5s
         identity: id,
         session_id: Some(100),
+        now_unix_s: Some(1_700_000_010),
     });
 
     assert_eq!(machine.lmu_source_state(), LmuSourceState::Live);
@@ -189,6 +191,7 @@ fn session_lifecycle_stall_vs_paused() {
         et_s: 100.0,
         identity: id.clone(),
         session_id: Some(200),
+        now_unix_s: Some(1_700_000_000),
     });
     assert_eq!(machine.lmu_source_state(), LmuSourceState::Live);
 
@@ -210,6 +213,7 @@ fn session_lifecycle_stall_vs_paused() {
         et_s: 100.1,
         identity: id.clone(),
         session_id: Some(200),
+        now_unix_s: Some(1_700_000_001),
     });
     assert_eq!(machine.lmu_source_state(), LmuSourceState::Live);
     assert!(actions.contains(&SessionAction::ResumeRecordingSegment));
@@ -229,6 +233,7 @@ fn session_lifecycle_stall_vs_paused() {
         et_s: 105.0,
         identity: id,
         session_id: Some(200),
+        now_unix_s: Some(1_700_000_005),
     });
     assert_eq!(machine.lmu_source_state(), LmuSourceState::Live);
     assert!(actions.contains(&SessionAction::EmitSessionEvent(SessionEvent::LmuResumed)));
@@ -250,6 +255,7 @@ fn session_lifecycle_incompatible_interface() {
         et_s: 10.0,
         identity: sample_identity(),
         session_id: Some(300),
+        now_unix_s: Some(1_700_000_000),
     });
 
     let actions = machine.step(SessionInputEvent::ReaderStateChanged {
@@ -296,6 +302,7 @@ fn auto_stream_gating_and_manual_controls() {
         et_s: 10.0,
         identity: sample_identity(),
         session_id: Some(400),
+        now_unix_s: Some(1_700_000_000),
     });
     assert_eq!(machine.stage(), DriverSessionStage::SessionReady);
     assert!(!machine.is_streaming());
@@ -336,6 +343,7 @@ fn auto_stream_gating_and_manual_controls() {
         et_s: 10.0,
         identity: sample_identity(),
         session_id: Some(401),
+        now_unix_s: Some(1_700_000_000),
     });
     assert_eq!(machine_auto.stage(), DriverSessionStage::Streaming);
     assert!(machine_auto.is_streaming());
@@ -358,6 +366,7 @@ fn auto_stream_gating_and_manual_controls() {
         et_s: 10.0,
         identity: sample_identity(),
         session_id: Some(402),
+        now_unix_s: Some(1_700_000_000),
     });
     assert!(!machine_synth.is_streaming());
     let actions = machine_synth.step(SessionInputEvent::ManualStartStreaming);
@@ -379,6 +388,7 @@ fn sleep_resume_clock_skew_resynchronization() {
         et_s: 50.0,
         identity: sample_identity(),
         session_id: Some(500),
+        now_unix_s: Some(1_700_000_000),
     });
 
     // Clock skew > 5s detected (e.g. laptop wake from sleep)
@@ -424,6 +434,7 @@ fn identity_change_keeps_relay_session_per_owner_decision_q3() {
         et_s: 10.0,
         identity: id1,
         session_id: Some(600),
+        now_unix_s: Some(1_700_000_000),
     });
     machine.step(SessionInputEvent::ManualStartStreaming);
     assert!(machine.is_streaming());
@@ -439,6 +450,7 @@ fn identity_change_keeps_relay_session_per_owner_decision_q3() {
         et_s: 5.0,
         identity: id2,
         session_id: Some(600),
+        now_unix_s: Some(1_700_000_100),
     });
 
     // 1. Relay session STAYS UP: no EndStreamingSession or StopStreaming
@@ -495,6 +507,7 @@ fn manual_end_session_shuts_down_cleanly() {
         et_s: 10.0,
         identity: sample_identity(),
         session_id: Some(700),
+        now_unix_s: Some(1_700_000_000),
     });
     machine.step(SessionInputEvent::ManualStartStreaming);
     assert!(machine.is_streaming());
@@ -515,6 +528,7 @@ fn composite_status_dtos_reflect_state() {
     let session_status = machine.session_status_dto();
     assert_eq!(session_status.car, None);
     assert_eq!(session_status.track, None);
+    assert_eq!(session_status.started_at_unix_s, None);
 
     machine.step(SessionInputEvent::ReaderStateChanged {
         state: ReaderState::Connected,
@@ -527,6 +541,7 @@ fn composite_status_dtos_reflect_state() {
         et_s: 10.0,
         identity: sample_identity(),
         session_id: Some(800),
+        now_unix_s: Some(1_700_000_000),
     });
 
     let lmu_status = machine.lmu_source_status();
@@ -542,4 +557,73 @@ fn composite_status_dtos_reflect_state() {
     );
     assert_eq!(session_status.vehicle_class, Some("Hypercar".to_string()));
     assert_eq!(session_status.session_type, Some("Practice 1".to_string()));
+    assert_eq!(session_status.started_at_unix_s, Some(1_700_000_000));
+}
+
+#[test]
+fn test_finding_6_session_started_at_unix_s_lifecycle() {
+    let mut machine = DriverSessionMachine::new(DriverSessionSettings::default());
+    assert_eq!(machine.session_status_dto().started_at_unix_s, None);
+
+    machine.step(SessionInputEvent::ReaderStateChanged {
+        state: ReaderState::Connected,
+        detail: None,
+        game_version: Some(10402),
+    });
+
+    // 1. Initial frame with complete identity sets started_at_unix_s
+    let id1 = sample_identity();
+    machine.step(SessionInputEvent::FrameReceived {
+        capture_mono_ns: 1_000_000_000,
+        in_realtime: true,
+        et_s: 10.0,
+        identity: id1.clone(),
+        session_id: Some(1001),
+        now_unix_s: Some(1_700_000_123),
+    });
+    assert_eq!(
+        machine.session_status_dto().started_at_unix_s,
+        Some(1_700_000_123),
+        "started_at_unix_s must be populated on session start (Finding 6)"
+    );
+
+    // 2. Subsequent frame must preserve original started_at_unix_s
+    machine.step(SessionInputEvent::FrameReceived {
+        capture_mono_ns: 2_000_000_000,
+        in_realtime: true,
+        et_s: 11.0,
+        identity: id1,
+        session_id: Some(1001),
+        now_unix_s: Some(1_700_000_200),
+    });
+    assert_eq!(
+        machine.session_status_dto().started_at_unix_s,
+        Some(1_700_000_123),
+        "started_at_unix_s must remain stable across frames in same session (Finding 6)"
+    );
+
+    // 3. Identity change (new track) starts a new session and updates started_at_unix_s
+    let mut id2 = sample_identity();
+    id2.track_name = Some("Silverstone".to_string());
+    machine.step(SessionInputEvent::FrameReceived {
+        capture_mono_ns: 3_000_000_000,
+        in_realtime: true,
+        et_s: 1.0,
+        identity: id2,
+        session_id: Some(1001),
+        now_unix_s: Some(1_700_000_500),
+    });
+    assert_eq!(
+        machine.session_status_dto().started_at_unix_s,
+        Some(1_700_000_500),
+        "started_at_unix_s must update on session identity change (Finding 6)"
+    );
+
+    // 4. Manual end session resets started_at_unix_s to None
+    machine.step(SessionInputEvent::ManualEndSession);
+    assert_eq!(
+        machine.session_status_dto().started_at_unix_s,
+        None,
+        "started_at_unix_s must reset to None on ManualEndSession (Finding 6)"
+    );
 }

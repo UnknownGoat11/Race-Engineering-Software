@@ -243,3 +243,108 @@ fn test_demo_stalled_mode_emits_stale_block() {
     let batches = sink.batches.lock();
     assert!(!batches.is_empty(), "stale block must be fanned out to UI");
 }
+
+#[test]
+fn test_finding_1_demo_app_channels_valid_f32_types() {
+    let clock = AppClock::new();
+    let session_settings = DriverSessionSettings {
+        origin: Origin::Synthetic,
+        ..Default::default()
+    };
+
+    let ui_hub = Arc::new(UiHub::new());
+    let sink = Arc::new(TestUiSink::new());
+
+    let mut pipeline = DriverPipeline::new(
+        clock,
+        session_settings,
+        EngineHubConfig::default(),
+        None,
+        None,
+        ui_hub.clone(),
+        Some(sink.clone()),
+    )
+    .expect("create pipeline");
+
+    let mut provider =
+        SyntheticTelemetryProvider::new(DemoMode::acknowledge(), Scenario::normal_lap(1))
+            .expect("create provider");
+
+    // Process a synthetic tick with telemetry and scoring
+    let tick = provider.next_tick().expect("next tick");
+    pipeline
+        .step(PipelineInput::Demo(Box::new(tick)))
+        .expect("step demo tick");
+
+    // Subscribe and flush
+    let _sub_id = ui_hub.subscribe(sink.clone());
+    ui_hub.flush_all();
+
+    let batches = sink.batches.lock();
+    assert!(!batches.is_empty(), "UiSink should receive batch");
+
+    let batch = &batches[0].1;
+    let parsed = telemetry_model::uibatch::parse(batch).expect("parse batch");
+    assert!(!parsed.blocks.is_empty(), "Parsed batch must have blocks");
+
+    let mut found_pipeline_latency = false;
+    let mut found_telemetry_age = false;
+    let mut found_scoring_age = false;
+
+    for block_slice in parsed.block_slices(batch) {
+        let (_header, records) =
+            telemetry_model::codec::decode(block_slice).expect("decode TLV block");
+        for record in records {
+            if record.channel == telemetry_model::ch::PIPELINE_LATENCY {
+                found_pipeline_latency = true;
+                assert_eq!(
+                    record.sample.quality,
+                    telemetry_model::value::Quality::Valid,
+                    "PIPELINE_LATENCY must be valid"
+                );
+                assert!(
+                    matches!(record.sample.value, telemetry_model::value::Value::F32(_)),
+                    "PIPELINE_LATENCY must be F32 value, got {:?}",
+                    record.sample.value
+                );
+            } else if record.channel == telemetry_model::ch::SRC_TELEMETRY_AGE {
+                found_telemetry_age = true;
+                assert_eq!(
+                    record.sample.quality,
+                    telemetry_model::value::Quality::Valid,
+                    "SRC_TELEMETRY_AGE must be valid"
+                );
+                assert_eq!(
+                    record.sample.value,
+                    telemetry_model::value::Value::F32(0.0),
+                    "SRC_TELEMETRY_AGE must be F32(0.0)"
+                );
+            } else if record.channel == telemetry_model::ch::SRC_SCORING_AGE {
+                found_scoring_age = true;
+                assert_eq!(
+                    record.sample.quality,
+                    telemetry_model::value::Quality::Valid,
+                    "SRC_SCORING_AGE must be valid"
+                );
+                assert!(
+                    matches!(record.sample.value, telemetry_model::value::Value::F32(_)),
+                    "SRC_SCORING_AGE must be F32 value, got {:?}",
+                    record.sample.value
+                );
+            }
+        }
+    }
+
+    assert!(
+        found_pipeline_latency,
+        "PIPELINE_LATENCY must be published in demo frame (Finding 1)"
+    );
+    assert!(
+        found_telemetry_age,
+        "SRC_TELEMETRY_AGE must be published in demo frame (Finding 1)"
+    );
+    assert!(
+        found_scoring_age,
+        "SRC_SCORING_AGE must be published in demo frame (Finding 1)"
+    );
+}

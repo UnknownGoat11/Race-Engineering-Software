@@ -20,6 +20,7 @@ use telemetry_model::value::Value;
 use thiserror::Error;
 use tracing::{debug, warn};
 
+use race_engines::aids::{AidsEngine, AidsSample, AidsSnapshot};
 use race_engines::alert::{
     AlertClock, AlertConfig, AlertConfigError, AlertEngine, AlertNotice, AlertState,
 };
@@ -31,9 +32,11 @@ use race_engines::energy::{
 use race_engines::fuel::{
     FuelConfig, FuelContext, FuelEngine, FuelEstimate, FuelLapInfo, FuelSample, RaceFinish,
 };
-use race_engines::publish::{EngineOutputs, publish};
+use race_engines::publish::{EngineOutputs, ExtendedOutputs, publish, publish_extended};
 use race_engines::race::{LapConditions, PitPhase, RaceEngine, RaceSample, RaceSnapshot};
-use race_engines::stint::{StintEngine, StintLap, StintSample, StintSnapshot, stint_max_laps};
+use race_engines::stint::{
+    StintEngine, StintEvent, StintLap, StintSample, StintSnapshot, stint_max_laps,
+};
 use race_engines::timing::{
     LapId, ReferenceKind, ResetReason, TimingConfig, TimingEngine, TimingError, TimingSample,
     TimingSnapshot,
@@ -101,6 +104,10 @@ pub struct EngineFrameOutcome {
     pub tyre: TyreSnapshot,
     /// Brake engine snapshot.
     pub brake: BrakeSnapshot,
+    /// Driver-aid duty cycles snapshot.
+    pub aids: AidsSnapshot,
+    /// Stint boundary events generated during this frame.
+    pub stint_events: Vec<StintEvent>,
     /// Stint maximum laps calculated from fuel and energy limits.
     pub stint_max_laps: Metric<f64>,
     /// Total publication errors encountered during this frame.
@@ -118,6 +125,7 @@ impl EngineFrameOutcome {
             energy: self.energy,
             tyre: self.tyre,
             brake: self.brake,
+            aids: self.aids,
         }
     }
 }
@@ -139,6 +147,8 @@ pub struct EngineStateDto {
     pub tyre: TyreSnapshot,
     /// Brake snapshot.
     pub brake: BrakeSnapshot,
+    /// Driver-aid duty cycles snapshot.
+    pub aids: AidsSnapshot,
 }
 
 /// Pure, deterministic hub coordinating all calculation engines.
@@ -150,6 +160,7 @@ pub struct EngineHub {
     pub tyre: TyreEngine,
     pub brake: BrakeEngine,
     pub energy: EnergyEngine,
+    pub aids: AidsEngine,
     pub alert: AlertEngine,
     publish_errors_count: u64,
     last_pb_lap: Option<LapId>,
@@ -181,6 +192,7 @@ impl EngineHub {
         let tyre = TyreEngine::new(config.tyre)?;
         let brake = BrakeEngine::new(config.brake)?;
         let energy = EnergyEngine::new(config.energy)?;
+        let aids = AidsEngine::new();
         let alert = AlertEngine::new(&config.alert)?;
 
         Ok(Self {
@@ -191,6 +203,7 @@ impl EngineHub {
             tyre,
             brake,
             energy,
+            aids,
             alert,
             publish_errors_count: 0,
             last_pb_lap: None,
@@ -207,6 +220,7 @@ impl EngineHub {
     /// Signals a reset to the timing engine when the context changes.
     pub fn set_context(&mut self, key: CompatibilityKey) -> Option<ResetReason> {
         self.last_pb_lap = None;
+        self.aids = AidsEngine::new();
         self.timing.set_context(key)
     }
 
@@ -285,8 +299,8 @@ impl EngineHub {
         }
 
         // ---------------------------------------------------------------------
-        // Step 3: Per-frame Telemetry Updates for Fuel & Energy
-        // (Per fuel.rs: call lap_completed right after the sample on which it completed)
+        // Step 3: Per-frame Telemetry Updates for Fuel, Energy, Aids
+        // (Per fuel.rs / aids.rs: call lap_completed right after the sample on which it completed)
         // ---------------------------------------------------------------------
         if let Some(fuel_sample) = FuelSample::from_frame(frame) {
             self.fuel.update(&fuel_sample);
@@ -297,10 +311,16 @@ impl EngineHub {
             self.energy.update(&energy_sample);
         }
 
+        if let Some(aids_sample) = AidsSample::from_frame(frame) {
+            self.aids.update(&aids_sample);
+        }
+
         // ---------------------------------------------------------------------
-        // Step 4: Lap-completion hooks (Fuel, Energy, Stint)
+        // Step 4: Lap-completion hooks (Fuel, Energy, Stint, Aids)
         // ---------------------------------------------------------------------
         if let Some(ref lap_rec) = timing_update.completed_lap {
+            self.aids.lap_completed();
+
             let conditions = completed_lap_conditions.unwrap_or(LapConditions {
                 formation: false,
                 caution: false,
@@ -389,7 +409,7 @@ impl EngineHub {
             front_compound,
             rear_compound,
         };
-        let _stint_events = self.stint.update(&stint_sample);
+        let stint_events = self.stint.update(&stint_sample);
 
         if let Some(tyre_sample) = TyreSample::from_frame(frame) {
             self.tyre.update(&tyre_sample);
@@ -400,7 +420,7 @@ impl EngineHub {
         }
 
         // ---------------------------------------------------------------------
-        // Step 5: Snapshots
+        // Step 6: Snapshots
         // ---------------------------------------------------------------------
         let timing_snap = self.timing.snapshot();
         let race_snap = self.race.snapshot().cloned();
@@ -418,6 +438,9 @@ impl EngineHub {
         let fuel_estimate = self.fuel.estimate(&fuel_ctx);
         let stint_snap = self.stint.snapshot();
         let energy_snap = self.energy.snapshot();
+        let tyre_snap = self.tyre.snapshot();
+        let brake_snap = self.brake.snapshot();
+        let aids_snap = self.aids.snapshot();
 
         let max_laps = stint_max_laps(
             fuel_estimate.capacity.value,
@@ -427,7 +450,7 @@ impl EngineHub {
         );
 
         // ---------------------------------------------------------------------
-        // Step 6: Publish engine outputs to frame
+        // Step 7: Publish engine outputs to frame
         // ---------------------------------------------------------------------
         let outputs = EngineOutputs {
             timing: Some(&timing_snap),
@@ -440,10 +463,20 @@ impl EngineHub {
         let pub_report = publish(frame, &outputs);
         let energy_pub_report = publish_energy(frame, Some(&energy_snap));
 
+        let extended_outputs = ExtendedOutputs {
+            tyre: Some(&tyre_snap),
+            brake: Some(&brake_snap),
+            map_lap_distance: None,
+            race: race_snap.as_ref(),
+            aids: Some(&aids_snap),
+        };
+        let ext_pub_report = publish_extended(frame, &extended_outputs);
+
         let total_publish_errors = pub_report
             .errors
             .len()
-            .saturating_add(energy_pub_report.errors.len());
+            .saturating_add(energy_pub_report.errors.len())
+            .saturating_add(ext_pub_report.errors.len());
 
         if total_publish_errors > 0 {
             self.publish_errors_count = self
@@ -455,10 +488,6 @@ impl EngineHub {
                 "publish reported channel contract or frame errors"
             );
         }
-
-        // ---------------------------------------------------------------------
-        // Step 7: App Channels (CALC_ENGINE_VERSION is written by publish())
-        // ---------------------------------------------------------------------
 
         // ---------------------------------------------------------------------
         // Step 8: Alerts evaluation
@@ -489,9 +518,6 @@ impl EngineHub {
             }
         }
 
-        let tyre_snap = self.tyre.snapshot();
-        let brake_snap = self.brake.snapshot();
-
         debug!(
             component = COMPONENT,
             events_count = events.len(),
@@ -510,6 +536,8 @@ impl EngineHub {
             energy: energy_snap,
             tyre: tyre_snap,
             brake: brake_snap,
+            aids: aids_snap,
+            stint_events,
             stint_max_laps: max_laps,
             publish_errors: total_publish_errors,
         }
