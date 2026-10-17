@@ -3,7 +3,8 @@ import { ConfigIssueBanner } from '../components/ConfigIssueBanner';
 import { PanelErrorBoundary } from '../components/ErrorBoundary';
 import type { AppInfo, ConfigSnapshot, Mode } from '../lib/ipc';
 import { environmentLabel, modeLabel } from '../lib/labels';
-import { OverviewPage } from './OverviewPage';
+import { DriverScreen } from './DriverScreen';
+import { EngineerScreen } from './EngineerScreen';
 import { SettingsPage } from './SettingsPage';
 
 type Page = 'overview' | 'settings';
@@ -60,9 +61,15 @@ export function ShellScreen({ info, snapshot, mode, onChangeMode }: ShellScreenP
 
       <main className="shell-content">
         {page === 'overview' ? (
-          <PanelErrorBoundary name="Overview">
-            <OverviewPage mode={mode} />
-          </PanelErrorBoundary>
+          mode === 'driver' ? (
+            <PanelErrorBoundary name="Driver Screen">
+              <DriverScreen />
+            </PanelErrorBoundary>
+          ) : (
+            <PanelErrorBoundary name="Engineer Screen">
+              <EngineerScreen />
+            </PanelErrorBoundary>
+          )
         ) : (
           <PanelErrorBoundary name="Settings">
             <SettingsPage info={info} snapshot={snapshot} mode={mode} onChangeMode={onChangeMode} />

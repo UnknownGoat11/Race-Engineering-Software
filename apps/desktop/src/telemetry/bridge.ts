@@ -81,6 +81,15 @@ export function createBridgeSource(options: BridgeSourceOptions = {}): BridgeSou
       attempt += 1;
       const mine = attempt;
       silence();
+      if (!isTauri()) {
+        const ipcError = new IpcError(
+          'bridge_subscribe',
+          'backend_unavailable',
+          'The desktop backend is not available. Start the app with `pnpm tauri dev`.',
+        );
+        options.onError?.(ipcError);
+        return;
+      }
       const current = new Channel<ArrayBuffer>();
       current.onmessage = (batch: ArrayBuffer) => {
         if (!ended && mine === attempt) listener(batch);
