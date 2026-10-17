@@ -1,0 +1,202 @@
+/*
+ * Track Map styling (spec §23–24, §79, §342).
+ * Professional dark motorsport theme using tokens from tokens.css.
+ */
+
+.trackmap-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 240px;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.trackmap-header {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  right: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.trackmap-title-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(18, 21, 26, 0.85);
+  padding: 4px 8px;
+  border-radius: 3px;
+  border: 1px solid var(--color-border);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+
+.trackmap-track-name {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+  letter-spacing: 0.5px;
+}
+
+.trackmap-track-length {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-dim);
+}
+
+.trackmap-controls {
+  display: flex;
+  gap: 4px;
+  pointer-events: auto;
+}
+
+.trackmap-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Track Geometry */
+.trackmap-path-base {
+  fill: none;
+  stroke: var(--color-border-strong);
+  stroke-width: 5px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trackmap-path-inner {
+  fill: none;
+  stroke: #1f242c;
+  stroke-width: 2px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.trackmap-path-pit {
+  fill: none;
+  stroke: var(--color-text-dim);
+  stroke-width: 2px;
+  stroke-dasharray: 4 3;
+}
+
+.trackmap-start-finish {
+  stroke: #ffffff;
+  stroke-width: 3.5px;
+  stroke-linecap: square;
+}
+
+.trackmap-sector-line {
+  stroke: var(--graph-marker-sector);
+  stroke-width: 2px;
+  stroke-dasharray: 2 2;
+}
+
+.trackmap-sector-text {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  fill: var(--color-text-muted);
+  text-anchor: middle;
+  dominant-baseline: middle;
+  user-select: none;
+}
+
+/* Vehicle Markers */
+.trackmap-car-halo {
+  fill: rgba(76, 157, 255, 0.25);
+  animation: trackmap-pulse 2s infinite ease-in-out;
+}
+
+@keyframes trackmap-pulse {
+  0% { r: 8px; opacity: 0.6; }
+  50% { r: 12px; opacity: 0.2; }
+  100% { r: 8px; opacity: 0.6; }
+}
+
+.trackmap-car-driver {
+  fill: var(--color-accent);
+  stroke: #ffffff;
+  stroke-width: 2px;
+}
+
+.trackmap-car-driver.stale {
+  fill: var(--color-quality-stale);
+}
+
+.trackmap-car-competitor {
+  stroke: var(--color-surface);
+  stroke-width: 1.5px;
+}
+
+.trackmap-car-competitor.in-pits {
+  opacity: 0.6;
+}
+
+.trackmap-car-label {
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  fill: #ffffff;
+  text-anchor: middle;
+  dominant-baseline: central;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Fallback HUD */
+.trackmap-fallback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  padding: 24px;
+  gap: 16px;
+}
+
+.trackmap-fallback-message {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.trackmap-progress-bar-container {
+  width: 100%;
+  max-width: 480px;
+  height: 24px;
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+
+.trackmap-progress-fill {
+  height: 100%;
+  background-color: var(--color-accent);
+  transition: width 0.1s linear;
+}
+
+.trackmap-progress-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text);
+  font-weight: 600;
+}
