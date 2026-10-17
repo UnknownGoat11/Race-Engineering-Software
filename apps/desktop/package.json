@@ -17,7 +17,8 @@
     "bench:graph:prod": "vite build --config bench/vite.config.ts && vite preview --config bench/vite.config.ts",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:installer": "tauri build --bundles nsis --ci"
   },
   "dependencies": {
     "@tauri-apps/api": "~2.12.0",
