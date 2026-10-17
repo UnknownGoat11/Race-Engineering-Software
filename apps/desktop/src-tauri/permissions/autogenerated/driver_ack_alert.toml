@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-driver-ack-alert"
+description = "Enables the driver_ack_alert command without any pre-configured scope."
+commands.allow = ["driver_ack_alert"]
+
+[[permission]]
+identifier = "deny-driver-ack-alert"
+description = "Denies the driver_ack_alert command without any pre-configured scope."
+commands.deny = ["driver_ack_alert"]

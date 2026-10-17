@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-test-relay-connection"
+description = "Enables the test_relay_connection command without any pre-configured scope."
+commands.allow = ["test_relay_connection"]
+
+[[permission]]
+identifier = "deny-test-relay-connection"
+description = "Denies the test_relay_connection command without any pre-configured scope."
+commands.deny = ["test_relay_connection"]

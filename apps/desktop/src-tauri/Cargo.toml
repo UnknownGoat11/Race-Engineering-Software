@@ -1,0 +1,53 @@
+[package]
+name = "lmu-race-engineering"
+description = "LMU Race Engineering desktop application (driver and engineer modes)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+default-run = "lmu-race-engineering"
+
+# Tauri 2 lib + bin pattern: all application code lives in the library (`run()`), `main.rs` only calls it.
+# The `_lib` suffix avoids a Windows name clash between the bin's and the lib's build artefacts (PDB).
+# Desktop-only product: `rlib` is sufficient (the mobile template's staticlib/cdylib are not built).
+[lib]
+name = "lmu_race_engineering_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "lmu-race-engineering"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "~2.7", features = [] }
+
+[dependencies]
+# Stay on the Tauri 2.12 line to match @tauri-apps/api / @tauri-apps/cli ~2.12 (major.minor must agree).
+tauri = { version = "~2.12", features = [] }
+# Owner decision Q6: a second launch focuses the running window (recorder dir lock, refresh-token rotation).
+tauri-plugin-single-instance = "~2.5"
+# Owner decision Q8: native confirm dialog when closing while recording/streaming. Used from Rust only; no
+# dialog permission is granted to the WebView.
+tauri-plugin-dialog = "~2.8"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+chrono.workspace = true
+parking_lot.workspace = true
+app-core = { workspace = true, features = ["demo"] }
+protocol.workspace = true
+transport.workspace = true
+telemetry-model.workspace = true
+synthetic.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

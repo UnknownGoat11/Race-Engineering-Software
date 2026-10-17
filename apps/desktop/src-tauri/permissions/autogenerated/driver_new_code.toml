@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-driver-new-code"
+description = "Enables the driver_new_code command without any pre-configured scope."
+commands.allow = ["driver_new_code"]
+
+[[permission]]
+identifier = "deny-driver-new-code"
+description = "Denies the driver_new_code command without any pre-configured scope."
+commands.deny = ["driver_new_code"]

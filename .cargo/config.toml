@@ -1,0 +1,8 @@
+# Statically link the MSVC C runtime so end users never need the Visual C++ Redistributable (D-019).
+# Applies to Windows builds only; the Linux relay image is unaffected.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Test scratch files stay inside the (git-ignored) target dir of the checkout, never the system temp drive.
+[env]
+RACE_ENGINES_TEST_DIR = { value = "target/test-tmp", relative = true }

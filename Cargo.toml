@@ -1,0 +1,105 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/lmu-reader",
+    "crates/telemetry-model",
+    "crates/lmu-normalizer",
+    "crates/race-engines",
+    "crates/protocol",
+    "crates/transport",
+    "crates/recorder",
+    "crates/synthetic",
+    "crates/app-core",
+    "crates/relay",
+    "tools/lmu-diag",
+    "tools/gen-ts",
+    "tools/lmu-verify",
+    "apps/desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94"
+license = "LicenseRef-Proprietary"
+repository = "https://github.com/UnknownGoat11/Race-Engineering-Software"
+authors = ["LMU Race Engineering contributors"]
+
+[workspace.dependencies]
+# internal
+lmu-reader = { path = "crates/lmu-reader" }
+telemetry-model = { path = "crates/telemetry-model" }
+lmu-normalizer = { path = "crates/lmu-normalizer" }
+race-engines = { path = "crates/race-engines" }
+protocol = { path = "crates/protocol" }
+transport = { path = "crates/transport" }
+recorder = { path = "crates/recorder" }
+synthetic = { path = "crates/synthetic" }
+app-core = { path = "crates/app-core" }
+
+# external (versions verified against crates.io on 2026-09-30)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1.1", features = ["use-std"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+bytes = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls-pemfile = "2"
+webpki-roots = "1"
+rcgen = "0.14"
+crc32c = "0.6"
+zstd = "0.13"
+rusqlite = { version = "0.37", features = ["bundled"] }
+rand = "0.9"
+rand_chacha = "0.9"
+argon2 = "0.5"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "migrate", "uuid", "chrono", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+axum = "0.8"
+keyring = "3"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_ToolHelp",
+] }
+clap = { version = "4", features = ["derive"] }
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+arc-swap = "1"
+proptest = "1"
+criterion = "0.5"
+# relay: Ed25519 access tokens (JWT, EdDSA), SHA-256 token/code hashes, constant-time compares
+ed25519-dalek = "2"
+sha2 = "0.10"
+subtle = "2"
+base64 = "0.22"
+# relay: keyed (HMAC-SHA256) connection-code hashes
+hmac = "0.12"
+# relay: wipes the in-memory plaintext of the unused connection code (already in the lock file)
+zeroize = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+panic = "unwind"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+print_stdout = "warn"
+todo = "warn"
+unwrap_used = "warn"

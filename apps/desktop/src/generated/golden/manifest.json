@@ -1,0 +1,3059 @@
+{
+  "generated": "GENERATED - do not edit; run cargo run -p gen-ts",
+  "telemetrySchemaVersion": 1,
+  "uiBatchFormat": {
+    "magic": "LRUB",
+    "version": 1,
+    "headerBytes": 16,
+    "flagReset": 1,
+    "flagBackfill": 2,
+    "flagGapBefore": 4,
+    "maxBatchBytes": 4194304
+  },
+  "notes": [
+    "f32/f64 values are hex bit patterns; u64/i64 values are decimal strings.",
+    "tlv[].expect is telemetry_model::codec::decode of the file; uiBatch[].expect.ok.apply is TelemetryFrame::apply_tlv of every block, in order, on a fresh frame.",
+    "TooManyRecords is an encoder-only error (record_count is a u16 on the wire); no decode vector exists.",
+    "uiBatchSynthetic[] vectors are too large to commit as files: the batch is `length` bytes, every one equal to `fill`; expect is the reference parser's result on exactly those bytes."
+  ],
+  "tlv": [
+    {
+      "name": "empty_block",
+      "file": "tlv/empty_block.bin",
+      "description": "A block with no records.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "2046817890123",
+            "captureRelayNsEst": "1759364012373456789",
+            "sourceEtS": "0x4089620000000000"
+          },
+          "records": []
+        }
+      }
+    },
+    {
+      "name": "empty_block_unknown_clocks",
+      "file": "tlv/empty_block_unknown_clocks.bin",
+      "description": "No records; relay clock estimate unknown (i64::MIN), source ET unavailable (NaN), monotonic 0.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "0",
+            "captureRelayNsEst": "-9223372036854775808",
+            "sourceEtS": "0x7ff8000000000000"
+          },
+          "records": []
+        }
+      }
+    },
+    {
+      "name": "header_extremes",
+      "file": "tlv/header_extremes.bin",
+      "description": "Header limits: monotonic u64::MAX, relay i64::MAX, ET -0.0.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "18446744073709551615",
+            "captureRelayNsEst": "9223372036854775807",
+            "sourceEtS": "0x8000000000000000"
+          },
+          "records": []
+        }
+      }
+    },
+    {
+      "name": "header_extremes_negative",
+      "file": "tlv/header_extremes_negative.bin",
+      "description": "Header limits: monotonic 1, relay i64::MIN + 1 (not the sentinel), ET +Infinity.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "1",
+            "captureRelayNsEst": "-9223372036854775807",
+            "sourceEtS": "0x7ff0000000000000"
+          },
+          "records": []
+        }
+      }
+    },
+    {
+      "name": "schema_version_2",
+      "file": "tlv/schema_version_2.bin",
+      "description": "A well-formed block announcing telemetry schema 2: the codec decodes it, a store must refuse it.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 2,
+            "captureMonoNs": "2046817890123",
+            "captureRelayNsEst": "1759364012373456789",
+            "sourceEtS": "0x4089620000000000"
+          },
+          "records": [
+            {
+              "channel": 1,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x42280000"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "all_value_types",
+      "file": "tlv/all_value_types.bin",
+      "description": "One VALID record of every value type on registry channels of that type, then UNAVAILABLE and NOT_SUPPORTED records (type NONE).",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "2046817890123",
+            "captureRelayNsEst": "1759364012373456789",
+            "sourceEtS": "0x4089620000000000"
+          },
+          "records": [
+            {
+              "channel": 1,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x428f0000"
+              }
+            },
+            {
+              "channel": 89,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0xc00a000000000000"
+              }
+            },
+            {
+              "channel": 64,
+              "quality": 0,
+              "value": {
+                "type": "I32",
+                "value": -1
+              }
+            },
+            {
+              "channel": 3104,
+              "quality": 0,
+              "value": {
+                "type": "U32",
+                "value": 7
+              }
+            },
+            {
+              "channel": 32,
+              "quality": 0,
+              "value": {
+                "type": "Bool",
+                "value": true
+              }
+            },
+            {
+              "channel": 33,
+              "quality": 0,
+              "value": {
+                "type": "Bool",
+                "value": false
+              }
+            },
+            {
+              "channel": 34,
+              "quality": 0,
+              "value": {
+                "type": "U8",
+                "value": 250
+              }
+            },
+            {
+              "channel": 2083,
+              "quality": 0,
+              "value": {
+                "type": "I8",
+                "value": -5
+              }
+            },
+            {
+              "channel": 65,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "Porsche 963",
+                "utf8": "506f727363686520393633"
+              }
+            },
+            {
+              "channel": 3336,
+              "quality": 0,
+              "value": {
+                "type": "U64",
+                "value": "18446744073709551615"
+              }
+            },
+            {
+              "channel": 2,
+              "quality": 3,
+              "value": {
+                "type": "None"
+              }
+            },
+            {
+              "channel": 16,
+              "quality": 4,
+              "value": {
+                "type": "None"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "bool_nonzero_byte",
+      "file": "tlv/bool_nonzero_byte.bin",
+      "description": "A BOOL record whose byte is 2: any non-zero byte decodes as true.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "2046817890123",
+            "captureRelayNsEst": "1759364012373456789",
+            "sourceEtS": "0x4089620000000000"
+          },
+          "records": [
+            {
+              "channel": 32,
+              "quality": 0,
+              "value": {
+                "type": "Bool",
+                "value": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "integer_extremes",
+      "file": "tlv/integer_extremes.bin",
+      "description": "Integer limits; U64 values above 2^53 must keep full precision.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "2046817890123",
+            "captureRelayNsEst": "1759364012373456789",
+            "sourceEtS": "0x4089620000000000"
+          },
+          "records": [
+            {
+              "channel": 1,
+              "quality": 0,
+              "value": {
+                "type": "I32",
+                "value": -2147483648
+              }
+            },
+            {
+              "channel": 2,
+              "quality": 0,
+              "value": {
+                "type": "I32",
+                "value": 2147483647
+              }
+            },
+            {
+              "channel": 3,
+              "quality": 0,
+              "value": {
+                "type": "U32",
+                "value": 4294967295
+              }
+            },
+            {
+              "channel": 4,
+              "quality": 0,
+              "value": {
+                "type": "U8",
+                "value": 0
+              }
+            },
+            {
+              "channel": 5,
+              "quality": 0,
+              "value": {
+                "type": "U8",
+                "value": 255
+              }
+            },
+            {
+              "channel": 6,
+              "quality": 0,
+              "value": {
+                "type": "I8",
+                "value": -128
+              }
+            },
+            {
+              "channel": 7,
+              "quality": 0,
+              "value": {
+                "type": "I8",
+                "value": 127
+              }
+            },
+            {
+              "channel": 8,
+              "quality": 0,
+              "value": {
+                "type": "U64",
+                "value": "0"
+              }
+            },
+            {
+              "channel": 9,
+              "quality": 0,
+              "value": {
+                "type": "U64",
+                "value": "9007199254740993"
+              }
+            },
+            {
+              "channel": 10,
+              "quality": 0,
+              "value": {
+                "type": "U64",
+                "value": "18446744073709551615"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "float_specials",
+      "file": "tlv/float_specials.bin",
+      "description": "VALID F32/F64 records with ±0, ±Inf, NaN (with and without payload), subnormals and limits; the codec carries them unchanged (a frame or store marks non-finite VALID floats INVALID).",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "2046817890123",
+            "captureRelayNsEst": "1759364012373456789",
+            "sourceEtS": "0x4089620000000000"
+          },
+          "records": [
+            {
+              "channel": 1,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x00000000"
+              }
+            },
+            {
+              "channel": 2,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x80000000"
+              }
+            },
+            {
+              "channel": 3,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x7f800000"
+              }
+            },
+            {
+              "channel": 4,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0xff800000"
+              }
+            },
+            {
+              "channel": 5,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x7fc00000"
+              }
+            },
+            {
+              "channel": 6,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x7fc00001"
+              }
+            },
+            {
+              "channel": 7,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x00000001"
+              }
+            },
+            {
+              "channel": 8,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x00800000"
+              }
+            },
+            {
+              "channel": 9,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x7f7fffff"
+              }
+            },
+            {
+              "channel": 10,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0xff7fffff"
+              }
+            },
+            {
+              "channel": 11,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x3dcccccd"
+              }
+            },
+            {
+              "channel": 256,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0x0000000000000000"
+              }
+            },
+            {
+              "channel": 257,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0x8000000000000000"
+              }
+            },
+            {
+              "channel": 258,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0x7ff0000000000000"
+              }
+            },
+            {
+              "channel": 259,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0xfff0000000000000"
+              }
+            },
+            {
+              "channel": 260,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0x7ff8000000000000"
+              }
+            },
+            {
+              "channel": 261,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0x7ff8000000000001"
+              }
+            },
+            {
+              "channel": 262,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0x0000000000000001"
+              }
+            },
+            {
+              "channel": 263,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0x0010000000000000"
+              }
+            },
+            {
+              "channel": 264,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0x7fefffffffffffff"
+              }
+            },
+            {
+              "channel": 265,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0xffefffffffffffff"
+              }
+            },
+            {
+              "channel": 266,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0x3fb999999999999a"
+              }
+            },
+            {
+              "channel": 267,
+              "quality": 0,
+              "value": {
+                "type": "F64",
+                "bits": "0x400921fb54442d18"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "every_quality",
+      "file": "tlv/every_quality.bin",
+      "description": "Every quality on F32 channels. The encoder drops the value of non-VALID samples (type NONE, no value bytes) and encodes a VALID sample without a value as UNAVAILABLE.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "2046817890123",
+            "captureRelayNsEst": "1759364012373456789",
+            "sourceEtS": "0x4089620000000000"
+          },
+          "records": [
+            {
+              "channel": 1,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x3fc00000"
+              }
+            },
+            {
+              "channel": 2,
+              "quality": 1,
+              "value": {
+                "type": "None"
+              }
+            },
+            {
+              "channel": 16,
+              "quality": 2,
+              "value": {
+                "type": "None"
+              }
+            },
+            {
+              "channel": 17,
+              "quality": 3,
+              "value": {
+                "type": "None"
+              }
+            },
+            {
+              "channel": 18,
+              "quality": 4,
+              "value": {
+                "type": "None"
+              }
+            },
+            {
+              "channel": 19,
+              "quality": 3,
+              "value": {
+                "type": "None"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "non_valid_with_value_bytes",
+      "file": "tlv/non_valid_with_value_bytes.bin",
+      "description": "Hand-made: non-VALID records that still carry value bytes. The codec decodes the values as-is; a frame or store drops them.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "2046817890123",
+            "captureRelayNsEst": "1759364012373456789",
+            "sourceEtS": "0x4089620000000000"
+          },
+          "records": [
+            {
+              "channel": 1,
+              "quality": 1,
+              "value": {
+                "type": "F32",
+                "bits": "0x4479c000"
+              }
+            },
+            {
+              "channel": 34,
+              "quality": 2,
+              "value": {
+                "type": "U8",
+                "value": 42
+              }
+            },
+            {
+              "channel": 65,
+              "quality": 4,
+              "value": {
+                "type": "Str",
+                "value": "ok",
+                "utf8": "6f6b"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "strings",
+      "file": "tlv/strings.bin",
+      "description": "STR values: empty, ASCII, 2/3/4-byte UTF-8, a leading U+FEFF (must be kept), an embedded NUL, U+10FFFF, and the 64-byte maximum in 1-, 4- and 2-byte characters.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "2046817890123",
+            "captureRelayNsEst": "1759364012373456789",
+            "sourceEtS": "0x4089620000000000"
+          },
+          "records": [
+            {
+              "channel": 65,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "",
+                "utf8": ""
+              }
+            },
+            {
+              "channel": 66,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "Porsche 963",
+                "utf8": "506f727363686520393633"
+              }
+            },
+            {
+              "channel": 69,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "Ü",
+                "utf8": "c39c"
+              }
+            },
+            {
+              "channel": 70,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "日本語",
+                "utf8": "e697a5e69cace8aa9e"
+              }
+            },
+            {
+              "channel": 864,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "🏁",
+                "utf8": "f09f8f81"
+              }
+            },
+            {
+              "channel": 865,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "﻿BOM",
+                "utf8": "efbbbf424f4d"
+              }
+            },
+            {
+              "channel": 866,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "a\u0000b",
+                "utf8": "610062"
+              }
+            },
+            {
+              "channel": 867,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "􏿿",
+                "utf8": "f48fbfbf"
+              }
+            },
+            {
+              "channel": 888,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                "utf8": "78787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878"
+              }
+            },
+            {
+              "channel": 889,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "🏁🏁🏁🏁🏁🏁🏁🏁🏁🏁🏁🏁🏁🏁🏁🏁",
+                "utf8": "f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81f09f8f81"
+              }
+            },
+            {
+              "channel": 890,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "éééééééééééééééééééééééééééééééé",
+                "utf8": "c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9c3a9"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "unknown_channel_ids",
+      "file": "tlv/unknown_channel_ids.bin",
+      "description": "Channel ids the registry does not define (0, 0xFFFF, outside every group): the codec returns them; a frame or store skips them.",
+      "expect": {
+        "ok": {
+          "header": {
+            "schemaVersion": 1,
+            "captureMonoNs": "2046817890123",
+            "captureRelayNsEst": "1759364012373456789",
+            "sourceEtS": "0x4089620000000000"
+          },
+          "records": [
+            {
+              "channel": 0,
+              "quality": 0,
+              "value": {
+                "type": "F32",
+                "bits": "0x3f800000"
+              }
+            },
+            {
+              "channel": 65535,
+              "quality": 0,
+              "value": {
+                "type": "U8",
+                "value": 1
+              }
+            },
+            {
+              "channel": 3839,
+              "quality": 0,
+              "value": {
+                "type": "Str",
+                "value": "future",
+                "utf8": "667574757265"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "err_truncated_header_empty",
+      "file": "tlv/err_truncated_header_empty.bin",
+      "description": "Zero bytes.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 0,
+          "needed": 2
+        }
+      }
+    },
+    {
+      "name": "err_truncated_header_mid_field",
+      "file": "tlv/err_truncated_header_mid_field.bin",
+      "description": "13 bytes: the header ends inside capture_relay_ns_est.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 10,
+          "needed": 5
+        }
+      }
+    },
+    {
+      "name": "err_truncated_header_count",
+      "file": "tlv/err_truncated_header_count.bin",
+      "description": "The header ends one byte into record_count.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 26,
+          "needed": 1
+        }
+      }
+    },
+    {
+      "name": "err_truncated_record_channel_id",
+      "file": "tlv/err_truncated_record_channel_id.bin",
+      "description": "One record announced; only one byte of its channel id is present.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 28,
+          "needed": 1
+        }
+      }
+    },
+    {
+      "name": "err_truncated_record_tag",
+      "file": "tlv/err_truncated_record_tag.bin",
+      "description": "One record announced; its tag byte is missing.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 30,
+          "needed": 1
+        }
+      }
+    },
+    {
+      "name": "err_truncated_value_f32",
+      "file": "tlv/err_truncated_value_f32.bin",
+      "description": "F32 record with 2 of 4 value bytes.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 31,
+          "needed": 2
+        }
+      }
+    },
+    {
+      "name": "err_truncated_value_f64",
+      "file": "tlv/err_truncated_value_f64.bin",
+      "description": "F64 record with 7 of 8 value bytes.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 31,
+          "needed": 1
+        }
+      }
+    },
+    {
+      "name": "err_truncated_value_u64",
+      "file": "tlv/err_truncated_value_u64.bin",
+      "description": "U64 record without value bytes.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 31,
+          "needed": 8
+        }
+      }
+    },
+    {
+      "name": "err_truncated_value_bool",
+      "file": "tlv/err_truncated_value_bool.bin",
+      "description": "BOOL record without its byte.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 31,
+          "needed": 1
+        }
+      }
+    },
+    {
+      "name": "err_truncated_string_length",
+      "file": "tlv/err_truncated_string_length.bin",
+      "description": "STR record without its length byte.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 31,
+          "needed": 1
+        }
+      }
+    },
+    {
+      "name": "err_truncated_string_bytes",
+      "file": "tlv/err_truncated_string_bytes.bin",
+      "description": "STR record announcing 10 bytes with 4 present.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 32,
+          "needed": 6
+        }
+      }
+    },
+    {
+      "name": "err_truncated_second_record",
+      "file": "tlv/err_truncated_second_record.bin",
+      "description": "Two records announced, one present: the decode fails although the first record is complete.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 35,
+          "needed": 2
+        }
+      }
+    },
+    {
+      "name": "err_count_exceeds_bytes",
+      "file": "tlv/err_count_exceeds_bytes.bin",
+      "description": "65535 records announced, none present (an untrusted count must not drive allocation).",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 28,
+          "needed": 2
+        }
+      }
+    },
+    {
+      "name": "err_unknown_value_type_first_unassigned",
+      "file": "tlv/err_unknown_value_type_first_unassigned.bin",
+      "description": "Value type 10, the first code without a meaning.",
+      "expect": {
+        "error": {
+          "kind": "UnknownValueType",
+          "valueType": 10
+        }
+      }
+    },
+    {
+      "name": "err_unknown_value_type_max",
+      "file": "tlv/err_unknown_value_type_max.bin",
+      "description": "Value type 31, the largest 5-bit code.",
+      "expect": {
+        "error": {
+          "kind": "UnknownValueType",
+          "valueType": 31
+        }
+      }
+    },
+    {
+      "name": "err_unknown_value_type_before_quality",
+      "file": "tlv/err_unknown_value_type_before_quality.bin",
+      "description": "Unknown value type and unknown quality in one tag: the value type is checked first.",
+      "expect": {
+        "error": {
+          "kind": "UnknownValueType",
+          "valueType": 31
+        }
+      }
+    },
+    {
+      "name": "err_unknown_quality_first_unassigned",
+      "file": "tlv/err_unknown_quality_first_unassigned.bin",
+      "description": "Quality 5, the first code without a meaning.",
+      "expect": {
+        "error": {
+          "kind": "UnknownQuality",
+          "quality": 5
+        }
+      }
+    },
+    {
+      "name": "err_unknown_quality_max",
+      "file": "tlv/err_unknown_quality_max.bin",
+      "description": "Quality 7 on an F32 record (checked before the value is read).",
+      "expect": {
+        "error": {
+          "kind": "UnknownQuality",
+          "quality": 7
+        }
+      }
+    },
+    {
+      "name": "err_unknown_quality_after_valid_record",
+      "file": "tlv/err_unknown_quality_after_valid_record.bin",
+      "description": "A valid record followed by a record with quality 6: the whole block fails.",
+      "expect": {
+        "error": {
+          "kind": "UnknownQuality",
+          "quality": 6
+        }
+      }
+    },
+    {
+      "name": "err_string_too_long_by_one",
+      "file": "tlv/err_string_too_long_by_one.bin",
+      "description": "STR length byte 65 (one over the maximum); rejected before the bytes are read.",
+      "expect": {
+        "error": {
+          "kind": "StringTooLong",
+          "length": 65
+        }
+      }
+    },
+    {
+      "name": "err_string_too_long_max_byte",
+      "file": "tlv/err_string_too_long_max_byte.bin",
+      "description": "STR length byte 255.",
+      "expect": {
+        "error": {
+          "kind": "StringTooLong",
+          "length": 255
+        }
+      }
+    },
+    {
+      "name": "err_invalid_utf8_lone_continuation",
+      "file": "tlv/err_invalid_utf8_lone_continuation.bin",
+      "description": "STR bytes 0x80 (a continuation byte without a lead byte).",
+      "expect": {
+        "error": {
+          "kind": "InvalidUtf8"
+        }
+      }
+    },
+    {
+      "name": "err_invalid_utf8_overlong",
+      "file": "tlv/err_invalid_utf8_overlong.bin",
+      "description": "STR bytes C0 AF (overlong encoding of '/').",
+      "expect": {
+        "error": {
+          "kind": "InvalidUtf8"
+        }
+      }
+    },
+    {
+      "name": "err_invalid_utf8_surrogate",
+      "file": "tlv/err_invalid_utf8_surrogate.bin",
+      "description": "STR bytes ED A0 80 (an encoded UTF-16 surrogate).",
+      "expect": {
+        "error": {
+          "kind": "InvalidUtf8"
+        }
+      }
+    },
+    {
+      "name": "err_invalid_utf8_above_max",
+      "file": "tlv/err_invalid_utf8_above_max.bin",
+      "description": "STR bytes F4 90 80 80 (above U+10FFFF).",
+      "expect": {
+        "error": {
+          "kind": "InvalidUtf8"
+        }
+      }
+    },
+    {
+      "name": "err_invalid_utf8_incomplete",
+      "file": "tlv/err_invalid_utf8_incomplete.bin",
+      "description": "STR bytes 'a' E6 97 (a 3-byte sequence cut short by the string length).",
+      "expect": {
+        "error": {
+          "kind": "InvalidUtf8"
+        }
+      }
+    },
+    {
+      "name": "err_trailing_bytes_one",
+      "file": "tlv/err_trailing_bytes_one.bin",
+      "description": "A complete block followed by one extra byte.",
+      "expect": {
+        "error": {
+          "kind": "TrailingBytes",
+          "count": 1
+        }
+      }
+    },
+    {
+      "name": "err_trailing_bytes_after_empty_block",
+      "file": "tlv/err_trailing_bytes_after_empty_block.bin",
+      "description": "An empty block followed by five extra bytes.",
+      "expect": {
+        "error": {
+          "kind": "TrailingBytes",
+          "count": 5
+        }
+      }
+    }
+  ],
+  "uiBatch": [
+    {
+      "name": "single_block",
+      "file": "uibatch/single_block.bin",
+      "description": "One block, no flags, batch_seq 1.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 1,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 67,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334567890123",
+                    "captureRelayNsEst": "1759363300123456789",
+                    "sourceEtS": "0x4059000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42480000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fa0000"
+                      }
+                    },
+                    {
+                      "channel": 65,
+                      "quality": 0,
+                      "value": {
+                        "type": "Str",
+                        "value": "Porsche 963 #6",
+                        "utf8": "506f727363686520393633202336"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 4,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x42480000"
+                  }
+                },
+                {
+                  "channel": 65,
+                  "quality": 0,
+                  "value": {
+                    "type": "Str",
+                    "value": "Porsche 963 #6",
+                    "utf8": "506f727363686520393633202336"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 0,
+                  "value": {
+                    "type": "I32",
+                    "value": 3
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x45fa0000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "multi_block",
+      "file": "uibatch/multi_block.bin",
+      "description": "Three blocks, oldest first (ET 100.00, 100.01, 100.02).",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 2,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 67,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334567890123",
+                    "captureRelayNsEst": "1759363300123456789",
+                    "sourceEtS": "0x4059000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42480000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fa0000"
+                      }
+                    },
+                    {
+                      "channel": 65,
+                      "quality": 0,
+                      "value": {
+                        "type": "Str",
+                        "value": "Porsche 963 #6",
+                        "utf8": "506f727363686520393633202336"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "offset": 91,
+              "length": 42,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334577890123",
+                    "captureRelayNsEst": "1759363300133456789",
+                    "sourceEtS": "0x405900a3d70a3d71"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x424a0000"
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fb9000"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "offset": 137,
+              "length": 42,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334587890123",
+                    "captureRelayNsEst": "1759363300143456789",
+                    "sourceEtS": "0x40590147ae147ae1"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x424c0000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 4
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 8,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x424c0000"
+                  }
+                },
+                {
+                  "channel": 65,
+                  "quality": 0,
+                  "value": {
+                    "type": "Str",
+                    "value": "Porsche 963 #6",
+                    "utf8": "506f727363686520393633202336"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 0,
+                  "value": {
+                    "type": "I32",
+                    "value": 4
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x45fb9000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "empty_batch",
+      "file": "uibatch/empty_batch.bin",
+      "description": "No blocks (valid; nothing to apply).",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 3,
+          "blocks": [],
+          "apply": {
+            "accepted": {
+              "applied": 0,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": []
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "reset",
+      "file": "uibatch/reset.bin",
+      "description": "RESET: discard cached values and ring contents, then apply.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 1,
+          "reset": true,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 0,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 67,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334567890123",
+                    "captureRelayNsEst": "1759363300123456789",
+                    "sourceEtS": "0x4059000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42480000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fa0000"
+                      }
+                    },
+                    {
+                      "channel": 65,
+                      "quality": 0,
+                      "value": {
+                        "type": "Str",
+                        "value": "Porsche 963 #6",
+                        "utf8": "506f727363686520393633202336"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 4,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x42480000"
+                  }
+                },
+                {
+                  "channel": 65,
+                  "quality": 0,
+                  "value": {
+                    "type": "Str",
+                    "value": "Porsche 963 #6",
+                    "utf8": "506f727363686520393633202336"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 0,
+                  "value": {
+                    "type": "I32",
+                    "value": 3
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x45fa0000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "reset_backfill",
+      "file": "uibatch/reset_backfill.bin",
+      "description": "RESET | BACKFILL: first batch of a subscription, historical blocks oldest first.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 3,
+          "reset": true,
+          "backfill": true,
+          "gapBefore": false,
+          "batchSeq": 0,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 67,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334567890123",
+                    "captureRelayNsEst": "1759363300123456789",
+                    "sourceEtS": "0x4059000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42480000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fa0000"
+                      }
+                    },
+                    {
+                      "channel": 65,
+                      "quality": 0,
+                      "value": {
+                        "type": "Str",
+                        "value": "Porsche 963 #6",
+                        "utf8": "506f727363686520393633202336"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "offset": 91,
+              "length": 42,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334577890123",
+                    "captureRelayNsEst": "1759363300133456789",
+                    "sourceEtS": "0x405900a3d70a3d71"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x424a0000"
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fb9000"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 6,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x424a0000"
+                  }
+                },
+                {
+                  "channel": 65,
+                  "quality": 0,
+                  "value": {
+                    "type": "Str",
+                    "value": "Porsche 963 #6",
+                    "utf8": "506f727363686520393633202336"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 0,
+                  "value": {
+                    "type": "I32",
+                    "value": 3
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x45fb9000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "backfill_continuation",
+      "file": "uibatch/backfill_continuation.bin",
+      "description": "BACKFILL without RESET: a later part of a split backfill.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 2,
+          "reset": false,
+          "backfill": true,
+          "gapBefore": false,
+          "batchSeq": 1,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 42,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334587890123",
+                    "captureRelayNsEst": "1759363300143456789",
+                    "sourceEtS": "0x40590147ae147ae1"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x424c0000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 4
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 2,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x424c0000"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 0,
+                  "value": {
+                    "type": "I32",
+                    "value": 4
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "gap_before",
+      "file": "uibatch/gap_before.bin",
+      "description": "GAP_BEFORE: the bridge dropped blocks before this batch.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 4,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": true,
+          "batchSeq": 4,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 42,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334587890123",
+                    "captureRelayNsEst": "1759363300143456789",
+                    "sourceEtS": "0x40590147ae147ae1"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x424c0000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 4
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 2,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x424c0000"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 0,
+                  "value": {
+                    "type": "I32",
+                    "value": 4
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "all_flags",
+      "file": "uibatch/all_flags.bin",
+      "description": "RESET | BACKFILL | GAP_BEFORE.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 7,
+          "reset": true,
+          "backfill": true,
+          "gapBefore": true,
+          "batchSeq": 0,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 67,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334567890123",
+                    "captureRelayNsEst": "1759363300123456789",
+                    "sourceEtS": "0x4059000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42480000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fa0000"
+                      }
+                    },
+                    {
+                      "channel": 65,
+                      "quality": 0,
+                      "value": {
+                        "type": "Str",
+                        "value": "Porsche 963 #6",
+                        "utf8": "506f727363686520393633202336"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 4,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x42480000"
+                  }
+                },
+                {
+                  "channel": 65,
+                  "quality": 0,
+                  "value": {
+                    "type": "Str",
+                    "value": "Porsche 963 #6",
+                    "utf8": "506f727363686520393633202336"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 0,
+                  "value": {
+                    "type": "I32",
+                    "value": 3
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x45fa0000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "qualities",
+      "file": "uibatch/qualities.bin",
+      "description": "A block of values followed by a block of INVALID / STALE / UNAVAILABLE / NOT_SUPPORTED records.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 5,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 67,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334567890123",
+                    "captureRelayNsEst": "1759363300123456789",
+                    "sourceEtS": "0x4059000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42480000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fa0000"
+                      }
+                    },
+                    {
+                      "channel": 65,
+                      "quality": 0,
+                      "value": {
+                        "type": "Str",
+                        "value": "Porsche 963 #6",
+                        "utf8": "506f727363686520393633202336"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "offset": 91,
+              "length": 40,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334597890123",
+                    "captureRelayNsEst": "1759363300153456789",
+                    "sourceEtS": "0x405901eb851eb852"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 1,
+                      "value": {
+                        "type": "None"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 2,
+                      "value": {
+                        "type": "None"
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 3,
+                      "value": {
+                        "type": "None"
+                      }
+                    },
+                    {
+                      "channel": 768,
+                      "quality": 4,
+                      "value": {
+                        "type": "None"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 8,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 1,
+                  "value": {
+                    "type": "None"
+                  }
+                },
+                {
+                  "channel": 65,
+                  "quality": 0,
+                  "value": {
+                    "type": "Str",
+                    "value": "Porsche 963 #6",
+                    "utf8": "506f727363686520393633202336"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 2,
+                  "value": {
+                    "type": "None"
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 3,
+                  "value": {
+                    "type": "None"
+                  }
+                },
+                {
+                  "channel": 768,
+                  "quality": 4,
+                  "value": {
+                    "type": "None"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "registry_contradictions",
+      "file": "uibatch/registry_contradictions.bin",
+      "description": "Records that contradict the registry (wrong type, VALID NaN, VALID without value) become INVALID; an unknown id is skipped; a correct record is applied.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 6,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 63,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334607890123",
+                    "captureRelayNsEst": "1759363300163456789",
+                    "sourceEtS": "0x4059028f5c28f5c3"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F64",
+                        "bits": "0x404a000000000000"
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x7fc00000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "None"
+                      }
+                    },
+                    {
+                      "channel": 3839,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x3f800000"
+                      }
+                    },
+                    {
+                      "channel": 16,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x3f000000"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 4,
+              "unknownSkipped": 1,
+              "invalidated": 3,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 1,
+                  "value": {
+                    "type": "None"
+                  }
+                },
+                {
+                  "channel": 16,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x3f000000"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 1,
+                  "value": {
+                    "type": "None"
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 1,
+                  "value": {
+                    "type": "None"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "et_not_finite",
+      "file": "uibatch/et_not_finite.bin",
+      "description": "A block without a finite source ET updates current values but never enters the ring.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 7,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 35,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1234567890123",
+                    "captureRelayNsEst": "1759363200123456789",
+                    "sourceEtS": "0x7ff8000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42500000"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 1,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x42500000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "rejected_schema_mismatch",
+      "file": "uibatch/rejected_schema_mismatch.bin",
+      "description": "Structurally valid, but block 1 announces schema 2: the whole batch is refused (block 0 is not applied either).",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 8,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 67,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334567890123",
+                    "captureRelayNsEst": "1759363300123456789",
+                    "sourceEtS": "0x4059000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42480000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fa0000"
+                      }
+                    },
+                    {
+                      "channel": 65,
+                      "quality": 0,
+                      "value": {
+                        "type": "Str",
+                        "value": "Porsche 963 #6",
+                        "utf8": "506f727363686520393633202336"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "offset": 91,
+              "length": 35,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 2,
+                    "captureMonoNs": "1334617890123",
+                    "captureRelayNsEst": "1759363300173456789",
+                    "sourceEtS": "0x4059033333333333"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42540000"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "rejected": {
+              "blockIndex": 1,
+              "reason": {
+                "kind": "SchemaMismatch",
+                "found": 2,
+                "expected": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "rejected_block_codec_error",
+      "file": "uibatch/rejected_block_codec_error.bin",
+      "description": "Structurally valid envelope whose block 1 is a truncated TLV block: the whole batch is refused.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 9,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 67,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334567890123",
+                    "captureRelayNsEst": "1759363300123456789",
+                    "sourceEtS": "0x4059000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42480000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fa0000"
+                      }
+                    },
+                    {
+                      "channel": 65,
+                      "quality": 0,
+                      "value": {
+                        "type": "Str",
+                        "value": "Porsche 963 #6",
+                        "utf8": "506f727363686520393633202336"
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "offset": 91,
+              "length": 66,
+              "decode": {
+                "error": {
+                  "kind": "Truncated",
+                  "offset": 53,
+                  "needed": 1
+                }
+              }
+            }
+          ],
+          "apply": {
+            "rejected": {
+              "blockIndex": 1,
+              "reason": {
+                "kind": "Codec",
+                "error": {
+                  "kind": "Truncated",
+                  "offset": 53,
+                  "needed": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "seq_jump_first",
+      "file": "uibatch/seq_jump_first.bin",
+      "description": "batch_seq 41.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 41,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 67,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334567890123",
+                    "captureRelayNsEst": "1759363300123456789",
+                    "sourceEtS": "0x4059000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42480000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fa0000"
+                      }
+                    },
+                    {
+                      "channel": 65,
+                      "quality": 0,
+                      "value": {
+                        "type": "Str",
+                        "value": "Porsche 963 #6",
+                        "utf8": "506f727363686520393633202336"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 4,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x42480000"
+                  }
+                },
+                {
+                  "channel": 65,
+                  "quality": 0,
+                  "value": {
+                    "type": "Str",
+                    "value": "Porsche 963 #6",
+                    "utf8": "506f727363686520393633202336"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 0,
+                  "value": {
+                    "type": "I32",
+                    "value": 3
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x45fa0000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "seq_jump_second",
+      "file": "uibatch/seq_jump_second.bin",
+      "description": "batch_seq 43 (42 is missing).",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 43,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 42,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334577890123",
+                    "captureRelayNsEst": "1759363300133456789",
+                    "sourceEtS": "0x405900a3d70a3d71"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x424a0000"
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fb9000"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 2,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x424a0000"
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x45fb9000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "seq_wrap_first",
+      "file": "uibatch/seq_wrap_first.bin",
+      "description": "batch_seq u32::MAX.",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 4294967295,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 67,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334567890123",
+                    "captureRelayNsEst": "1759363300123456789",
+                    "sourceEtS": "0x4059000000000000"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x42480000"
+                      }
+                    },
+                    {
+                      "channel": 256,
+                      "quality": 0,
+                      "value": {
+                        "type": "I32",
+                        "value": 3
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fa0000"
+                      }
+                    },
+                    {
+                      "channel": 65,
+                      "quality": 0,
+                      "value": {
+                        "type": "Str",
+                        "value": "Porsche 963 #6",
+                        "utf8": "506f727363686520393633202336"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 4,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x42480000"
+                  }
+                },
+                {
+                  "channel": 65,
+                  "quality": 0,
+                  "value": {
+                    "type": "Str",
+                    "value": "Porsche 963 #6",
+                    "utf8": "506f727363686520393633202336"
+                  }
+                },
+                {
+                  "channel": 256,
+                  "quality": 0,
+                  "value": {
+                    "type": "I32",
+                    "value": 3
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x45fa0000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "seq_wrap_second",
+      "file": "uibatch/seq_wrap_second.bin",
+      "description": "batch_seq 0 after u32::MAX (wrap-around, not a jump).",
+      "expect": {
+        "ok": {
+          "version": 1,
+          "flags": 0,
+          "reset": false,
+          "backfill": false,
+          "gapBefore": false,
+          "batchSeq": 0,
+          "blocks": [
+            {
+              "offset": 20,
+              "length": 42,
+              "decode": {
+                "ok": {
+                  "header": {
+                    "schemaVersion": 1,
+                    "captureMonoNs": "1334577890123",
+                    "captureRelayNsEst": "1759363300133456789",
+                    "sourceEtS": "0x405900a3d70a3d71"
+                  },
+                  "records": [
+                    {
+                      "channel": 1,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x424a0000"
+                      }
+                    },
+                    {
+                      "channel": 257,
+                      "quality": 0,
+                      "value": {
+                        "type": "F32",
+                        "bits": "0x45fb9000"
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "apply": {
+            "accepted": {
+              "applied": 2,
+              "unknownSkipped": 0,
+              "invalidated": 0,
+              "samples": [
+                {
+                  "channel": 1,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x424a0000"
+                  }
+                },
+                {
+                  "channel": 257,
+                  "quality": 0,
+                  "value": {
+                    "type": "F32",
+                    "bits": "0x45fb9000"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "err_empty",
+      "file": "uibatch/err_empty.bin",
+      "description": "Zero bytes.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 0,
+          "needed": 4
+        }
+      }
+    },
+    {
+      "name": "err_header_truncated",
+      "file": "uibatch/err_header_truncated.bin",
+      "description": "15 of the 16 header bytes.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 14,
+          "needed": 1
+        }
+      }
+    },
+    {
+      "name": "err_bad_magic",
+      "file": "uibatch/err_bad_magic.bin",
+      "description": "Magic \"LRUX\".",
+      "expect": {
+        "error": {
+          "kind": "BadMagic",
+          "found": "4c525558"
+        }
+      }
+    },
+    {
+      "name": "err_version_0",
+      "file": "uibatch/err_version_0.bin",
+      "description": "Version 0.",
+      "expect": {
+        "error": {
+          "kind": "UnsupportedVersion",
+          "version": 0
+        }
+      }
+    },
+    {
+      "name": "err_version_2",
+      "file": "uibatch/err_version_2.bin",
+      "description": "Version 2.",
+      "expect": {
+        "error": {
+          "kind": "UnsupportedVersion",
+          "version": 2
+        }
+      }
+    },
+    {
+      "name": "err_unknown_flag_bit3",
+      "file": "uibatch/err_unknown_flag_bit3.bin",
+      "description": "Flag bit 3 (undefined) set.",
+      "expect": {
+        "error": {
+          "kind": "UnknownFlags",
+          "bits": 8
+        }
+      }
+    },
+    {
+      "name": "err_unknown_flag_bit15_with_reset",
+      "file": "uibatch/err_unknown_flag_bit15_with_reset.bin",
+      "description": "RESET plus undefined flag bit 15.",
+      "expect": {
+        "error": {
+          "kind": "UnknownFlags",
+          "bits": 32768
+        }
+      }
+    },
+    {
+      "name": "err_reserved_nonzero",
+      "file": "uibatch/err_reserved_nonzero.bin",
+      "description": "Reserved field 1.",
+      "expect": {
+        "error": {
+          "kind": "ReservedNonZero",
+          "value": 1
+        }
+      }
+    },
+    {
+      "name": "err_unknown_flags_before_reserved",
+      "file": "uibatch/err_unknown_flags_before_reserved.bin",
+      "description": "Undefined flag and non-zero reserved field: flags are checked first.",
+      "expect": {
+        "error": {
+          "kind": "UnknownFlags",
+          "bits": 16
+        }
+      }
+    },
+    {
+      "name": "err_block_length_truncated",
+      "file": "uibatch/err_block_length_truncated.bin",
+      "description": "One block announced; only 2 bytes of its u32 length are present.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 16,
+          "needed": 2
+        }
+      }
+    },
+    {
+      "name": "err_block_body_truncated",
+      "file": "uibatch/err_block_body_truncated.bin",
+      "description": "A block announcing 40 bytes with 10 present.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 20,
+          "needed": 30
+        }
+      }
+    },
+    {
+      "name": "err_block_count_exceeds",
+      "file": "uibatch/err_block_count_exceeds.bin",
+      "description": "Two blocks announced, one present.",
+      "expect": {
+        "error": {
+          "kind": "Truncated",
+          "offset": 87,
+          "needed": 4
+        }
+      }
+    },
+    {
+      "name": "err_trailing_bytes",
+      "file": "uibatch/err_trailing_bytes.bin",
+      "description": "Three bytes after the last block.",
+      "expect": {
+        "error": {
+          "kind": "TrailingBytes",
+          "count": 3
+        }
+      }
+    },
+    {
+      "name": "err_trailing_bytes_no_blocks",
+      "file": "uibatch/err_trailing_bytes_no_blocks.bin",
+      "description": "block_count 0 followed by one byte.",
+      "expect": {
+        "error": {
+          "kind": "TrailingBytes",
+          "count": 1
+        }
+      }
+    }
+  ],
+  "uiBatchSynthetic": [
+    {
+      "name": "err_too_large",
+      "description": "One byte over the 4 MiB limit: refused by size before any field is read.",
+      "length": 4194305,
+      "fill": 0,
+      "expect": {
+        "error": {
+          "kind": "TooLarge",
+          "length": 4194305,
+          "max": 4194304
+        }
+      }
+    },
+    {
+      "name": "max_size_is_not_too_large",
+      "description": "Exactly 4 MiB of zero bytes: the size is accepted (the limit is inclusive), the magic is not.",
+      "length": 4194304,
+      "fill": 0,
+      "expect": {
+        "error": {
+          "kind": "BadMagic",
+          "found": "00000000"
+        }
+      }
+    }
+  ],
+  "uiBatchSequences": [
+    {
+      "name": "in_order",
+      "description": "Consecutive batch_seq values: no gap.",
+      "files": [
+        "uibatch/single_block.bin",
+        "uibatch/multi_block.bin",
+        "uibatch/empty_batch.bin"
+      ],
+      "gapBefore": [
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "name": "seq_jump",
+      "description": "batch_seq 41 then 43: the jump is treated as GAP_BEFORE.",
+      "files": [
+        "uibatch/seq_jump_first.bin",
+        "uibatch/seq_jump_second.bin"
+      ],
+      "gapBefore": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "seq_wrap",
+      "description": "batch_seq u32::MAX then 0: wrap-around is not a jump.",
+      "files": [
+        "uibatch/seq_wrap_first.bin",
+        "uibatch/seq_wrap_second.bin"
+      ],
+      "gapBefore": [
+        false,
+        false
+      ]
+    },
+    {
+      "name": "reset_restarts_sequence",
+      "description": "batch_seq 1 then a RESET batch with batch_seq 0: a RESET starts a new sequence.",
+      "files": [
+        "uibatch/single_block.bin",
+        "uibatch/reset.bin"
+      ],
+      "gapBefore": [
+        false,
+        false
+      ]
+    },
+    {
+      "name": "gap_flag",
+      "description": "batch_seq 3 then 4 with GAP_BEFORE: a gap without a jump.",
+      "files": [
+        "uibatch/empty_batch.bin",
+        "uibatch/gap_before.bin"
+      ],
+      "gapBefore": [
+        false,
+        true
+      ]
+    }
+  ]
+}

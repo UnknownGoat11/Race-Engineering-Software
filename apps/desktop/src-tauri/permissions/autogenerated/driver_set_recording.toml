@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-driver-set-recording"
+description = "Enables the driver_set_recording command without any pre-configured scope."
+commands.allow = ["driver_set_recording"]
+
+[[permission]]
+identifier = "deny-driver-set-recording"
+description = "Denies the driver_set_recording command without any pre-configured scope."
+commands.deny = ["driver_set_recording"]

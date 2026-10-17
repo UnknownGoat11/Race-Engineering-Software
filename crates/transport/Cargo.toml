@@ -1,0 +1,31 @@
+[package]
+name = "transport"
+description = "Client-side relay networking: TelemetryTransport trait, TCP + TLS 1.3 transport, connection state machine, heartbeat, reconnect, session driver (driver and engineer roles), outbound queues, credential storage and the staged connectivity test."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+protocol.workspace = true
+telemetry-model.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+webpki-roots.workspace = true
+rand.workspace = true
+parking_lot.workspace = true
+# Windows Credential Manager backend (keyring 3 has no default backend).
+keyring = { workspace = true, features = ["windows-native"] }
+
+[dev-dependencies]
+rcgen.workspace = true
+# Re-sealing test frames whose type id was rewritten (unknown-type tests).
+crc32c.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

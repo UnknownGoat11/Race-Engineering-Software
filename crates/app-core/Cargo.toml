@@ -1,0 +1,42 @@
+[package]
+name = "app-core"
+description = "Headless orchestration core of the desktop app: driver pipeline, engineer client, UI bridge and run lifecycle. No Tauri dependency (app-core blueprint)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Demo mode: runs the synthetic provider into the pipeline (display-only, never recorded or streamed).
+demo = ["dep:synthetic"]
+
+[dependencies]
+telemetry-model.workspace = true
+lmu-reader.workspace = true
+lmu-normalizer.workspace = true
+race-engines.workspace = true
+recorder.workspace = true
+protocol.workspace = true
+transport.workspace = true
+synthetic = { workspace = true, optional = true }
+tokio.workspace = true
+bytes.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+arc-swap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+postcard.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+
+[dev-dependencies]
+lmu-relay = { path = "../relay" }
+synthetic = { workspace = true }
+
+[lints]
+workspace = true

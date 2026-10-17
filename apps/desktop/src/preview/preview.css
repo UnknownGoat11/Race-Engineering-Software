@@ -1,0 +1,54 @@
+/* PREVIEW HARNESS ONLY: styles for the scenario index and the fixed SYNTHETIC tag (never in the app bundle). */
+.preview-tag {
+  position: fixed;
+  right: 6px;
+  bottom: 4px;
+  z-index: 2147483647;
+  padding: 1px 6px;
+  border: 1px solid var(--color-warn);
+  border-radius: 3px;
+  background: var(--color-warn-bg);
+  color: var(--color-warn);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  opacity: 0.85;
+  pointer-events: none;
+}
+
+.preview-index {
+  max-width: 1280px;
+  height: 100%;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.preview-index-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.preview-index-header h1 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.preview-index-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.preview-index-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: top;
+}
+
+.preview-index-table a {
+  color: var(--color-accent);
+}

@@ -1,0 +1,52 @@
+[package]
+name = "lmu-relay"
+description = "lmure relay server: TLS 1.3 listener, accounts and tokens, one-time connection codes (D-022), session registry and the latest-wins forwarding hot path. Never decodes telemetry payloads."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+name = "lmu_relay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lmu-relay"
+path = "src/main.rs"
+
+[dependencies]
+protocol.workspace = true
+telemetry-model.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+bytes.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rcgen.workspace = true
+argon2 = { workspace = true, features = ["std"] }
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+axum.workspace = true
+clap = { workspace = true, features = ["env"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rand.workspace = true
+parking_lot.workspace = true
+arc-swap.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+base64.workspace = true
+hmac.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+crc32c.workspace = true
+
+[lints]
+workspace = true

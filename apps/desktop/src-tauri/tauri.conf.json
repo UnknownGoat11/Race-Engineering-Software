@@ -1,0 +1,50 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "LMU Race Engineering",
+  "identifier": "com.lmurace.engineering",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "label": "main",
+        "title": "LMU Race Engineering",
+        "width": 1600,
+        "height": 1000,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+      "capabilities": ["default"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "publisher": "LMU Race Engineering",
+    "category": "Utility",
+    "shortDescription": "Remote race-engineering telemetry for Le Mans Ultimate",
+    "longDescription": "Driver and engineer desktop application for live remote race engineering with Le Mans Ultimate.",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "LMU Race Engineering",
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}

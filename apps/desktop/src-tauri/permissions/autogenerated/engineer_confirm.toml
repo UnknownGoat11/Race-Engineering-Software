@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-engineer-confirm"
+description = "Enables the engineer_confirm command without any pre-configured scope."
+commands.allow = ["engineer_confirm"]
+
+[[permission]]
+identifier = "deny-engineer-confirm"
+description = "Denies the engineer_confirm command without any pre-configured scope."
+commands.deny = ["engineer_confirm"]

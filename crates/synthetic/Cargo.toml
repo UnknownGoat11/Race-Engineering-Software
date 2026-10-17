@@ -1,0 +1,20 @@
+[package]
+name = "synthetic"
+description = "DEV/TEST/DEMO ONLY: seeded synthetic telemetry (SyntheticTelemetryProvider) and a frame-aware network fault simulator. Never part of the production acquisition path."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+telemetry-model.workspace = true
+protocol.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+
+[lints]
+workspace = true

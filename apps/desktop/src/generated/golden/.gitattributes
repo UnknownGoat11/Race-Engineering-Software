@@ -1,0 +1,2 @@
+# GENERATED - do not edit; run cargo run -p gen-ts
+*.bin binary

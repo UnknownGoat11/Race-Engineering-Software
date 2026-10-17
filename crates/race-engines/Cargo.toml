@@ -1,0 +1,22 @@
+[package]
+name = "race-engines"
+description = "Deterministic race-engineering calculation engines (timing, race, track, fuel, stint)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+telemetry-model.workspace = true
+serde.workspace = true
+# float_roundtrip: track map files must load back bit-identical (default parsing can be off by 1 ULP).
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# The writer-coverage test (tests/channel_writers.rs) checks the normalizer's calculated channels too.
+lmu-normalizer.workspace = true
+
+[lints]
+workspace = true

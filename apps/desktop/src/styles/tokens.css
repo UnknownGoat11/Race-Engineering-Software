@@ -1,0 +1,133 @@
+/*
+ * Design tokens — the only place raw colours, font stacks, sizes and spacing values are defined.
+ * Professional dark theme: flat surfaces, high contrast, compact type, no gradients, no decorative motion.
+ * Fonts are system fonts only (no remote font loading; the CSP is default-src 'self').
+ */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --color-bg: #0b0d10;
+  --color-surface: #12151a;
+  --color-surface-raised: #181c22;
+  --color-surface-hover: #1f242c;
+  --color-border: #272c34;
+  --color-border-strong: #3b424d;
+
+  /* Text (WCAG contrast on --color-bg: text 16.4:1, muted 8.5:1, dim 5.1:1 — all ≥ AA) */
+  --color-text: #e9ecf0;
+  --color-text-muted: #a3acb8;
+  --color-text-dim: #7a8492;
+  --color-text-inverse: #0b0d10;
+
+  /* Interaction */
+  --color-accent: #4c9dff;
+  --color-accent-strong: #7ab6ff;
+  --color-selected-bg: #16263b;
+  --color-focus: #ffd34d;
+
+  /* Status (used for state, never for decoration) */
+  --color-ok: #3fcf73;
+  --color-warn: #f5b83d;
+  --color-error: #ff5f5f;
+  --color-info: #4c9dff;
+  --color-warn-bg: #2a2110;
+  --color-error-bg: #2b1414;
+
+  /* Environment badges */
+  --color-env-development: var(--color-warn);
+  --color-env-staging: var(--color-info);
+  --color-env-production: var(--color-text-muted);
+
+  /*
+   * Telemetry data quality (spec §87, §126, §162: normal / warning / critical / stale). Colour is never the
+   * only signal: every state also carries a text label and a distinct marker shape.
+   * Stale on --color-bg: 7.2:1 (AA).
+   */
+  --color-quality-live: var(--color-ok);
+  --color-quality-degraded: var(--color-warn);
+  --color-quality-stale: #a78bfa;
+  --color-quality-invalid: var(--color-error);
+  /* No data, unavailable, not supported, disconnected: nothing to show, so it recedes. */
+  --color-quality-none: var(--color-text-dim);
+
+  /* Provenance badges (spec §107) are neutral; the border style tells them apart. */
+  --color-provenance: var(--color-text-muted);
+  --color-provenance-border: var(--color-border-strong);
+
+  /*
+   * Telemetry graphs (src/graph). Series colours are categorical only: they never carry a state, so they avoid
+   * the status hues above; a stale or gap state is always also drawn as a dashed line or a labelled band.
+   */
+  --graph-series-1: #5aa9ff;
+  --graph-series-2: #ff8c42;
+  --graph-series-3: #3dd6c6;
+  --graph-series-4: #f06fb0;
+  --graph-series-5: #d4d46a;
+  --graph-series-6: #e0a96d;
+  --graph-series-7: #b0e05c;
+  --graph-series-8: #6fd3ff;
+  --graph-bg: var(--color-surface);
+  --graph-grid: #1d2229;
+  --graph-axis: var(--color-border-strong);
+  --graph-axis-text: var(--color-text-muted);
+  --graph-cursor: var(--color-text);
+  --graph-cursor-text: var(--color-text-inverse);
+  --graph-zoom-fill: #4c9dff26;
+  --graph-zoom-stroke: var(--color-accent);
+  --graph-marker-sector: var(--color-text-dim);
+  --graph-marker-lap: var(--color-text-muted);
+  --graph-marker-event: var(--color-info);
+  --graph-current-car: var(--color-accent-strong);
+  --graph-current-car-stale: var(--color-quality-stale);
+  --graph-gap-fill: #ffffff0f;
+  --graph-gap-text: var(--color-text-dim);
+  --graph-reference: var(--color-text-muted);
+  /* Text of a graph that cannot show current data (frame error, renderer failure). */
+  --graph-error-text: var(--color-error);
+
+  /* Typography */
+  --font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
+  --font-size-2xs: 10px;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-md: 13px;
+  --font-size-lg: 15px;
+  --font-size-xl: 18px;
+  --font-size-display: 26px;
+  --font-weight-regular: 400;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.45;
+  --letter-spacing-caps: 0.08em;
+  --letter-spacing-display: 0.18em;
+
+  /* Spacing (4 px grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* Shape */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --border-width: 1px;
+  --focus-ring-width: 2px;
+
+  /* Numeric readouts (spec §161): fixed-width value slot so digits never shift the layout. */
+  --font-size-readout: 22px;
+  --readout-value-min-width: 7ch;
+  --quality-marker-size: 8px;
+
+  /* Layout */
+  --header-height: 40px;
+  --control-height: 28px;
+  --control-height-sm: 22px;
+  --control-height-lg: 48px;
+  --content-max-width: 1200px;
+}

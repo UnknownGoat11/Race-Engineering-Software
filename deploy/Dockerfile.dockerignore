@@ -1,0 +1,12 @@
+# Build-context filter for deploy/Dockerfile (BuildKit reads <Dockerfile>.dockerignore).
+# The context is the repository root; only the Cargo workspace sources are needed.
+.git
+**/target
+**/node_modules
+apps/desktop/dist
+data
+deploy/secrets
+deploy/.env
+deploy/relay.env
+**/*.lmurec
+**/*.log

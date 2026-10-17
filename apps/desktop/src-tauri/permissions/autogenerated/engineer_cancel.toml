@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-engineer-cancel"
+description = "Enables the engineer_cancel command without any pre-configured scope."
+commands.allow = ["engineer_cancel"]
+
+[[permission]]
+identifier = "deny-engineer-cancel"
+description = "Denies the engineer_cancel command without any pre-configured scope."
+commands.deny = ["engineer_cancel"]
