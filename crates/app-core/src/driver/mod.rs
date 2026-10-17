@@ -6,6 +6,7 @@
 //! recording.
 
 pub mod engines;
+pub mod link;
 pub mod net;
 pub mod pipeline;
 pub mod reader_thread;

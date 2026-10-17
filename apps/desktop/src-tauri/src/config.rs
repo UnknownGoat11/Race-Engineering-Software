@@ -33,7 +33,8 @@ pub const DEFAULT_RELAY_PORT: u16 = 443;
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u32 = 5_000;
 pub const CONNECT_TIMEOUT_MS_RANGE: (u32, u32) = (500, 60_000);
 pub const DEFAULT_FUEL_WINDOW_LAPS: u32 = 5;
-pub const FUEL_WINDOW_LAPS_RANGE: (u32, u32) = (1, 50);
+/// Fuel windows the fuel engine supports (`race_engines::fuel::FuelWindow`); any other value is rejected.
+pub const SUPPORTED_FUEL_WINDOW_LAPS: [u32; 5] = app_core::settings::SUPPORTED_FUEL_WINDOW_LAPS;
 pub const DEFAULT_FUEL_RESERVE_LAPS: f64 = 1.0;
 pub const FUEL_RESERVE_LAPS_RANGE: (f64, f64) = (0.0, 10.0);
 pub const DEFAULT_UI_SCALE: f64 = 1.0;
@@ -223,7 +224,7 @@ impl Default for TelemetryConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FuelConfig {
-    /// Number of recent valid laps averaged for fuel-per-lap.
+    /// Number of recent valid laps averaged for fuel-per-lap: 1, 2, 3, 5 or 10.
     pub window_laps: u32,
     /// Safety margin, in laps of fuel, added to fuel-to-end calculations.
     pub reserve_laps: f64,
@@ -265,11 +266,9 @@ pub struct DriverConfig {
     pub auto_stream: bool,
 }
 
-/// Race-engine options.
-///
-/// Persisted only: the running `EngineHub` still uses its built-in defaults (`EngineHubConfig::default()`),
-/// so these values are not yet applied (tracked in DEFERRED). Tyre and brake thresholds deliberately have no
-/// field here: `race-engines` has no universal default for them (engineer-defined `AlertRule`s).
+/// Race-engine options, applied to the driver pipeline's `EngineHub` at the next driver start (together with
+/// `fuel`). Tyre and brake thresholds deliberately have no field here: `race-engines` has no universal default
+/// for them (engineer-defined `AlertRule`s).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct EnginesConfig {
@@ -379,6 +378,11 @@ impl AppConfig {
             ui: app_core::settings::UiSettings {
                 max_refresh_hz: self.ui.max_refresh_hz,
                 scale: self.ui.scale,
+            },
+            engines: app_core::settings::EngineSettings {
+                default_alerts_enabled: self.engines.default_alerts_enabled,
+                fuel_window_laps: self.fuel.window_laps,
+                fuel_reserve_laps: self.fuel.reserve_laps,
             },
         })
     }
@@ -527,12 +531,15 @@ impl AppConfig {
             self.telemetry.recording_dir.as_deref(),
         );
 
-        check_u32_range(
-            &mut errors,
-            "fuel.window_laps",
-            self.fuel.window_laps,
-            FUEL_WINDOW_LAPS_RANGE,
-        );
+        if !SUPPORTED_FUEL_WINDOW_LAPS.contains(&self.fuel.window_laps) {
+            errors.push(FieldError::new(
+                "fuel.window_laps",
+                format!(
+                    "must be one of 1, 2, 3, 5 or 10 (got {})",
+                    self.fuel.window_laps
+                ),
+            ));
+        }
         check_f64_range(
             &mut errors,
             "fuel.reserve_laps",
@@ -1040,7 +1047,7 @@ mod tests {
                 recording_dir: Some(absolute_path("recs")),
             },
             fuel: FuelConfig {
-                window_laps: 8,
+                window_laps: 10,
                 reserve_laps: 0.5,
             },
             ui: UiConfig {
@@ -1099,6 +1106,21 @@ mod tests {
     }
 
     #[test]
+    fn fuel_window_must_be_a_supported_size() {
+        for laps in SUPPORTED_FUEL_WINDOW_LAPS {
+            let mut config = AppConfig::defaults_for(Environment::Development);
+            config.fuel.window_laps = laps;
+            assert_eq!(config.validate(), Ok(()), "{laps} laps is supported");
+        }
+        for laps in [0, 4, 6, 8, 20, 50] {
+            let mut config = AppConfig::defaults_for(Environment::Development);
+            config.fuel.window_laps = laps;
+            let errors = config.validate().expect_err("unsupported window");
+            assert_eq!(errors[0].field, "fuel.window_laps");
+        }
+    }
+
+    #[test]
     fn window_geometry_is_validated() {
         let mut config = AppConfig::defaults_for(Environment::Development);
         config.window.width = Some(WINDOW_MIN_WIDTH - 1);
@@ -1120,6 +1142,9 @@ mod tests {
         config.telemetry.recording_enabled = false;
         config.ui.max_refresh_hz = 30;
         config.ui.scale = 1.25;
+        config.fuel.window_laps = 3;
+        config.fuel.reserve_laps = 2.5;
+        config.engines.default_alerts_enabled = false;
         let default_dir = absolute_path("data").join("recordings");
 
         let core = config
@@ -1140,6 +1165,9 @@ mod tests {
         );
         assert_eq!(core.ui.max_refresh_hz, 30);
         assert_eq!(core.ui.scale, 1.25);
+        assert_eq!(core.engines.fuel_window_laps, 3);
+        assert!((core.engines.fuel_reserve_laps - 2.5).abs() < f64::EPSILON);
+        assert!(!core.engines.default_alerts_enabled);
         assert_eq!(core.validate(), Ok(()));
 
         config.telemetry.recording_dir = Some(absolute_path("custom"));

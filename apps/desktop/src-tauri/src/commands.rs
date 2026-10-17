@@ -19,6 +19,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use app_core::bridge::sink::{SubscriptionId, UiSink};
 use app_core::bridge::status::{AppMode, CoreStatus};
 use app_core::core::{AppCore, CoreError};
+use app_core::driver::pipeline::CommandRejected;
 use protocol::messages::{ClientRole, Secret};
 use synthetic::Scenario;
 use transport::auth::{AccountInfo, LoginError};
@@ -91,6 +92,12 @@ pub mod codes {
     pub const IO_ERROR: &str = "io_error";
     pub const RECORDING_UNAVAILABLE: &str = "recording_unavailable";
     pub const NETWORK_UNAVAILABLE: &str = "network_unavailable";
+    pub const NOT_STREAMING: &str = "not_streaming";
+    pub const NOT_RECORDING: &str = "not_recording";
+    pub const RECORDING_FAILED: &str = "recording_failed";
+    pub const UNKNOWN_ALERT: &str = "unknown_alert";
+    pub const NETWORK_BUSY: &str = "network_busy";
+    pub const NETWORK_ERROR: &str = "network_error";
     // Join (engineer).
     pub const CODE_MALFORMED: &str = "code_malformed";
     pub const CODE_INVALID: &str = "code_invalid";
@@ -183,6 +190,20 @@ impl From<CoreError> for CommandError {
             CoreError::Io(_) => codes::IO_ERROR,
             CoreError::RecorderUnavailable => codes::RECORDING_UNAVAILABLE,
             CoreError::NetworkUnavailable => codes::NETWORK_UNAVAILABLE,
+            CoreError::NotLoggedIn => codes::RELOGIN_REQUIRED,
+            CoreError::NotStreaming => codes::NOT_STREAMING,
+            CoreError::UnknownAlert(_) => codes::UNKNOWN_ALERT,
+            CoreError::Network(_) => codes::NETWORK_ERROR,
+            CoreError::Rejected(ref rejected) => match rejected {
+                CommandRejected::RecorderUnavailable => codes::RECORDING_UNAVAILABLE,
+                CommandRejected::NotRecording => codes::NOT_RECORDING,
+                CommandRejected::NetworkUnavailable => codes::NETWORK_UNAVAILABLE,
+                CommandRejected::SyntheticNeverStreamed => codes::DEMO_ACTIVE,
+                CommandRejected::NotLoggedIn => codes::RELOGIN_REQUIRED,
+                CommandRejected::UnknownAlert(_) => codes::UNKNOWN_ALERT,
+                CommandRejected::Recorder(_) => codes::RECORDING_FAILED,
+                CommandRejected::Control(_) => codes::NETWORK_BUSY,
+            },
         };
         Self::new(code, error.to_string())
     }
@@ -468,6 +489,18 @@ fn one_shot_config(core: &AppCore) -> transport::ClientConfig {
     )
 }
 
+/// Passes the current driver login state to the live driver pipeline (gates streaming; with
+/// `driver.auto_stream` a login can start it). A failure is logged, never fatal for the login itself.
+fn refresh_driver_login(core: &AppCore) {
+    if let Err(error) = core.refresh_login_state() {
+        tracing::warn!(
+            component = component::IPC,
+            error = %error,
+            "login state not delivered to the driver pipeline"
+        );
+    }
+}
+
 fn demo_running(core: &AppCore) -> bool {
     core.is_demo_running()
 }
@@ -503,22 +536,6 @@ fn require_recorder(core: &AppCore) -> Result<(), CommandError> {
         return Err(CoreError::RecorderUnavailable.into());
     }
     Ok(())
-}
-
-/// Status for `get_core_status`: the pipeline's latest `core:status` while that pipeline is the active one,
-/// otherwise the core's own (idle) status. Never a stale status of a pipeline that stopped or of another origin.
-fn current_status(core: &AppCore, cached: Option<CoreStatus>) -> CoreStatus {
-    let base = core.status();
-    let pipeline_active =
-        base.mode == AppMode::Driver && (core.is_driver_running() || demo_running(core));
-    match cached {
-        Some(status)
-            if pipeline_active && status.mode == base.mode && status.origin == base.origin =>
-        {
-            status
-        }
-        _ => base,
-    }
 }
 
 /// Maximum accepted marker text, in characters.
@@ -759,10 +776,10 @@ pub fn update_settings(
     Ok(snapshot)
 }
 
-/// Composite status: the active pipeline's latest `core:status`, else the core's idle status.
+/// Composite status of the active mode, measured now (unknown values are reported as unknown).
 #[tauri::command(rename_all = "snake_case")]
 pub fn get_core_status(state: State<'_, AppState>) -> CoreStatus {
-    current_status(state.core(), state.sink().last_status())
+    state.core().status()
 }
 
 /// Runs the 7-stage connectivity test against the configured relay.
@@ -850,6 +867,7 @@ pub async fn login(
     )
     .await
     .map_err(|e| logged("login", e.into()))?;
+    refresh_driver_login(core);
     Ok(AccountInfoDto::from(info))
 }
 
@@ -880,18 +898,22 @@ pub async fn register_account(
     )
     .await
     .map_err(|e| logged("register_account", e.into()))?;
+    refresh_driver_login(core);
     Ok(AccountInfoDto::from(info))
 }
 
 /// Logs out: forgets the tokens and deletes the stored refresh tokens and driver session.
 #[tauri::command(async, rename_all = "snake_case")]
 pub fn logout(state: State<'_, AppState>) -> Result<(), CommandError> {
-    state.core().auth_manager().logout().map_err(|e| {
+    let core = state.core();
+    core.auth_manager().logout().map_err(|e| {
         logged(
             "logout",
             CommandError::new(codes::CREDENTIAL_STORE_FAILED, e.to_string()),
         )
-    })
+    })?;
+    refresh_driver_login(core);
+    Ok(())
 }
 
 /// Whether a refresh token exists for the active mode's role, plus the account if known in this run.
@@ -983,17 +1005,25 @@ pub fn driver_add_marker(state: State<'_, AppState>, text: String) -> Result<(),
         .map_err(|e| logged("driver_add_marker", e))
 }
 
-/// Acknowledging alerts is not supported by the pipeline yet; reported as `not_implemented`, never faked.
-#[tauri::command(rename_all = "snake_case")]
-pub fn driver_ack_alert(id: String) -> Result<(), CommandError> {
-    let _ = id;
-    Err(logged(
-        "driver_ack_alert",
+/// Acknowledges an active alert (the `id` of its `core:alert` event) in the driver pipeline's alert engine.
+/// An id that is not an active alert is refused (`unknown_alert`).
+#[tauri::command(async, rename_all = "snake_case")]
+pub fn driver_ack_alert(state: State<'_, AppState>, id: String) -> Result<(), CommandError> {
+    let alert_id = parse_alert_id(&id)?;
+    state
+        .core()
+        .driver_ack_alert(alert_id)
+        .map_err(|e| logged("driver_ack_alert", e.into()))
+}
+
+/// Alert ids are the decimal engine ids sent in `core:alert`.
+fn parse_alert_id(id: &str) -> Result<u64, CommandError> {
+    id.trim().parse::<u64>().map_err(|_| {
         CommandError::new(
-            codes::NOT_IMPLEMENTED,
-            "Acknowledging alerts is not available yet.",
-        ),
-    ))
+            codes::INVALID_INPUT,
+            "alert id must be the id of a core:alert event",
+        )
+    })
 }
 
 // ------------------------------------------------------------------------------------------------------------
@@ -1294,6 +1324,23 @@ mod tests {
                 CoreError::InvalidMode(AppMode::Engineer),
                 codes::INVALID_MODE,
             ),
+            (CoreError::NotLoggedIn, codes::RELOGIN_REQUIRED),
+            (CoreError::NotStreaming, codes::NOT_STREAMING),
+            (CoreError::UnknownAlert(3), codes::UNKNOWN_ALERT),
+            (
+                CoreError::Rejected(CommandRejected::SyntheticNeverStreamed),
+                codes::DEMO_ACTIVE,
+            ),
+            (
+                CoreError::Rejected(CommandRejected::NotRecording),
+                codes::NOT_RECORDING,
+            ),
+            (
+                CoreError::Rejected(CommandRejected::Control(
+                    app_core::driver::net::StreamControlError::Busy,
+                )),
+                codes::NETWORK_BUSY,
+            ),
         ];
         for (error, code) in cases {
             assert_eq!(CommandError::from(error).code, code);
@@ -1380,13 +1427,33 @@ mod tests {
     }
 
     #[test]
-    fn ack_alert_is_not_implemented_not_faked() {
+    fn ack_alert_reaches_the_pipeline_and_unknown_ids_are_refused() {
         assert_eq!(
-            driver_ack_alert("a1".to_owned())
-                .expect_err("must not succeed")
-                .code,
-            codes::NOT_IMPLEMENTED
+            parse_alert_id("a1").expect_err("not an id").code,
+            codes::INVALID_INPUT
         );
+        assert_eq!(parse_alert_id(" 42 ").expect("id"), 42);
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = ConfigStore::new(dir.path());
+        let state = test_state(
+            store.clone(),
+            store.load(Environment::Development),
+            Environment::Development,
+            identity(),
+        );
+        let core = state.core();
+        assert_eq!(
+            CommandError::from(core.driver_ack_alert(1).expect_err("no pipeline")).code,
+            codes::DRIVER_NOT_RUNNING
+        );
+        core.start_demo(demo_scenario(None).expect("scenario"))
+            .expect("demo");
+        assert_eq!(
+            CommandError::from(core.driver_ack_alert(987_654).expect_err("not active")).code,
+            codes::UNKNOWN_ALERT
+        );
+        core.shutdown().expect("shutdown");
     }
 
     #[test]
@@ -1518,7 +1585,8 @@ mod tests {
             require_network(core).expect_err("demo").code,
             codes::DEMO_ACTIVE
         );
-        assert_eq!(current_status(core, None).origin, Origin::Synthetic);
+        assert_eq!(core.status().origin, Origin::Synthetic);
+        assert_eq!(core.status().network.state, "NOT_CONFIGURED");
         core.stop_demo().expect("stop");
         assert_eq!(
             require_live_driver(core).expect_err("nothing runs").code,
@@ -1528,7 +1596,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_status_is_used_only_for_the_active_pipeline() {
+    fn core_status_is_measured_not_hard_coded() {
         let dir = tempfile::tempdir().expect("temp dir");
         let store = ConfigStore::new(dir.path());
         let state = test_state(
@@ -1538,22 +1606,14 @@ mod tests {
             identity(),
         );
         let core = state.core();
-        let mut cached = core.status();
-        cached.recording.state = "active".to_owned();
-        // No pipeline runs: the cached status of a stopped pipeline is not reported.
-        assert_eq!(
-            current_status(core, Some(cached.clone())).recording.state,
-            "off"
-        );
+        // Nothing runs: the LMU source is not observed (unknown), no relay is configured.
+        let idle = core.status();
+        assert_eq!(idle.lmu.state, "UNKNOWN");
+        assert_eq!(idle.network.state, "NOT_CONFIGURED");
+        assert!(!idle.network.streaming);
         core.start_demo(demo_scenario(None).expect("scenario"))
             .expect("demo");
-        // Origin mismatch (cached LMU status while the synthetic demo runs) is not reported either.
-        assert_eq!(
-            current_status(core, Some(cached.clone())).origin,
-            Origin::Synthetic
-        );
-        cached.origin = Origin::Synthetic;
-        assert_eq!(current_status(core, Some(cached)).recording.state, "active");
+        assert_eq!(core.status().origin, Origin::Synthetic);
         core.shutdown().expect("shutdown");
     }
 }

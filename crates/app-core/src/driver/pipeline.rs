@@ -4,20 +4,25 @@
 //! Command(PipelineCommand), Tick}`. Per frame it runs normalization, the [`super::engines`] `EngineHub`,
 //! the app channels (`SRC_*`, `PIPELINE_LATENCY`, `net.*`, `rec.*`) and the `AlertEngine`, then encodes one
 //! canonical TLV block shared as `Arc<[u8]>` and fans it out without blocking. Event-driven: no timer sits
-//! in the 100 Hz path. A `recv_timeout(100ms)` expiry is the 10 Hz housekeeping tick (source-age ticker,
-//! alert clock, recorder event drain, sleep/resume check).
+//! in the 100 Hz path. The 10 Hz housekeeping tick (source-age ticker, alert clock, recorder event drain,
+//! sleep/resume check, status, relay state) runs every 100 ms whether or not input keeps arriving.
 //!
 //! Implemented in app-core Phase 2 Increment I-3 (blueprint §2, §3, §4, §5, §6, §7, §12).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{Builder, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::Receiver;
+use arc_swap::ArcSwap;
+use crossbeam_channel::{Receiver, Sender};
 use lmu_normalizer::{Normalizer, TelemetryDisposition};
-use lmu_reader::{RawSnapshot, ReaderStats};
-use protocol::messages::SchemaNegotiate;
+use lmu_reader::{RawSnapshot, ReaderDiagnostics, ReaderState, ReaderStats};
+use parking_lot::Mutex;
+use protocol::messages::{
+    ClockSummary, ComponentHealth, DriverRates, DriverStatus, HealthLevel, LmuSourceState,
+    RecordingState, RecordingStatus as WireRecordingStatus, SchemaNegotiate, SessionCreate,
+};
 use race_engines::alert::{AlertClock, AlertNotice, AlertState};
 use recorder::LapRecord;
 use telemetry_model::channel::FrequencyClass;
@@ -34,20 +39,63 @@ use tracing::{debug, error, info, warn};
 use crate::bridge::hub::UiHub;
 use crate::bridge::sink::UiSink;
 use crate::bridge::status::{
-    AlertDto, AlertLevel, AppMode, CoreStatus, DropsDto, ErrorDto, NetworkStatusDto, Origin,
-    RatesDto, RecordingStatusDto, UiEvent,
+    AlertDto, AlertLevel, AppMode, CoreStatus, DropsDto, ErrorDto, Origin, RatesDto,
+    RecordingStatusDto, UiEvent,
 };
 use crate::clock::{AppClock, SkewStatus, SkewTracker};
 use crate::driver::engines::{EngineHub, EngineHubConfig};
-use crate::driver::net::NetPublisher;
+use crate::driver::link::network_status_dto;
+use crate::driver::net::{LinkSnapshot, NetPublisher, StreamControlError};
 use crate::driver::reader_thread::ReaderSnapshotMessage;
-use crate::driver::recorder_sup::RecorderSupervisor;
+use crate::driver::recorder_sup::{RecorderSupervisor, RecordingStatus};
 use crate::driver::session::{
     DriverSessionMachine, DriverSessionSettings, SessionAction, SessionInputEvent,
 };
 
 /// Tracing component name for logging.
 const COMPONENT: &str = "app_core::driver::pipeline";
+
+/// Housekeeping interval (10 Hz): status, stall detection, idle alerts, recorder drain.
+const HOUSEKEEPING_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Interval of the DRIVER_STATUS / RECORDING_STATUS publication while streaming (1 Hz).
+const NET_STATUS_INTERVAL_NS: u64 = 1_000_000_000;
+
+/// Shared slot holding the pipeline's latest composite status (read by `AppCore::status`).
+pub type StatusSlot = Arc<Mutex<Option<CoreStatus>>>;
+
+/// Shared reader diagnostics published by the reader thread (4 Hz).
+pub type ReaderDiagnosticsSource = Arc<ArcSwap<Option<ReaderDiagnostics>>>;
+
+/// Why the pipeline refused a command. Commands are never ignored silently: a refused command is
+/// returned to the caller ([`PipelineCommand::Request`]) or reported as a `core:error` event.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum CommandRejected {
+    /// The pipeline has no recorder (recording disabled, store failed to open, or demo).
+    #[error("local recording is not available")]
+    RecorderUnavailable,
+    /// A marker was requested while no recording session is open.
+    #[error("no recording session is open (the LMU session is not ready yet)")]
+    NotRecording,
+    /// The pipeline has no relay connection (no relay configured, or the display-only demo).
+    #[error("the driver is not connected to a relay")]
+    NetworkUnavailable,
+    /// Synthetic demo data is never streamed (owner decision Q1).
+    #[error("synthetic demo data is never streamed")]
+    SyntheticNeverStreamed,
+    /// Streaming needs a driver login.
+    #[error("log in as a driver to stream")]
+    NotLoggedIn,
+    /// No active alert has this id.
+    #[error("no active alert with id {0}")]
+    UnknownAlert(u64),
+    /// The recorder refused the request.
+    #[error("recorder error: {0}")]
+    Recorder(String),
+    /// The relay control queue is full or closed.
+    #[error("relay control unavailable: {0}")]
+    Control(StreamControlError),
+}
 
 /// Errors originating from the telemetry pipeline.
 #[derive(Debug, Error)]
@@ -67,6 +115,10 @@ pub enum PipelineError {
     /// Serialization error for events or scoring.
     #[error("serialization error: {0}")]
     Serialization(String),
+
+    /// A command was refused (typed reason).
+    #[error("command refused: {0}")]
+    Rejected(#[from] CommandRejected),
 }
 
 /// Commands accepted by the pipeline thread over its control queue.
@@ -86,6 +138,30 @@ pub enum PipelineCommand {
     AddMarker(String),
     /// Updates driver session settings (auto-stream, origin, etc.).
     UpdateSettings(DriverSessionSettings),
+    /// Acknowledges an active alert of the pipeline's `AlertEngine` by id.
+    AckAlert(u64),
+    /// The driver login state changed (gates manual and automatic streaming).
+    AuthStatus {
+        /// A driver refresh token exists.
+        logged_in: bool,
+    },
+    /// The relay bound (created or resumed) the session, or dropped the schema: send
+    /// SCHEMA_NEGOTIATE and a full snapshot so the sequence space starts correctly.
+    NetSessionReady,
+    /// A non-fatal relay notice for the UI (`core:error`, not fatal).
+    NetNotice {
+        /// `core:error` category.
+        category: String,
+        /// User-facing text (never contains codes or credentials).
+        message: String,
+    },
+    /// Runs `command` and replies with its outcome (typed refusal, never silent).
+    Request {
+        /// The command to run.
+        command: Box<PipelineCommand>,
+        /// Receives the outcome (bounded; a dropped receiver is ignored).
+        reply: Sender<Result<(), CommandRejected>>,
+    },
     /// Signals the pipeline thread to stop gracefully.
     Shutdown,
 }
@@ -139,6 +215,12 @@ pub struct DriverPipeline {
     sink: Option<Arc<dyn UiSink>>,
     skew_tracker: SkewTracker,
     origin: Origin,
+    status_slot: Option<StatusSlot>,
+    streaming_flag: Option<Arc<AtomicBool>>,
+    reader_diagnostics: Option<ReaderDiagnosticsSource>,
+    last_reader_state: Option<ReaderState>,
+    last_transport_state: Option<transport::ConnectionState>,
+    last_net_status_mono_ns: Option<u64>,
 
     // Monotonic state tracking
     sequence: u64,
@@ -201,6 +283,12 @@ impl DriverPipeline {
             sink,
             skew_tracker,
             origin,
+            status_slot: None,
+            streaming_flag: None,
+            reader_diagnostics: None,
+            last_reader_state: None,
+            last_transport_state: None,
+            last_net_status_mono_ns: None,
             sequence: 0,
             last_frame: None,
             last_scoring: None,
@@ -223,6 +311,34 @@ impl DriverPipeline {
             frames_processed: 0,
             pipeline_latency_ns: 0,
         })
+    }
+
+    /// Publishes every composite status into `slot` (read by `AppCore::status`).
+    pub fn set_status_slot(&mut self, slot: StatusSlot) {
+        self.status_slot = Some(slot);
+    }
+
+    /// Mirrors the session machine's "streaming" state into `flag` as soon as it changes.
+    pub fn set_streaming_flag(&mut self, flag: Arc<AtomicBool>) {
+        flag.store(self.session_machine.is_streaming(), Ordering::Relaxed);
+        self.streaming_flag = Some(flag);
+    }
+
+    fn sync_streaming_flag(&self) {
+        if let Some(ref flag) = self.streaming_flag {
+            flag.store(self.session_machine.is_streaming(), Ordering::Relaxed);
+        }
+    }
+
+    /// Feeds the reader thread's diagnostics into the session machine (LMU not running,
+    /// connected, incompatible) on the 10 Hz housekeeping tick.
+    pub fn set_reader_diagnostics(&mut self, source: ReaderDiagnosticsSource) {
+        self.reader_diagnostics = Some(source);
+    }
+
+    /// Whether this pipeline can stream (a relay link with session control is attached).
+    pub fn relay_configured(&self) -> bool {
+        self.net.as_ref().is_some_and(|n| n.control().is_some())
     }
 
     /// Returns the active origin of this pipeline run.
@@ -326,7 +442,9 @@ impl DriverPipeline {
             self.last_scoring = Some(scoring_state.clone());
             self.last_scoring_change_mono_ns = Some(snapshot.capture_mono_ns);
 
-            if let Some(ref mut net) = self.net {
+            if self.session_machine.is_streaming()
+                && let Some(ref mut net) = self.net
+            {
                 net.publish_scoring(scoring_state, snapshot.capture_mono_ns);
             }
             if let Some(ref mut rec) = self.recorder
@@ -341,9 +459,17 @@ impl DriverPipeline {
             }
         }
 
-        // Identity updates:
+        // Identity updates (the relay session is kept on a track/car change, Q3; only the data
+        // for the next new relay session is refreshed):
         if let Some(ref identity) = output.identity {
+            let changed = self.active_identity.as_ref() != Some(identity);
             self.active_identity = Some(identity.clone());
+            if changed
+                && let Some(control) = self.net.as_ref().and_then(|n| n.control().cloned())
+                && let Err(err) = control.update_session(self.session_create())
+            {
+                warn!(component = COMPONENT, error = %err, "relay session data not updated");
+            }
         }
 
         // Telemetry frame processing:
@@ -462,8 +588,11 @@ impl DriverPipeline {
                 .push_block_with_gap(Arc::clone(&block), is_keyframe, self.gap_before);
             self.gap_before = false;
 
-            if let Some(ref mut net) = self.net {
+            if self.session_machine.is_streaming()
+                && let Some(ref mut net) = self.net
+            {
                 net.publish_frame(&frame, frame.capture_mono_ns);
+                net.publish_weather(&frame, frame.capture_mono_ns);
             }
 
             self.last_frame = Some(frame);
@@ -474,9 +603,213 @@ impl DriverPipeline {
         Ok(())
     }
 
+    /// SESSION_CREATE data for the relay from the current LMU identity (unknown fields `None`).
+    fn session_create(&self) -> SessionCreate {
+        SessionCreate {
+            identity: self.active_identity.clone().unwrap_or_default(),
+            lmu_version: self.session_machine.game_version().map(|v| v.to_string()),
+            app_version: env!("CARGO_PKG_VERSION").to_string(),
+            schema_version: TELEMETRY_SCHEMA_VERSION,
+            capabilities: self.normalizer.vehicle_capabilities(),
+        }
+    }
+
+    /// Current SCHEMA_NEGOTIATE for the network stream.
+    fn schema_negotiate(&self) -> SchemaNegotiate {
+        SchemaNegotiate {
+            schema_version: TELEMETRY_SCHEMA_VERSION,
+            capabilities: self.normalizer.capability_map().clone(),
+            vehicle_capabilities: self.normalizer.vehicle_capabilities(),
+        }
+    }
+
+    /// Forwards reader state changes (LMU not running / connected / incompatible) to the
+    /// machine. `Stalled` is detected by the pipeline's own frame timeout.
+    fn poll_reader_state(&mut self) {
+        let Some(diag) = self
+            .reader_diagnostics
+            .as_ref()
+            .and_then(|src| src.load().as_ref().clone())
+        else {
+            return;
+        };
+        if self.last_reader_state == Some(diag.state) {
+            return;
+        }
+        self.last_reader_state = Some(diag.state);
+        if diag.state == ReaderState::Stalled {
+            return;
+        }
+        let detail = diag.last_error.clone().or_else(|| diag.note.clone());
+        let actions = self
+            .session_machine
+            .step(SessionInputEvent::ReaderStateChanged {
+                state: diag.state,
+                detail,
+                game_version: None,
+            });
+        self.execute_session_actions(actions);
+    }
+
+    /// Feeds transport connection state changes to the machine (FAILED stops streaming).
+    fn poll_transport_state(&mut self) {
+        let Some(state) = self
+            .net
+            .as_ref()
+            .and_then(NetPublisher::link_snapshot)
+            .map(|s| s.status.state)
+        else {
+            return;
+        };
+        if self.last_transport_state == Some(state) {
+            return;
+        }
+        self.last_transport_state = Some(state);
+        let actions = self
+            .session_machine
+            .step(SessionInputEvent::TransportStateChanged(state));
+        self.execute_session_actions(actions);
+    }
+
+    /// DRIVER_STATUS and RECORDING_STATUS for the engineers (1 Hz while streaming).
+    fn publish_net_status(&mut self, now_mono_ns: u64) {
+        if !self.session_machine.is_streaming() {
+            return;
+        }
+        if self
+            .last_net_status_mono_ns
+            .is_some_and(|last| now_mono_ns.saturating_sub(last) < NET_STATUS_INTERVAL_NS)
+        {
+            return;
+        }
+        self.last_net_status_mono_ns = Some(now_mono_ns);
+        let link = self.net.as_ref().and_then(NetPublisher::link_snapshot);
+        let driver_status = self.driver_status(link.as_ref());
+        let recording_status = self.wire_recording_status();
+        if let Some(ref mut net) = self.net {
+            net.publish_status(driver_status, recording_status, now_mono_ns);
+        }
+    }
+
+    /// Layered driver health for DRIVER_STATUS (unknown is reported as degraded, never ok).
+    fn driver_status(&self, link: Option<&LinkSnapshot>) -> DriverStatus {
+        let health = |level: HealthLevel, detail: Option<String>| ComponentHealth { level, detail };
+        let lmu_state = self.session_machine.lmu_source_state();
+        let lmu_source = match lmu_state {
+            LmuSourceState::Live => health(HealthLevel::Ok, None),
+            LmuSourceState::Connecting | LmuSourceState::Stale => {
+                health(HealthLevel::Degraded, None)
+            }
+            LmuSourceState::NotRunning | LmuSourceState::Paused => {
+                health(HealthLevel::Inactive, None)
+            }
+            LmuSourceState::Error => health(
+                HealthLevel::Failed,
+                self.session_machine.lmu_source_status().detail,
+            ),
+        };
+        let processing = if self.frames_processed == 0 {
+            health(HealthLevel::Inactive, None)
+        } else if self.reader_overruns > 0 {
+            health(
+                HealthLevel::Degraded,
+                Some(format!("{} reader overruns", self.reader_overruns)),
+            )
+        } else {
+            health(HealthLevel::Ok, None)
+        };
+        let recording = match self.recorder.as_ref().map(RecorderSupervisor::status) {
+            None => health(HealthLevel::Inactive, Some("recording disabled".to_owned())),
+            Some(RecordingStatus::Active) => health(HealthLevel::Ok, None),
+            Some(RecordingStatus::Off) => health(HealthLevel::Inactive, None),
+            Some(RecordingStatus::Suspended) => {
+                health(HealthLevel::Degraded, Some("disk space low".to_owned()))
+            }
+            Some(RecordingStatus::Failed) => health(HealthLevel::Failed, None),
+        };
+        let network = match link.map(|l| l.status.state) {
+            Some(transport::ConnectionState::Connected) => health(HealthLevel::Ok, None),
+            Some(s) if s.is_session_up() => health(HealthLevel::Degraded, None),
+            Some(_) => health(HealthLevel::Degraded, Some("reconnecting".to_owned())),
+            None => health(HealthLevel::Degraded, Some("link state unknown".to_owned())),
+        };
+        let stats = self.last_reader_stats.as_ref();
+        DriverStatus {
+            lmu_state,
+            lmu_source,
+            processing,
+            recording,
+            network,
+            rates: DriverRates {
+                telemetry_read_hz: stats
+                    .and_then(|s| s.telemetry_rate.rate_hz())
+                    .map(|r| r as f32),
+                scoring_read_hz: stats
+                    .and_then(|s| s.scoring_rate.rate_hz())
+                    .map(|r| r as f32),
+                frames_sent_hz: link
+                    .and_then(|l| l.metrics.frames_out_per_s)
+                    .map(|r| r as f32),
+                bytes_sent_per_s: link
+                    .and_then(|l| l.metrics.bytes_out_per_s)
+                    .map(|r| r as u64),
+                frames_dropped_total: link.map_or(0, |l| l.metrics.dropped_obsolete),
+            },
+            clock: link.and_then(|l| l.clock).map(|c| ClockSummary {
+                offset_ns: c.offset_ns,
+                uncertainty_ns: c.uncertainty_ns,
+            }),
+        }
+    }
+
+    /// RECORDING_STATUS for the engineers.
+    fn wire_recording_status(&self) -> WireRecordingStatus {
+        let dto = self.recording_status_dto();
+        let state = match self.recorder.as_ref().map(RecorderSupervisor::status) {
+            Some(RecordingStatus::Active) => RecordingState::Active,
+            Some(RecordingStatus::Failed | RecordingStatus::Suspended) => RecordingState::Failed,
+            Some(RecordingStatus::Off) | None => RecordingState::Off,
+        };
+        WireRecordingStatus {
+            state,
+            recording_id: dto.recording_id,
+            bytes_written: dto.bytes_written,
+            frames_written: dto.frames_written,
+            frames_lost: dto.frames_lost,
+            disk_free_bytes: dto.disk_free_bytes,
+            error: dto.error,
+        }
+    }
+
+    /// Recording block of `core:status` (`disabled` when the pipeline has no recorder).
+    fn recording_status_dto(&self) -> RecordingStatusDto {
+        self.recorder
+            .as_ref()
+            .map(RecorderSupervisor::status_dto)
+            .unwrap_or_else(|| RecordingStatusDto {
+                state: "disabled".into(),
+                recording_id: None,
+                bytes_written: 0,
+                frames_written: 0,
+                frames_lost: 0,
+                disk_free_bytes: None,
+                error: None,
+            })
+    }
+
     /// Processes the 100 ms timeout housekeeping tick (10 Hz).
     fn process_housekeeping_tick(&mut self) -> Result<(), PipelineError> {
         let now_mono_ns = self.clock.now_ns();
+
+        // 0. Reader and transport state changes, reliable queue drain, status to engineers:
+        self.poll_reader_state();
+        self.poll_transport_state();
+        if self.session_machine.is_streaming()
+            && let Some(ref mut net) = self.net
+        {
+            net.drain_reliable();
+        }
+        self.publish_net_status(now_mono_ns);
 
         // 1. Source age check & stall detection:
         if let Some(last_recv) = self.last_frame_received_mono_ns {
@@ -641,7 +974,9 @@ impl DriverPipeline {
             }
         }
 
-        if let Some(ref mut net) = self.net {
+        if self.session_machine.is_streaming()
+            && let Some(ref mut net) = self.net
+        {
             let at = EventTime {
                 source_et_s,
                 mono_ns,
@@ -657,148 +992,254 @@ impl DriverPipeline {
         }
     }
 
-    /// Emits the composite `core:status` JSON event across the bridge.
-    fn emit_status(&self, _now_mono_ns: u64) {
-        if let Some(ref sink) = self.sink {
-            let network_status = NetworkStatusDto {
-                state: self.session_machine.connection_state().name().to_string(),
-                rtt_ms: None,
-                connect_code: None,
-                code_expires_at_unix_s: None,
-                engineers_connected: 0,
-                engineers_max: 2,
-                degraded_reason: None,
-                driver_away: false,
-                last_error: None,
-                security_issue: false,
-            };
+    /// Builds the composite status of this pipeline (no hard-coded values: unknown is unknown).
+    pub fn build_status(&self) -> CoreStatus {
+        let link = self.net.as_ref().and_then(NetPublisher::link_snapshot);
+        let network_status = network_status_dto(
+            link.as_ref(),
+            self.relay_configured(),
+            self.session_machine.is_streaming(),
+        );
 
-            let telem_rate = self
-                .last_reader_stats
-                .as_ref()
-                .and_then(|s| s.telemetry_rate.rate_hz())
-                .map(|r| r as f32);
-            let scoring_rate = self
-                .last_reader_stats
-                .as_ref()
-                .and_then(|s| s.scoring_rate.rate_hz())
-                .map(|r| r as f32);
+        let telem_rate = self
+            .last_reader_stats
+            .as_ref()
+            .and_then(|s| s.telemetry_rate.rate_hz())
+            .map(|r| r as f32);
+        let scoring_rate = self
+            .last_reader_stats
+            .as_ref()
+            .and_then(|s| s.scoring_rate.rate_hz())
+            .map(|r| r as f32);
+        let net_events_dropped = self
+            .net
+            .as_ref()
+            .map_or(0, |n| n.stats().reliable_events_dropped);
+        let recording_status = self.recording_status_dto();
+        let recorder_overrun = recording_status.frames_lost;
+        let net_dropped_obsolete = link.as_ref().map_or(0, |l| l.metrics.dropped_obsolete);
 
-            let net_frames_sent = self.net.as_ref().map(|n| {
-                (n.stats().deltas_sent[0] + n.stats().deltas_sent[1] + n.stats().deltas_sent[2])
-                    as f32
-            });
-            let net_drops = self.net.as_ref().map_or(0, |n| {
-                n.stats().repair_pushes[0] + n.stats().repair_pushes[1] + n.stats().repair_pushes[2]
-            });
-            let net_dropped_obsolete = self
-                .net
-                .as_ref()
-                .map_or(0, |n| n.stats().reliable_events_dropped);
-
-            let recording_status = self
-                .recorder
-                .as_ref()
-                .map(|r| r.status_dto())
-                .unwrap_or_else(|| RecordingStatusDto {
-                    state: "disabled".into(),
-                    recording_id: None,
-                    bytes_written: 0,
-                    frames_written: 0,
-                    frames_lost: 0,
-                    disk_free_bytes: None,
-                    error: None,
-                });
-            let recorder_overrun = self
-                .recorder
-                .as_ref()
-                .map_or(0, |r| r.status_dto().frames_lost);
-
-            let core_status = CoreStatus {
-                mode: AppMode::Driver,
-                origin: self.origin,
-                lmu: self.session_machine.lmu_source_status(),
-                session: self.session_machine.session_status_dto(),
-                recording: recording_status,
-                network: network_status,
-                rates: RatesDto {
-                    telemetry_read_hz: telem_rate,
-                    scoring_read_hz: scoring_rate,
-                    frames_sent_hz: net_frames_sent,
-                    bytes_sent_per_s: None,
-                    frames_dropped_total: net_drops,
-                },
-                drops: DropsDto {
-                    reader_overrun: self.reader_overruns,
-                    pipeline_overrun: self.pipeline_overruns,
-                    recorder_overrun,
-                    net_dropped_obsolete,
-                    ui_dropped: self.ui_hub.total_ui_dropped(),
-                },
-            };
-
-            sink.emit(UiEvent::Status(Box::new(core_status)));
+        CoreStatus {
+            mode: AppMode::Driver,
+            origin: self.origin,
+            lmu: self.session_machine.lmu_source_status(),
+            session: self.session_machine.session_status_dto(),
+            recording: recording_status,
+            network: network_status,
+            rates: RatesDto {
+                telemetry_read_hz: telem_rate,
+                scoring_read_hz: scoring_rate,
+                frames_sent_hz: link
+                    .as_ref()
+                    .and_then(|l| l.metrics.frames_out_per_s)
+                    .map(|r| r as f32),
+                bytes_sent_per_s: link
+                    .as_ref()
+                    .and_then(|l| l.metrics.bytes_out_per_s)
+                    .map(|r| r as u64),
+                frames_dropped_total: net_dropped_obsolete,
+            },
+            drops: DropsDto {
+                reader_overrun: self.reader_overruns,
+                pipeline_overrun: self.pipeline_overruns,
+                recorder_overrun,
+                net_dropped_obsolete,
+                net_events_dropped,
+                ui_dropped: self.ui_hub.total_ui_dropped(),
+            },
+            engineer: None,
         }
     }
 
-    /// Processes an external pipeline command.
+    /// Emits the composite `core:status` JSON event and stores it for `AppCore::status`.
+    fn emit_status(&self, _now_mono_ns: u64) {
+        let status = self.build_status();
+        if let Some(ref slot) = self.status_slot {
+            *slot.lock() = Some(status.clone());
+        }
+        if let Some(ref sink) = self.sink {
+            sink.emit(UiEvent::Status(Box::new(status)));
+        }
+    }
+
+    /// Reports a refused fire-and-forget command or relay control failure (never silent).
+    fn report_rejection(&self, rejection: &CommandRejected) {
+        warn!(component = COMPONENT, reason = %rejection, "pipeline command refused");
+        if let Some(ref sink) = self.sink {
+            sink.emit(UiEvent::Error(ErrorDto {
+                category: "command".to_owned(),
+                message: rejection.to_string(),
+                fatal: false,
+            }));
+        }
+    }
+
+    /// Processes an external pipeline command. A refused command returns
+    /// [`PipelineError::Rejected`] with the typed reason.
     fn process_command(&mut self, cmd: PipelineCommand) -> Result<(), PipelineError> {
         match cmd {
+            PipelineCommand::Request { command, reply } => match self.process_command(*command) {
+                Ok(()) => {
+                    let _ = reply.try_send(Ok(()));
+                    Ok(())
+                }
+                Err(PipelineError::Rejected(rejected)) => {
+                    let _ = reply.try_send(Err(rejected));
+                    Ok(())
+                }
+                Err(other) => Err(other),
+            },
             PipelineCommand::SnapshotNeeded => {
                 if let Some(ref mut net) = self.net {
                     net.request_snapshot();
                 }
                 self.discontinuity_pending = true;
+                Ok(())
             }
             PipelineCommand::StartStreaming => {
+                if self.origin == Origin::Synthetic {
+                    return Err(CommandRejected::SyntheticNeverStreamed.into());
+                }
+                if !self.relay_configured() {
+                    return Err(CommandRejected::NetworkUnavailable.into());
+                }
+                if !self.session_machine.is_logged_in() {
+                    return Err(CommandRejected::NotLoggedIn.into());
+                }
                 let actions = self
                     .session_machine
                     .step(SessionInputEvent::ManualStartStreaming);
-                self.execute_session_actions(actions);
+                Ok(self.execute_session_actions_checked(actions)?)
             }
             PipelineCommand::StopStreaming => {
+                if !self.relay_configured() {
+                    return Err(CommandRejected::NetworkUnavailable.into());
+                }
                 let actions = self
                     .session_machine
                     .step(SessionInputEvent::ManualStopStreaming);
-                self.execute_session_actions(actions);
+                Ok(self.execute_session_actions_checked(actions)?)
             }
             PipelineCommand::EndSession => {
                 let actions = self
                     .session_machine
                     .step(SessionInputEvent::ManualEndSession);
-                self.execute_session_actions(actions);
+                let ends_relay = actions.contains(&SessionAction::EndStreamingSession);
+                let result = self.execute_session_actions_checked(actions);
                 if let Some(ref mut rec) = self.recorder {
                     let _ = rec.on_session_end();
                 }
+                // A relay session kept for a resume (streaming stopped) is ended as well.
+                if !ends_relay
+                    && let Some(control) = self.net.as_ref().and_then(|n| n.control().cloned())
+                {
+                    control.end_session().map_err(CommandRejected::Control)?;
+                }
+                Ok(result?)
             }
             PipelineCommand::SetRecording(enabled) => {
-                if let Some(ref mut rec) = self.recorder {
-                    let _ = rec.set_enabled(enabled);
-                }
+                let rec = self
+                    .recorder
+                    .as_mut()
+                    .ok_or(CommandRejected::RecorderUnavailable)?;
+                rec.set_enabled(enabled)
+                    .map_err(|e| CommandRejected::Recorder(e.to_string()))?;
+                Ok(())
             }
             PipelineCommand::AddMarker(text) => {
-                if let Some(ref mut rec) = self.recorder {
-                    let _ = rec.append_marker(self.clock.now_ns(), &text);
+                let now = self.clock.now_ns();
+                let rec = self
+                    .recorder
+                    .as_ref()
+                    .ok_or(CommandRejected::RecorderUnavailable)?;
+                if rec.active_session_id().is_none() {
+                    return Err(CommandRejected::NotRecording.into());
                 }
+                rec.append_marker(now, &text)
+                    .map_err(|e| CommandRejected::Recorder(e.to_string()))?;
+                Ok(())
             }
             PipelineCommand::UpdateSettings(settings) => {
                 let actions = self
                     .session_machine
                     .step(SessionInputEvent::SettingsUpdated(settings));
                 self.execute_session_actions(actions);
+                Ok(())
+            }
+            PipelineCommand::AckAlert(alert_id) => {
+                self.engines
+                    .alert
+                    .acknowledge(alert_id)
+                    .map_err(|_| CommandRejected::UnknownAlert(alert_id))?;
+                Ok(())
+            }
+            PipelineCommand::AuthStatus { logged_in } => {
+                let relay_configured = self.relay_configured();
+                let actions = self
+                    .session_machine
+                    .step(SessionInputEvent::AuthStatusChanged {
+                        logged_in,
+                        relay_configured,
+                    });
+                self.execute_session_actions(actions);
+                Ok(())
+            }
+            PipelineCommand::NetSessionReady => {
+                let schema = self.schema_negotiate();
+                if let Some(ref mut net) = self.net {
+                    net.reset_stream();
+                    net.set_schema(schema);
+                }
+                self.discontinuity_pending = true;
+                Ok(())
+            }
+            PipelineCommand::NetNotice { category, message } => {
+                if let Some(ref sink) = self.sink {
+                    sink.emit(UiEvent::Error(ErrorDto {
+                        category,
+                        message,
+                        fatal: false,
+                    }));
+                }
+                Ok(())
             }
             PipelineCommand::Shutdown => {
                 if let Some(ref mut rec) = self.recorder {
                     let _ = rec.on_session_end();
                 }
+                Ok(())
             }
         }
-        Ok(())
     }
 
-    /// Executes discrete actions returned by the [`DriverSessionMachine`].
-    fn execute_session_actions(&mut self, actions: Vec<SessionAction>) {
+    /// Executes session actions; returns the first relay control failure, if any.
+    fn execute_session_actions_checked(
+        &mut self,
+        actions: Vec<SessionAction>,
+    ) -> Result<(), CommandRejected> {
+        let mut failure = None;
         for action in actions {
+            if let Err(err) = self.execute_session_action(action)
+                && failure.is_none()
+            {
+                failure = Some(err);
+            }
+        }
+        self.sync_streaming_flag();
+        failure.map_or(Ok(()), Err)
+    }
+
+    /// Executes discrete actions returned by the [`DriverSessionMachine`]; relay control
+    /// failures are reported to the UI (never silent).
+    fn execute_session_actions(&mut self, actions: Vec<SessionAction>) {
+        if let Err(rejection) = self.execute_session_actions_checked(actions) {
+            self.report_rejection(&rejection);
+        }
+    }
+
+    /// Executes one session action.
+    fn execute_session_action(&mut self, action: SessionAction) -> Result<(), CommandRejected> {
+        {
             match action {
                 SessionAction::StartRecording(meta) => {
                     if let Some(ref mut rec) = self.recorder
@@ -820,30 +1261,41 @@ impl DriverPipeline {
                     // Segment resumes automatically on next appended frame
                 }
                 SessionAction::StartStreaming => {
-                    info!(
-                        component = COMPONENT,
-                        "live streaming requested by session machine"
-                    );
+                    info!(component = COMPONENT, "live streaming starting");
+                    let Some(control) = self.net.as_ref().and_then(|n| n.control().cloned()) else {
+                        self.revert_streaming();
+                        return Err(CommandRejected::NetworkUnavailable);
+                    };
+                    let session = self.session_create();
+                    if let Some(ref mut net) = self.net {
+                        net.reset_stream();
+                    }
+                    if let Err(err) = control.start(session) {
+                        self.revert_streaming();
+                        return Err(CommandRejected::Control(err));
+                    }
                 }
                 SessionAction::StopStreaming => {
                     info!(
                         component = COMPONENT,
-                        "live streaming paused by session machine"
+                        "live streaming stopped (session kept)"
                     );
+                    if let Some(control) = self.net.as_ref().and_then(|n| n.control().cloned()) {
+                        control.stop().map_err(CommandRejected::Control)?;
+                    }
                 }
                 SessionAction::EndStreamingSession => {
-                    info!(component = COMPONENT, "live streaming session ended");
+                    info!(component = COMPONENT, "live streaming session ending");
+                    if let Some(control) = self.net.as_ref().and_then(|n| n.control().cloned()) {
+                        control.end_session().map_err(CommandRejected::Control)?;
+                    }
                 }
                 SessionAction::SendStaleBlock => {
                     self.emit_stale_block();
                 }
                 SessionAction::SendSchemaNegotiate => {
+                    let schema = self.schema_negotiate();
                     if let Some(ref mut net) = self.net {
-                        let schema = SchemaNegotiate {
-                            schema_version: TELEMETRY_SCHEMA_VERSION,
-                            capabilities: self.normalizer.capability_map().clone(),
-                            vehicle_capabilities: self.normalizer.vehicle_capabilities(),
-                        };
                         net.set_schema(schema);
                     }
                 }
@@ -869,6 +1321,15 @@ impl DriverPipeline {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Returns the machine to "not streaming" after a start that could not be queued.
+    fn revert_streaming(&mut self) {
+        let _ = self
+            .session_machine
+            .step(SessionInputEvent::ManualStopStreaming);
+        self.sync_streaming_flag();
     }
 
     /// Runs the pipeline event loop until `stop_flag` is signaled or receiver channels disconnect.
@@ -883,6 +1344,7 @@ impl DriverPipeline {
             "pipeline thread started (NORMAL priority, 100ms housekeeping tick)"
         );
 
+        let mut next_tick = Instant::now() + HOUSEKEEPING_INTERVAL;
         while !stop_flag.load(Ordering::Relaxed) {
             crossbeam_channel::select! {
                 recv(snapshot_rx) -> msg => {
@@ -904,20 +1366,25 @@ impl DriverPipeline {
                 }
                 recv(cmd_rx) -> msg => {
                     if let Ok(cmd) = msg {
-                        let is_shutdown = matches!(cmd, PipelineCommand::Shutdown);
-                        if let Err(err) = self.step(PipelineInput::Command(cmd)) {
-                            error!(component = COMPONENT, error = %err, "pipeline error processing command");
+                        if matches!(cmd, PipelineCommand::Shutdown) {
+                            // §10: drain what the (already stopped) reader queued, so every
+                            // acquired snapshot is processed and recorded before finalizing.
+                            self.drain_snapshots(&snapshot_rx);
                         }
-                        if is_shutdown {
+                        if self.handle_command_input(cmd) {
                             break;
                         }
                     }
                 }
-                default(Duration::from_millis(100)) => {
-                    if let Err(err) = self.step(PipelineInput::Tick) {
-                        error!(component = COMPONENT, error = %err, "pipeline housekeeping tick error");
-                    }
+                default(next_tick.saturating_duration_since(Instant::now())) => {}
+            }
+            // Housekeeping is due every 100 ms whether or not input keeps arriving (a 100 Hz
+            // stream must not starve status, stall detection, alerts or the recorder drain).
+            if Instant::now() >= next_tick {
+                if let Err(err) = self.step(PipelineInput::Tick) {
+                    error!(component = COMPONENT, error = %err, "pipeline housekeeping tick error");
                 }
+                next_tick = Instant::now() + HOUSEKEEPING_INTERVAL;
             }
         }
 
@@ -934,6 +1401,33 @@ impl DriverPipeline {
             reader_overruns: self.reader_overruns,
             discontinuities: self.discontinuities,
         }
+    }
+
+    /// Processes every snapshot already queued by the reader (bounded by the queue capacity).
+    fn drain_snapshots(&mut self, snapshot_rx: &Receiver<ReaderSnapshotMessage>) {
+        for item in snapshot_rx.try_iter() {
+            if let Err(err) = self.step(PipelineInput::Lmu(Box::new(PipelineLmuInput {
+                snapshot: Box::new(item.snapshot),
+                overrun_before: item.overrun_before,
+                stats: item.stats,
+            }))) {
+                error!(component = COMPONENT, error = %err, "pipeline error processing snapshot");
+            }
+        }
+    }
+
+    /// Runs one command from the control queue; refusals of fire-and-forget commands are
+    /// reported (`core:error`). Returns `true` for `Shutdown`.
+    fn handle_command_input(&mut self, cmd: PipelineCommand) -> bool {
+        let is_shutdown = matches!(cmd, PipelineCommand::Shutdown);
+        match self.step(PipelineInput::Command(cmd)) {
+            Ok(()) => {}
+            Err(PipelineError::Rejected(rejection)) => self.report_rejection(&rejection),
+            Err(err) => {
+                error!(component = COMPONENT, error = %err, "pipeline error processing command");
+            }
+        }
+        is_shutdown
     }
 
     /// Spawns the dedicated `"pipeline"` OS thread.
@@ -1060,6 +1554,7 @@ impl DriverPipeline {
             "pipeline demo thread started (Origin::Synthetic, display-only)"
         );
 
+        let mut next_tick = Instant::now() + HOUSEKEEPING_INTERVAL;
         while !stop_flag.load(Ordering::Relaxed) {
             crossbeam_channel::select! {
                 recv(demo_rx) -> msg => {
@@ -1076,21 +1571,21 @@ impl DriverPipeline {
                     }
                 }
                 recv(cmd_rx) -> msg => {
-                    if let Ok(cmd) = msg {
-                        let is_shutdown = matches!(cmd, PipelineCommand::Shutdown);
-                        if let Err(err) = self.step(PipelineInput::Command(cmd)) {
-                            error!(component = COMPONENT, error = %err, "pipeline error processing command");
-                        }
-                        if is_shutdown {
-                            break;
-                        }
+                    if let Ok(cmd) = msg
+                        && self.handle_command_input(cmd)
+                    {
+                        break;
                     }
                 }
-                default(Duration::from_millis(100)) => {
-                    if let Err(err) = self.step(PipelineInput::Tick) {
-                        error!(component = COMPONENT, error = %err, "pipeline housekeeping tick error");
-                    }
+                default(next_tick.saturating_duration_since(Instant::now())) => {}
+            }
+            // Housekeeping is due every 100 ms whether or not input keeps arriving (a 100 Hz
+            // stream must not starve status, stall detection, alerts or the recorder drain).
+            if Instant::now() >= next_tick {
+                if let Err(err) = self.step(PipelineInput::Tick) {
+                    error!(component = COMPONENT, error = %err, "pipeline housekeeping tick error");
                 }
+                next_tick = Instant::now() + HOUSEKEEPING_INTERVAL;
             }
         }
 

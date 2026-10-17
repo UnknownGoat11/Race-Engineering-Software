@@ -56,6 +56,7 @@ export interface TelemetryConfig {
 }
 
 export interface FuelConfig {
+  /** Laps averaged for fuel per lap: 1, 2, 3, 5 or 10 (other values are rejected). */
   readonly window_laps: number;
   readonly reserve_laps: number;
 }
@@ -70,7 +71,7 @@ export interface DriverConfig {
   readonly auto_stream: boolean;
 }
 
-/** Persisted race-engine options. Not yet applied to the engines (they use built-in defaults). */
+/** Race-engine options; applied (with `fuel`) to the driver pipeline at the next driver start. */
 export interface EnginesConfig {
   readonly default_alerts_enabled: boolean;
 }
@@ -131,6 +132,7 @@ export type AppMode = 'driver' | 'engineer';
 export type Origin = 'lmu' | 'synthetic';
 
 export interface LmuSourceStatus {
+  /** `NOT_RUNNING` | `CONNECTING` | `LIVE` | `PAUSED` | `STALE` | `ERROR`, or `UNKNOWN` when not observed. */
   readonly state: string;
   readonly detail: string | null;
   readonly game_version: number | null;
@@ -146,7 +148,10 @@ export interface SessionStatusDto {
 }
 
 export interface RecordingStatusDto {
-  /** `off` | `active` | `suspended` | `failed` (`disabled` when no recorder exists). */
+  /**
+   * `off` | `active` | `suspended` | `failed`; `disabled` when no recorder exists; `unknown` when not
+   * reported yet (engineer: the driver's recording state arrives over the relay).
+   */
   readonly state: string;
   readonly recording_id: string | null;
   readonly bytes_written: number;
@@ -156,8 +161,26 @@ export interface RecordingStatusDto {
   readonly error: string | null;
 }
 
+/** One engineer holding a slot in the driver's relay session. */
+export interface EngineerSlotDto {
+  /** Target of `driver_kick_engineer`. */
+  readonly connection_id: number;
+  readonly username: string;
+  readonly display_name: string;
+  /** `healthy` | `degraded` | `reconnecting`. */
+  readonly link: string;
+  /** Relay wall clock, seconds since the Unix epoch. */
+  readonly connected_since_unix_s: number;
+}
+
 export interface NetworkStatusDto {
+  /**
+   * Transport state (`DISCONNECTED` | `CONNECTING` | `AUTHENTICATING` | `CONNECTED` | `DEGRADED` | `STALE` |
+   * `RECONNECTING` | `FAILED`), `NOT_CONFIGURED` (no relay, or the display-only demo) or `UNKNOWN`.
+   */
   readonly state: string;
+  /** The driver is streaming live telemetry (started and not stopped). */
+  readonly streaming: boolean;
   readonly rtt_ms: number | null;
   /** The engineer connection code: shown to the driver only, never logged or stored. */
   readonly connect_code: string | null;
@@ -168,6 +191,12 @@ export interface NetworkStatusDto {
   readonly driver_away: boolean;
   readonly last_error: string | null;
   readonly security_issue: boolean;
+  /** Why the link is FAILED (a user action is needed). */
+  readonly failure: string | null;
+  /** The user must log in again. */
+  readonly relogin_required: boolean;
+  /** Engineers holding a slot (driver mode). */
+  readonly engineers: readonly EngineerSlotDto[];
 }
 
 export interface RatesDto {
@@ -183,7 +212,22 @@ export interface DropsDto {
   readonly pipeline_overrun: number;
   readonly recorder_overrun: number;
   readonly net_dropped_obsolete: number;
+  /** Session events dropped by the bounded network publisher queue. */
+  readonly net_events_dropped: number;
   readonly ui_dropped: number;
+}
+
+/** Engineer-mode connection and stream status (`null` in driver mode). */
+export interface EngineerStatusDto {
+  /** `idle` | `joining` | `awaiting_confirmation` | `monitoring` | `ended` | `not_started`. */
+  readonly phase: string;
+  readonly driver_name: string | null;
+  readonly ended_reason: string | null;
+  /** `no_data` | `healthy` | `stale`. */
+  readonly stream_health: string;
+  readonly stream_age_s: number | null;
+  readonly driver_away: boolean;
+  readonly incompatible_schema: boolean;
 }
 
 /** `get_core_status` result and `core:status` event payload (4 Hz). */
@@ -196,6 +240,7 @@ export interface CoreStatus {
   readonly network: NetworkStatusDto;
   readonly rates: RatesDto;
   readonly drops: DropsDto;
+  readonly engineer: EngineerStatusDto | null;
 }
 
 export type AlertLevel = 'info' | 'warning' | 'critical';
@@ -399,6 +444,12 @@ export type CommandErrorCode =
   | 'io_error'
   | 'recording_unavailable'
   | 'network_unavailable'
+  | 'not_streaming'
+  | 'not_recording'
+  | 'recording_failed'
+  | 'unknown_alert'
+  | 'network_busy'
+  | 'network_error'
   | 'code_malformed'
   | 'code_invalid'
   | 'code_expired'
@@ -570,7 +621,7 @@ export function driverAddMarker(text: string): Promise<void> {
   return callUnit('driver_add_marker', { text });
 }
 
-/** Not available yet: always rejects with `not_implemented`. */
+/** Acknowledges an active alert by the `id` of its `core:alert` event (`unknown_alert` if not active). */
 export function driverAckAlert(id: string): Promise<void> {
   return callUnit('driver_ack_alert', { id });
 }

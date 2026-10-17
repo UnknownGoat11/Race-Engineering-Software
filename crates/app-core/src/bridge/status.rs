@@ -51,10 +51,30 @@ pub struct RecordingStatusDto {
     pub error: Option<String>,
 }
 
+/// One engineer holding a slot in the driver's relay session (D-022 driver controls).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EngineerSlotDto {
+    /// Relay-assigned connection id: the target of `driver_kick_engineer`.
+    pub connection_id: u64,
+    pub username: String,
+    pub display_name: String,
+    /// `healthy` | `degraded` | `reconnecting`.
+    pub link: String,
+    /// When the engineer joined, relay wall clock seconds since the Unix epoch.
+    pub connected_since_unix_s: u64,
+}
+
 /// Network connectivity and session sharing status.
+///
+/// `state` is the transport `ConnectionState` name (`DISCONNECTED` … `FAILED`), `NOT_CONFIGURED`
+/// when no relay is configured (or the pipeline can never stream, e.g. the synthetic demo), or
+/// `UNKNOWN` when the link cannot report its state.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NetworkStatusDto {
     pub state: String,
+    /// Live telemetry is being streamed to the relay (driver), i.e. the driver started streaming
+    /// and the session machine has not stopped it.
+    pub streaming: bool,
     pub rtt_ms: Option<f32>,
     pub connect_code: Option<String>,
     pub code_expires_at_unix_s: Option<u64>,
@@ -64,6 +84,12 @@ pub struct NetworkStatusDto {
     pub driver_away: bool,
     pub last_error: Option<String>,
     pub security_issue: bool,
+    /// Why the link is FAILED (non-retryable without a user action), if it is.
+    pub failure: Option<String>,
+    /// The user has to log in again before the link can work.
+    pub relogin_required: bool,
+    /// Engineers holding a slot (driver mode; empty otherwise).
+    pub engineers: Vec<EngineerSlotDto>,
 }
 
 /// Live throughput rates.
@@ -83,6 +109,8 @@ pub struct DropsDto {
     pub pipeline_overrun: u64,
     pub recorder_overrun: u64,
     pub net_dropped_obsolete: u64,
+    /// Reliable session events dropped by the publisher's bounded pending list.
+    pub net_events_dropped: u64,
     pub ui_dropped: u64,
 }
 
@@ -97,6 +125,28 @@ pub struct CoreStatus {
     pub network: NetworkStatusDto,
     pub rates: RatesDto,
     pub drops: DropsDto,
+    /// Engineer-mode status (`None` in driver mode).
+    pub engineer: Option<EngineerStatusDto>,
+}
+
+/// Engineer-mode connection and stream status.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EngineerStatusDto {
+    /// `idle` | `joining` | `awaiting_confirmation` | `monitoring` | `ended`, or `not_started`
+    /// when engineer services are not running.
+    pub phase: String,
+    /// Driver display name of the joined session.
+    pub driver_name: Option<String>,
+    /// Why the connection ended (user-facing text), when `phase` is `ended`.
+    pub ended_reason: Option<String>,
+    /// `no_data` | `healthy` | `stale` (from the stream age).
+    pub stream_health: String,
+    /// Age of the newest received telemetry in seconds; `None` until a frame arrived.
+    pub stream_age_s: Option<f64>,
+    /// The driver's connection is away from the relay session (grace period running).
+    pub driver_away: bool,
+    /// The driver streams an incompatible telemetry schema (update required).
+    pub incompatible_schema: bool,
 }
 
 /// Alert severity level.

@@ -27,8 +27,6 @@ use crate::state::AppState;
 /// Label of the main window (tauri.conf.json).
 pub const MAIN_WINDOW: &str = "main";
 
-/// Live states of the session machine in which data is being sent to the relay.
-const STREAMING_STATES: [&str; 2] = ["STREAMING", "STALLED"];
 /// Recorder state while it writes.
 const RECORDING_ACTIVE: &str = "active";
 
@@ -69,9 +67,7 @@ pub fn close_blockers(
         if status.recording.state == RECORDING_ACTIVE {
             blockers.push(CloseBlocker::Recording);
         }
-        if STREAMING_STATES.contains(&status.network.state.as_str())
-            || status.network.engineers_connected > 0
-        {
+        if status.network.streaming || status.network.engineers_connected > 0 {
             blockers.push(CloseBlocker::Streaming);
         }
     }
@@ -143,7 +139,7 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     let core = state.core();
     let live_driver_running = core.is_driver_running() && !core.is_demo_running();
     let blockers = close_blockers(
-        state.sink().last_status().as_ref(),
+        Some(&core.status()),
         live_driver_running,
         core.engineer_client().is_some(),
     );
@@ -342,7 +338,13 @@ mod tests {
                 error: None,
             },
             network: NetworkStatusDto {
-                state: network.to_owned(),
+                // "STREAMING" in these tests means: connected and streaming.
+                state: if network == "STREAMING" {
+                    "CONNECTED".to_owned()
+                } else {
+                    network.to_owned()
+                },
+                streaming: network == "STREAMING",
                 rtt_ms: None,
                 connect_code: None,
                 code_expires_at_unix_s: None,
@@ -352,6 +354,9 @@ mod tests {
                 driver_away: false,
                 last_error: None,
                 security_issue: false,
+                failure: None,
+                relogin_required: false,
+                engineers: Vec::new(),
             },
             rates: RatesDto {
                 telemetry_read_hz: None,
@@ -361,6 +366,7 @@ mod tests {
                 frames_dropped_total: 0,
             },
             drops: DropsDto::default(),
+            engineer: None,
         }
     }
 
@@ -371,7 +377,7 @@ mod tests {
             close_blockers(None, true, false).is_empty(),
             "no status yet: nothing recorded"
         );
-        let waiting = status("off", "WAITING_FOR_LMU", 0, Origin::Lmu);
+        let waiting = status("off", "DISCONNECTED", 0, Origin::Lmu);
         assert!(close_blockers(Some(&waiting), true, false).is_empty());
     }
 
@@ -382,7 +388,8 @@ mod tests {
             close_blockers(Some(&busy), true, false),
             vec![CloseBlocker::Recording, CloseBlocker::Streaming]
         );
-        let engineers = status("off", "SESSION_READY", 1, Origin::Lmu);
+        // Streaming stopped, but an engineer still holds a slot in the kept relay session.
+        let engineers = status("off", "DISCONNECTED", 1, Origin::Lmu);
         assert_eq!(
             close_blockers(Some(&engineers), true, false),
             vec![CloseBlocker::Streaming]

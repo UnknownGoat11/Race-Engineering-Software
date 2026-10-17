@@ -657,6 +657,17 @@ where
                 // `last` reached the TLS stream only if the writer ended without an error.
                 flushed = matches!(joined, Ok(Ok(())));
             }
+            if flushed {
+                // Read (and discard) until the relay closes its side. Dropping the socket while
+                // the relay's live frames are still unread makes the OS reset the connection,
+                // and a reset can discard the DISCONNECT on the relay before it was read: the
+                // relay then treats a deliberate leave as a network drop and keeps the
+                // engineer's slot for the resume ticket. Bounded by the close timeout.
+                let _ = timeout(timing.close_timeout, async {
+                    while let Ok(Some(_)) = reader.recv().await {}
+                })
+                .await;
+            }
             ConnectionEnd::Closed { flushed }
         }
         CloseAction::Reconnect(reason) => ConnectionEnd::Lost(reason),

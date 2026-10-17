@@ -138,6 +138,11 @@ impl ReaderThreadHandle {
         self.diagnostics.load().as_ref().clone()
     }
 
+    /// Shared handle to the published diagnostics (read by the pipeline's housekeeping tick).
+    pub fn diagnostics_source(&self) -> Arc<ArcSwap<Option<ReaderDiagnostics>>> {
+        Arc::clone(&self.diagnostics)
+    }
+
     /// Stops and joins the reader thread, returning any error encountered during acquisition.
     pub fn join(mut self) -> Result<(), ReaderThreadError> {
         self.stop();

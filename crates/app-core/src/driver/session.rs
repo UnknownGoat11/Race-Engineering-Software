@@ -161,6 +161,22 @@ pub enum SessionAction {
     RecordDiscontinuity(String),
 }
 
+/// Canonical upper-case name of an LMU source state (`LmuSourceStatus::state`).
+pub const fn lmu_source_state_name(state: LmuSourceState) -> &'static str {
+    match state {
+        LmuSourceState::NotRunning => "NOT_RUNNING",
+        LmuSourceState::Connecting => "CONNECTING",
+        LmuSourceState::Live => "LIVE",
+        LmuSourceState::Paused => "PAUSED",
+        LmuSourceState::Stale => "STALE",
+        LmuSourceState::Error => "ERROR",
+    }
+}
+
+/// `LmuSourceStatus::state` while the LMU source is not observed (no driver pipeline, or the
+/// driver's status has not arrived yet): unknown, never a healthy value.
+pub const LMU_STATE_UNKNOWN: &str = "UNKNOWN";
+
 /// Helper function to check if a session identity is complete and has sane ET.
 pub fn is_identity_complete(identity: &SessionIdentity, et_s: Option<f64>) -> bool {
     let track_ok = identity
@@ -245,6 +261,21 @@ impl DriverSessionMachine {
     /// Whether streaming to the relay is active.
     pub fn is_streaming(&self) -> bool {
         self.streaming
+    }
+
+    /// Whether the driver is logged in (last [`SessionInputEvent::AuthStatusChanged`]).
+    pub fn is_logged_in(&self) -> bool {
+        self.logged_in
+    }
+
+    /// Whether a relay is configured (last [`SessionInputEvent::AuthStatusChanged`]).
+    pub fn is_relay_configured(&self) -> bool {
+        self.relay_configured
+    }
+
+    /// Last known LMU game version, if reported.
+    pub fn game_version(&self) -> Option<u32> {
+        self.game_version
     }
 
     /// Active session identity, if known.
@@ -637,17 +668,8 @@ impl DriverSessionMachine {
 
     /// Constructs the current [`LmuSourceStatus`] for composite bridge status.
     pub fn lmu_source_status(&self) -> LmuSourceStatus {
-        let state_str = match self.lmu_source_state {
-            LmuSourceState::NotRunning => "NOT_RUNNING",
-            LmuSourceState::Connecting => "CONNECTING",
-            LmuSourceState::Live => "LIVE",
-            LmuSourceState::Paused => "PAUSED",
-            LmuSourceState::Stale => "STALE",
-            LmuSourceState::Error => "ERROR",
-        };
-
         LmuSourceStatus {
-            state: state_str.to_string(),
+            state: lmu_source_state_name(self.lmu_source_state).to_string(),
             detail: self.lmu_detail.clone(),
             game_version: self.game_version,
         }

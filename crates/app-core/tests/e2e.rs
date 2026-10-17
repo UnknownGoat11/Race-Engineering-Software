@@ -9,6 +9,8 @@
 //!   3. Kick (driver kicks engineer; connection closed, slot freed, new code issued).
 //!   4. Blip reconnect with resume ticket (proxy drops connection; in-memory ticket reconnects without fresh code).
 //!   5. Relay restart (proxy restart with downtime; automatic reconnect and session resume).
+//! - DEFERRED 20/21: AppCore's own driver relay link (auto-stream off, start/stop/end streaming, fresh code
+//!   per connection after a real disconnect, relay outage never stops recording, status per state).
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -251,10 +253,15 @@ async fn wait_for_engineers_count(core: &AppCore, count: usize) {
             return;
         }
         if tokio::time::Instant::now() > deadline {
+            let links: Vec<_> = core
+                .driver_engineers()
+                .iter()
+                .map(|e| (e.connection_id, e.link))
+                .collect();
             panic!(
-                "timed out waiting for {} engineers, current count: {}",
+                "timed out waiting for {} engineers, current count: {} (slots: {links:?})",
                 count,
-                core.driver_engineers().len()
+                links.len()
             );
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -325,7 +332,7 @@ async fn test_e2e_new_code_per_connection() {
         .start_driver_with_source(DummySnapshotSource)
         .expect("start driver");
     eprintln!("[7] Spawning driver client...");
-    driver.spawn_driver_client().expect("spawn driver client");
+    driver.driver_start_streaming().expect("start streaming");
 
     eprintln!("[8] Waiting for connect code...");
     let code_a = wait_for_connect_code(&driver).await;
@@ -416,7 +423,7 @@ async fn test_e2e_third_engineer_refused() {
     driver
         .start_driver_with_source(DummySnapshotSource)
         .expect("start driver");
-    driver.spawn_driver_client().expect("spawn driver client");
+    driver.driver_start_streaming().expect("start streaming");
 
     let code_a = wait_for_connect_code(&driver).await;
     eng1.start_engineer().expect("start eng1");
@@ -499,7 +506,7 @@ async fn test_e2e_driver_kick_engineer() {
     driver
         .start_driver_with_source(DummySnapshotSource)
         .expect("start driver");
-    driver.spawn_driver_client().expect("spawn driver client");
+    driver.driver_start_streaming().expect("start streaming");
 
     let code_a = wait_for_connect_code(&driver).await;
     eng1.start_engineer().expect("start eng1");
@@ -579,7 +586,7 @@ async fn test_e2e_blip_reconnect_with_resume_ticket() {
     driver
         .start_driver_with_source(DummySnapshotSource)
         .expect("start driver");
-    driver.spawn_driver_client().expect("spawn driver client");
+    driver.driver_start_streaming().expect("start streaming");
 
     let code = wait_for_connect_code(&driver).await;
     eng1.start_engineer().expect("start eng1");
@@ -643,7 +650,7 @@ async fn test_e2e_relay_restart() {
     driver
         .start_driver_with_source(DummySnapshotSource)
         .expect("start driver");
-    driver.spawn_driver_client().expect("spawn driver client");
+    driver.driver_start_streaming().expect("start streaming");
 
     let code = wait_for_connect_code(&driver).await;
     eng1.start_engineer().expect("start eng1");
@@ -674,4 +681,501 @@ async fn test_e2e_relay_restart() {
     })
     .join()
     .expect("drop cores on dedicated thread");
+}
+
+// ---------------------------------------------------------------------------------------------
+// DEFERRED 20/21: the driver relay path through AppCore (link, streaming, codes, status)
+// ---------------------------------------------------------------------------------------------
+
+/// Real LMU capture used as a paced live source (private recording on D:, never committed).
+fn capture_path() -> PathBuf {
+    PathBuf::from("D:/RaceEngineeringData/captures/pitstop1.lmuraw")
+}
+
+/// Replays a real capture at ~100 Hz with fresh capture times (loops at the end of the file).
+struct PacedReplaySource {
+    replay: lmu_reader::CaptureReplay<std::io::BufReader<std::fs::File>>,
+    clock: app_core::clock::AppClock,
+    seq: u64,
+}
+
+impl PacedReplaySource {
+    fn open(clock: app_core::clock::AppClock) -> Self {
+        Self {
+            replay: lmu_reader::CaptureReplay::open(&capture_path()).expect("open capture"),
+            clock,
+            seq: 0,
+        }
+    }
+}
+
+impl SnapshotSource for PacedReplaySource {
+    fn next_snapshot(&mut self, _timeout: Duration) -> Result<Option<RawSnapshot>, LmuError> {
+        std::thread::sleep(Duration::from_millis(10));
+        let next = match self.replay.next_snapshot().expect("read capture") {
+            Some(snapshot) => snapshot,
+            None => {
+                self.replay =
+                    lmu_reader::CaptureReplay::open(&capture_path()).expect("reopen capture");
+                self.replay
+                    .next_snapshot()
+                    .expect("read capture")
+                    .expect("capture has frames")
+            }
+        };
+        let mut snapshot = next;
+        self.seq += 1;
+        snapshot.seq = self.seq;
+        snapshot.capture_mono_ns = self.clock.now_ns();
+        Ok(Some(snapshot))
+    }
+
+    fn diagnostics(&self) -> ReaderDiagnostics {
+        let mut diag = DummySnapshotSource.diagnostics();
+        diag.state = ReaderState::Connected;
+        diag.connection_id = 1;
+        diag
+    }
+
+    fn stats(&self) -> ReaderStats {
+        ReaderStats::default()
+    }
+
+    fn close(&mut self) {}
+}
+
+async fn create_core_with(
+    addr: SocketAddr,
+    ca_pem: &[u8],
+    mode: AppMode,
+    username: &str,
+    role: ClientRole,
+    configure: impl FnOnce(&mut CoreSettings),
+) -> Arc<AppCore> {
+    let mut settings = CoreSettings {
+        mode,
+        driver: app_core::settings::DriverSettings {
+            recording_enabled: false,
+            ..Default::default()
+        },
+        network: app_core::settings::NetworkSettings {
+            relay_url: Some(format!("127.0.0.1:{}", addr.port())),
+            extra_ca_pem: Some(ca_pem.to_vec()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    configure(&mut settings);
+    let sink = Arc::new(TestUiSink::new());
+    let creds = Arc::new(MemoryCredentialStore::new());
+    let core = Arc::new(AppCore::new(settings, sink, creds).expect("create AppCore"));
+    let config = transport::ClientConfig::new(
+        core.endpoint().clone(),
+        env!("CARGO_PKG_VERSION"),
+        format!("login-{username}"),
+        core.clock().epoch(),
+    );
+    let transport = transport::TcpTlsTelemetryTransport::new();
+    transport::login(
+        &transport,
+        &config,
+        core.auth_manager(),
+        role,
+        username,
+        Secret::new(PASSWORD),
+    )
+    .await
+    .expect("login core");
+    core
+}
+
+async fn wait_status(
+    core: &AppCore,
+    what: &str,
+    timeout: Duration,
+    mut condition: impl FnMut(&app_core::bridge::status::CoreStatus) -> bool,
+) -> app_core::bridge::status::CoreStatus {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let status = core.status();
+        if condition(&status) {
+            return status;
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!(
+                "timed out waiting for {what}: lmu={} network={} streaming={} recording={} engineer={:?}",
+                status.lmu.state,
+                status.network.state,
+                status.network.streaming,
+                status.recording.state,
+                status
+                    .engineer
+                    .as_ref()
+                    .map(|e| (&e.phase, &e.stream_health))
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn wait_engineer_frames(core: &AppCore) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Some(engineer) = core.engineer_core() {
+            let stats = engineer.lock().stats().clone();
+            if stats.snapshots_received > 0 && stats.deltas_received > 0 {
+                return;
+            }
+        }
+        if tokio::time::Instant::now() > deadline {
+            panic!("engineer received no live frames");
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn drop_on_thread(cores: Vec<Arc<AppCore>>) {
+    std::thread::spawn(move || drop(cores))
+        .join()
+        .expect("drop cores on dedicated thread");
+}
+
+/// Driver logs in and streams live LMU data through AppCore's own relay link (auto-stream off:
+/// nothing connects until the driver starts streaming). An engineer joins with the driver's
+/// one-time code and receives live frames. After a real disconnect the old codes are dead: only
+/// a fresh code from `driver_new_code` reconnects. Status reflects every step.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_driver_streams_engineer_joins_and_needs_fresh_codes() {
+    let relay = TestRelay::start().await;
+    let driver = create_core_with(
+        relay.addr,
+        &relay.ca_pem,
+        AppMode::Driver,
+        DRIVER,
+        ClientRole::Driver,
+        |_| {},
+    )
+    .await;
+    let eng = create_core_with(
+        relay.addr,
+        &relay.ca_pem,
+        AppMode::Engineer,
+        ENGINEER,
+        ClientRole::Engineer,
+        |_| {},
+    )
+    .await;
+
+    driver
+        .start_driver_with_source(PacedReplaySource::open(*driver.clock()))
+        .expect("start driver");
+
+    // Auto-stream is off: LMU is live, the link exists but stays disconnected, no code.
+    let status = wait_status(&driver, "LMU live", Duration::from_secs(10), |s| {
+        s.lmu.state == "LIVE"
+    })
+    .await;
+    assert_eq!(status.network.state, "DISCONNECTED");
+    assert!(!status.network.streaming);
+    assert!(status.network.connect_code.is_none());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(driver.driver_connect_code().is_none(), "never auto-connect");
+
+    driver.driver_start_streaming().expect("start streaming");
+    let code_a = wait_for_connect_code(&driver).await;
+    let status = wait_status(&driver, "streaming + code", Duration::from_secs(10), |s| {
+        s.network.state == "CONNECTED" && s.network.streaming && s.network.connect_code.is_some()
+    })
+    .await;
+    assert_eq!(status.network.engineers_connected, 0);
+    assert_eq!(status.network.engineers_max, 2);
+    assert!(status.network.code_expires_at_unix_s.is_some());
+    let shown = status.network.connect_code.expect("code shown");
+    assert_eq!(
+        shown.replace('-', ""),
+        code_a,
+        "status shows the display form"
+    );
+    assert!(status.network.rtt_ms.is_some() || status.network.state == "CONNECTED");
+
+    eng.start_engineer().expect("start engineer");
+    let card = eng.engineer_join(&code_a).expect("join with code A");
+    assert_eq!(card.driver_username, DRIVER);
+    wait_for_engineers_count(&driver, 1).await;
+    wait_engineer_frames(&eng).await;
+
+    let eng_status = wait_status(&eng, "engineer monitoring", Duration::from_secs(10), |s| {
+        s.engineer.as_ref().is_some_and(|e| {
+            e.phase == "monitoring" && e.stream_health == "healthy" && e.stream_age_s.is_some()
+        }) && s.network.state == "CONNECTED"
+    })
+    .await;
+    assert_eq!(eng_status.mode, AppMode::Engineer);
+    assert!(!eng_status.engineer.expect("engineer").driver_away);
+    // The driver's LMU and recording state arrive over the relay (DRIVER_STATUS, 1 Hz).
+    let eng_status = wait_status(&eng, "driver status relayed", Duration::from_secs(5), |s| {
+        s.lmu.state == "LIVE"
+    })
+    .await;
+    assert_eq!(eng_status.recording.state, "off");
+
+    let status = wait_status(&driver, "engineer listed", Duration::from_secs(5), |s| {
+        s.network.engineers_connected == 1 && s.network.engineers.len() == 1
+    })
+    .await;
+    assert_eq!(status.network.engineers[0].username, ENGINEER);
+    assert_eq!(status.network.engineers[0].link, "healthy");
+
+    // A fresh code B replaced A once A was redeemed.
+    let code_b = wait_for_new_code(&driver, &code_a).await;
+
+    // Real disconnect: the engineer leaves; its slot frees.
+    eng.engineer_disconnect().expect("disconnect");
+    wait_for_engineers_count(&driver, 0).await;
+
+    // Reconnecting with the redeemed code A fails.
+    let err = eng.engineer_join(&code_a);
+    assert!(
+        matches!(
+            err,
+            Err(app_core::core::CoreError::Join(
+                transport::engineer::JoinError::CodeInvalid
+            ))
+        ),
+        "redeemed code must be refused, got {err:?}"
+    );
+
+    // The driver issues a new code: B is invalidated, C works.
+    driver.driver_request_connect_code().expect("new code");
+    let code_c = wait_for_new_code(&driver, &code_b).await;
+    assert_ne!(code_c, code_a);
+    let err = eng.engineer_join(&code_b);
+    assert!(err.is_err(), "replaced code B must be refused");
+    eng.engineer_join(&code_c)
+        .expect("rejoin with fresh code C");
+    wait_for_engineers_count(&driver, 1).await;
+
+    // Stop streaming keeps the relay session (engineers stay attached), status follows.
+    driver.driver_stop_streaming().expect("stop streaming");
+    wait_status(&driver, "stopped", Duration::from_secs(5), |s| {
+        !s.network.streaming && s.network.state == "DISCONNECTED"
+    })
+    .await;
+    assert!(matches!(
+        driver.driver_request_connect_code(),
+        Err(app_core::core::CoreError::NotStreaming)
+    ));
+
+    // Streaming again resumes the same relay session: the engineer is still attached.
+    driver.driver_start_streaming().expect("restart streaming");
+    wait_status(&driver, "streaming again", Duration::from_secs(10), |s| {
+        s.network.state == "CONNECTED" && s.network.streaming
+    })
+    .await;
+    wait_for_engineers_count(&driver, 1).await;
+
+    // End session: works for real (the engineer sees the driver ended it).
+    driver.driver_end_session().expect("end session");
+    wait_status(&eng, "engineer ended", Duration::from_secs(10), |s| {
+        s.engineer.as_ref().is_some_and(|e| e.phase == "ended")
+    })
+    .await;
+
+    eng.shutdown().expect("eng shutdown");
+    driver.shutdown().expect("driver shutdown");
+    relay.shutdown().await;
+    drop_on_thread(vec![eng, driver]);
+}
+
+/// A relay outage never stops acquisition or recording; the network status shows the outage,
+/// the engineer (connected directly to the relay) sees the driver away (DRIVER_PRESENCE), and
+/// the driver resumes the same session afterwards.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_relay_outage_does_not_stop_recording() {
+    let relay = TestRelay::start().await;
+    let mut proxy_cfg = FaultProxyConfig::new(SocketAddr::from(([127, 0, 0, 1], 0)), relay.addr);
+    proxy_cfg.mode = ProxyMode::Opaque;
+    let proxy = FaultProxy::start(proxy_cfg).await.expect("start proxy");
+
+    let suffix = lmu_relay::secrets::random_u64().unwrap_or(7);
+    let rec_dir = std::env::temp_dir().join(format!("appcore-e2e-rec-{suffix:016x}"));
+    let rec_dir_cfg = rec_dir.clone();
+    let driver = create_core_with(
+        proxy.local_addr(),
+        &relay.ca_pem,
+        AppMode::Driver,
+        DRIVER,
+        ClientRole::Driver,
+        move |s| {
+            s.driver.recording_enabled = true;
+            s.driver.recording_dir = rec_dir_cfg;
+        },
+    )
+    .await;
+    // The engineer bypasses the proxy: only the driver loses the relay.
+    let eng = create_core_with(
+        relay.addr,
+        &relay.ca_pem,
+        AppMode::Engineer,
+        ENGINEER,
+        ClientRole::Engineer,
+        |_| {},
+    )
+    .await;
+
+    driver
+        .start_driver_with_source(PacedReplaySource::open(*driver.clock()))
+        .expect("start driver");
+    driver.driver_start_streaming().expect("start streaming");
+    let code = wait_for_connect_code(&driver).await;
+    eng.start_engineer().expect("start engineer");
+    eng.engineer_join(&code).expect("join");
+    wait_for_engineers_count(&driver, 1).await;
+
+    wait_status(&driver, "recording active", Duration::from_secs(15), |s| {
+        s.recording.state == "active" && s.recording.frames_written > 0
+    })
+    .await;
+
+    // Outage: the relay is unreachable for the driver.
+    proxy.restart(Duration::from_secs(6));
+    let during = wait_status(&driver, "outage visible", Duration::from_secs(5), |s| {
+        s.network.state != "CONNECTED"
+    })
+    .await;
+    assert!(
+        during.network.streaming,
+        "streaming intent survives an outage"
+    );
+    let before = during.recording.frames_written;
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    let later = driver.status();
+    assert_ne!(later.network.state, "CONNECTED");
+    assert_eq!(later.lmu.state, "LIVE", "acquisition continues");
+    assert_eq!(later.recording.state, "active", "recording continues");
+    assert!(
+        later.recording.frames_written > before,
+        "recording keeps writing during the outage ({} -> {})",
+        before,
+        later.recording.frames_written
+    );
+
+    // The engineer is told the driver is away (protocol 1.1 DRIVER_PRESENCE).
+    wait_status(&eng, "driver away", Duration::from_secs(5), |s| {
+        s.network.driver_away || s.engineer.as_ref().is_some_and(|e| e.driver_away)
+    })
+    .await;
+
+    // After the outage the driver resumes the same session; the engineer stays attached.
+    wait_status(&driver, "reconnected", Duration::from_secs(20), |s| {
+        s.network.state == "CONNECTED" && s.network.streaming
+    })
+    .await;
+    wait_for_engineers_count(&driver, 1).await;
+    wait_status(&eng, "driver back", Duration::from_secs(10), |s| {
+        !s.network.driver_away && s.engineer.as_ref().is_some_and(|e| !e.driver_away)
+    })
+    .await;
+
+    eng.shutdown().expect("eng shutdown");
+    driver.shutdown().expect("driver shutdown");
+    proxy.shutdown().await;
+    relay.shutdown().await;
+    drop_on_thread(vec![eng, driver]);
+    let _ = std::fs::remove_dir_all(&rec_dir);
+}
+
+/// `driver.auto_stream = true` streams by itself once logged in and LMU data is live.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_auto_stream_starts_when_enabled() {
+    let relay = TestRelay::start().await;
+    let driver = create_core_with(
+        relay.addr,
+        &relay.ca_pem,
+        AppMode::Driver,
+        DRIVER,
+        ClientRole::Driver,
+        |s| s.driver.auto_stream = true,
+    )
+    .await;
+    driver
+        .start_driver_with_source(PacedReplaySource::open(*driver.clock()))
+        .expect("start driver");
+    let code = wait_for_connect_code(&driver).await;
+    assert!(!code.is_empty());
+    let status = driver.status();
+    assert!(status.network.streaming);
+
+    driver.shutdown().expect("driver shutdown");
+    relay.shutdown().await;
+    drop_on_thread(vec![driver]);
+}
+
+/// An engineer that drops without DISCONNECT keeps its slot for the resume ticket (D-022 blip
+/// reconnect, by design). The driver status shows that slot as `reconnecting`, never as a healthy
+/// connected engineer, and `healthy` again once the engineer resumed with its ticket.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_e2e_dropped_engineer_shows_reconnecting_until_it_resumes() {
+    let relay = TestRelay::start().await;
+    let mut proxy_cfg = FaultProxyConfig::new(SocketAddr::from(([127, 0, 0, 1], 0)), relay.addr);
+    proxy_cfg.mode = ProxyMode::Opaque;
+    let proxy = FaultProxy::start(proxy_cfg).await.expect("start proxy");
+
+    // The driver connects directly; only the engineer goes through the proxy.
+    let driver = create_core_with(
+        relay.addr,
+        &relay.ca_pem,
+        AppMode::Driver,
+        DRIVER,
+        ClientRole::Driver,
+        |_| {},
+    )
+    .await;
+    let eng = create_core_with(
+        proxy.local_addr(),
+        &relay.ca_pem,
+        AppMode::Engineer,
+        ENGINEER,
+        ClientRole::Engineer,
+        |_| {},
+    )
+    .await;
+
+    driver
+        .start_driver_with_source(PacedReplaySource::open(*driver.clock()))
+        .expect("start driver");
+    driver.driver_start_streaming().expect("start streaming");
+    let code = wait_for_connect_code(&driver).await;
+    eng.start_engineer().expect("start engineer");
+    eng.engineer_join(&code).expect("join");
+    wait_status(&driver, "engineer healthy", Duration::from_secs(10), |s| {
+        s.network.engineers.len() == 1 && s.network.engineers[0].link == "healthy"
+    })
+    .await;
+
+    // Network drop for the engineer only (no DISCONNECT reaches the relay).
+    proxy.restart(Duration::from_secs(5));
+    let status = wait_status(&driver, "slot reconnecting", Duration::from_secs(10), |s| {
+        s.network.engineers.len() == 1 && s.network.engineers[0].link == "reconnecting"
+    })
+    .await;
+    assert_eq!(
+        status.network.engineers_connected, 1,
+        "the slot is held for the resume ticket"
+    );
+
+    // The engineer resumes with its in-memory ticket (no new code) and is healthy again.
+    wait_status(
+        &driver,
+        "engineer healthy again",
+        Duration::from_secs(20),
+        |s| s.network.engineers.len() == 1 && s.network.engineers[0].link == "healthy",
+    )
+    .await;
+
+    eng.shutdown().expect("eng shutdown");
+    driver.shutdown().expect("driver shutdown");
+    proxy.shutdown().await;
+    relay.shutdown().await;
+    drop_on_thread(vec![eng, driver]);
 }

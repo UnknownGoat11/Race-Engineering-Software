@@ -23,10 +23,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use protocol::clock::ClockEstimate;
 use protocol::frame::FramePriority;
 use protocol::messages::{
-    CaptureTime, DriverStatus, Message, RecordingStatus, SchemaNegotiate, ScoringUpdate,
-    SessionEventMsg, TelemetryPayload,
+    CaptureTime, ConnectCode, DriverStatus, EngineerEntry, Message, RecordingStatus,
+    SchemaNegotiate, ScoringUpdate, SessionCreate, SessionEventMsg, TelemetryPayload,
 };
 use telemetry_model::channel::{ChannelId, FrequencyClass, Priority};
 use telemetry_model::codec::{self, RELAY_NS_UNKNOWN, TlvEncoder, TlvHeader};
@@ -36,6 +37,7 @@ use telemetry_model::registry;
 use telemetry_model::scoring::ScoringState;
 use telemetry_model::value::Sample;
 use transport::driver::DriverClient;
+use transport::metrics::LinkMetrics;
 use transport::queue::{LiveOutcome, QueueError};
 use transport::state::ConnectionStatus;
 
@@ -76,6 +78,52 @@ pub trait LiveSink: Send + Sync {
 
     /// Estimates relay time for a given capture instant.
     fn relay_time_of(&self, at: Instant) -> Option<i64>;
+
+    /// Full link state for status reporting (connection status, metrics, connect code and the
+    /// engineers holding a slot). `None` when the sink cannot report it (e.g. test mocks): the
+    /// status then shows the link as unknown, never as healthy.
+    fn link_snapshot(&self) -> Option<LinkSnapshot> {
+        None
+    }
+}
+
+/// Point-in-time view of the driver's relay link (D-022 controls and health).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkSnapshot {
+    /// Transport connection status (state, failure, degraded reason, driver away, last error).
+    pub status: ConnectionStatus,
+    /// Link metrics (RTT, rates, drops).
+    pub metrics: LinkMetrics,
+    /// Current one-time connection code and slot usage (`None` while no session is bound).
+    pub connect_code: Option<ConnectCode>,
+    /// Engineers holding a slot in the session.
+    pub engineers: Vec<EngineerEntry>,
+    /// Clock offset to the relay, once measured.
+    pub clock: Option<ClockEstimate>,
+}
+
+/// Why a stream control request could not be queued.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum StreamControlError {
+    /// The bounded control queue is full (the transport is busy); retry later.
+    #[error("the relay control queue is full")]
+    Busy,
+    /// The relay client has shut down.
+    #[error("the relay client has shut down")]
+    Closed,
+}
+
+/// Non-blocking control of the driver's relay session (start/stop/end). Implementations queue the
+/// request and return at once, so the pipeline thread never waits on the network.
+pub trait StreamControl: Send + Sync {
+    /// Connects and binds (resumes or creates) the relay session, then streams.
+    fn start(&self, session: SessionCreate) -> Result<(), StreamControlError>;
+    /// Updates the SESSION_CREATE data used for the next new session (the bound one is kept, Q3).
+    fn update_session(&self, session: SessionCreate) -> Result<(), StreamControlError>;
+    /// Stops streaming and disconnects, keeping the relay session for a resume.
+    fn stop(&self) -> Result<(), StreamControlError>;
+    /// Ends the relay session (engineers see "driver ended the session").
+    fn end_session(&self) -> Result<(), StreamControlError>;
 }
 
 impl LiveSink for DriverClient {
@@ -97,6 +145,17 @@ impl LiveSink for DriverClient {
 
     fn relay_time_of(&self, at: Instant) -> Option<i64> {
         self.relay_time_of(at)
+    }
+
+    fn link_snapshot(&self) -> Option<LinkSnapshot> {
+        let metrics = self.metrics().borrow().clone();
+        Some(LinkSnapshot {
+            status: self.status().borrow().clone(),
+            clock: metrics.clock,
+            metrics,
+            connect_code: self.connect_code().borrow().clone(),
+            engineers: self.engineers().borrow().clone(),
+        })
     }
 }
 
@@ -136,6 +195,8 @@ pub const fn priority_index(p: FramePriority) -> usize {
 /// Driver network stream publisher.
 pub struct NetPublisher {
     sink: Arc<dyn LiveSink>,
+    /// Relay session control (start/stop/end); `None` for publishers without one (tests).
+    control: Option<Arc<dyn StreamControl>>,
     clock: AppClock,
     baseline_frame: Option<TelemetryFrame>,
     /// Accumulated unacknowledged/replaced channel sets per priority (0: P0, 1: P1, 2: P2).
@@ -165,6 +226,7 @@ impl NetPublisher {
     pub fn new(sink: Arc<dyn LiveSink>, clock: AppClock) -> Self {
         Self {
             sink,
+            control: None,
             clock,
             baseline_frame: None,
             pending_channel_sets: [BTreeSet::new(), BTreeSet::new(), BTreeSet::new()],
@@ -177,6 +239,32 @@ impl NetPublisher {
             last_weather_values: None,
             last_status_mono_ns: None,
             stats: NetPublisherStats::default(),
+        }
+    }
+
+    /// Attaches the relay session control used for start/stop/end of streaming.
+    pub fn with_control(mut self, control: Arc<dyn StreamControl>) -> Self {
+        self.control = Some(control);
+        self
+    }
+
+    /// The relay session control, if attached.
+    pub fn control(&self) -> Option<&Arc<dyn StreamControl>> {
+        self.control.as_ref()
+    }
+
+    /// Current link state of the sink (see [`LiveSink::link_snapshot`]).
+    pub fn link_snapshot(&self) -> Option<LinkSnapshot> {
+        self.sink.link_snapshot()
+    }
+
+    /// Forgets the delta baseline so the next published frame is a full snapshot (a new relay
+    /// session or sequence space starts).
+    pub fn reset_stream(&mut self) {
+        self.baseline_frame = None;
+        self.snapshot_requested = true;
+        for set in &mut self.pending_channel_sets {
+            set.clear();
         }
     }
 

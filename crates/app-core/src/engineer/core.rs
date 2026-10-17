@@ -82,6 +82,7 @@ pub struct EngineerCore {
     driver_presence: Option<DriverPresence>,
     latest_relay_error: Option<(ErrorCode, String)>,
     session_events: VecDeque<SessionEventMsg>,
+    last_status: Option<EngineerStatusSnapshot>,
 
     stats: EngineerCoreStats,
 }
@@ -110,6 +111,7 @@ impl EngineerCore {
             driver_presence: None,
             latest_relay_error: None,
             session_events: VecDeque::with_capacity(64),
+            last_status: None,
             stats: EngineerCoreStats::default(),
         }
     }
@@ -132,6 +134,26 @@ impl EngineerCore {
     /// Returns the latest scoring update, if available.
     pub fn latest_scoring(&self) -> Option<&ScoringUpdate> {
         self.latest_scoring.as_ref()
+    }
+
+    /// The driver's latest DRIVER_STATUS (LMU state, layered health, rates), if received.
+    pub fn latest_driver_status(&self) -> Option<&DriverStatus> {
+        self.latest_driver_status.as_ref()
+    }
+
+    /// The driver's latest RECORDING_STATUS, if received.
+    pub fn latest_recording_status(&self) -> Option<&RecordingStatus> {
+        self.latest_recording_status.as_ref()
+    }
+
+    /// Status computed by the most recent [`EngineerCore::tick`] (`None` before the first tick).
+    pub fn last_status(&self) -> Option<&EngineerStatusSnapshot> {
+        self.last_status.as_ref()
+    }
+
+    /// Whether the driver is currently away from the relay session (DRIVER_PRESENCE, protocol 1.1).
+    pub fn driver_away(&self) -> bool {
+        self.driver_away.is_some() || self.driver_presence.as_ref().is_some_and(|p| !p.present)
     }
 
     /// Validates code formatting before passing to `EngineerClient::join`.
@@ -325,11 +347,12 @@ impl EngineerCore {
             identity: self.active_identity.clone(),
             stream_health: health,
             stream_age_s,
-            driver_away: self.driver_away.is_some(),
+            driver_away: self.driver_away(),
             ended_reason: self.ended_reason,
             incompatible_schema: self.incompatible_schema,
             active_alerts,
         };
+        self.last_status = Some(status.clone());
 
         EngineerTickOutput { status, alerts }
     }
