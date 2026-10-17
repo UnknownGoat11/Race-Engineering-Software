@@ -15,7 +15,7 @@
  * integer (Rust's `usize` cannot express them); `pushRowGather`, `pushGap` and `replaceNewestRowGather` are
  * allocation-free variants of `push_row` for the store; `copyRange` fills caller-owned arrays for renderers.
  */
-import { Interpolation, ValueType, type ChannelDef } from '../generated/channels';
+import { Interpolation, Quality, ValueType, type ChannelDef } from '../generated/channels';
 import { channelDef, isNumericChannel } from './registry';
 import { err, ok, type Result } from './result';
 
@@ -55,6 +55,7 @@ interface Column {
   readonly interpolation: Interpolation;
   readonly single: boolean;
   values: ColumnArray;
+  qualities: Uint8Array;
 }
 
 /** True for value types whose every value is exactly representable as an f32. */
@@ -138,7 +139,9 @@ export class TelemetryRingBuffer {
       const single = storesAsSingle(def);
       const values = nanColumn(capacity, single);
       if (!values.ok) return values;
-      columns.push({ id: def.id, interpolation: def.interpolation, single, values: values.value });
+      const qualities = new Uint8Array(capacity);
+      qualities.fill(Quality.Unavailable);
+      columns.push({ id: def.id, interpolation: def.interpolation, single, values: values.value, qualities });
     }
     const times = nanTimes(capacity);
     if (!times.ok) return times;
@@ -196,7 +199,7 @@ export class TelemetryRingBuffer {
   }
 
   /** Appends a row of values in column order (`push_row`); null, NaN and ±Infinity are stored as gaps. */
-  pushRow(t: number, values: ArrayLike<number | null>): RingError | null {
+  pushRow(t: number, values: ArrayLike<number | null>, qualities?: ArrayLike<Quality | null>): RingError | null {
     if (values.length !== this.#columns.length) {
       return { kind: 'RowWidth', expected: this.#columns.length, actual: values.length };
     }
@@ -206,7 +209,14 @@ export class TelemetryRingBuffer {
     this.#times[slot] = t;
     this.#columns.forEach((column, i) => {
       const v = values[i];
-      column.values[slot] = typeof v === 'number' && Number.isFinite(v) ? v : Number.NaN;
+      const isFinite = typeof v === 'number' && Number.isFinite(v);
+      column.values[slot] = isFinite ? v : Number.NaN;
+      const q = qualities?.[i];
+      if (typeof q === 'number') {
+        column.qualities[slot] = q;
+      } else {
+        column.qualities[slot] = isFinite ? Quality.Valid : Quality.Unavailable;
+      }
     });
     return null;
   }
@@ -215,13 +225,18 @@ export class TelemetryRingBuffer {
    * Appends a row whose value for column `c` is `source[sourceIndex[c]]` (allocation-free `push_row`; the
    * store passes its dense current-value table). Non-finite values are stored as gaps.
    */
-  pushRowGather(t: number, source: Float64Array, sourceIndex: Int32Array): RingError | null {
+  pushRowGather(
+    t: number,
+    source: Float64Array,
+    sourceIndex: Int32Array,
+    sourceQuality?: ArrayLike<number>,
+  ): RingError | null {
     if (sourceIndex.length !== this.#columns.length) {
       return { kind: 'RowWidth', expected: this.#columns.length, actual: sourceIndex.length };
     }
     const timeError = this.#checkTime(t);
     if (timeError !== null) return timeError;
-    this.#writeGather(this.#claimSlot(), t, source, sourceIndex);
+    this.#writeGather(this.#claimSlot(), t, source, sourceIndex, sourceQuality);
     return null;
   }
 
@@ -229,20 +244,40 @@ export class TelemetryRingBuffer {
    * Overwrites the newest row with `source[sourceIndex[c]]`, keeping its timestamp. Returns false (and
    * changes nothing) when the buffer is empty or the width does not match.
    */
-  replaceNewestRowGather(source: Float64Array, sourceIndex: Int32Array): boolean {
+  replaceNewestRowGather(
+    source: Float64Array,
+    sourceIndex: Int32Array,
+    sourceQuality?: ArrayLike<number>,
+  ): boolean {
     if (this.#length === 0 || sourceIndex.length !== this.#columns.length) return false;
     const slot = this.#slot(this.#length - 1);
-    this.#writeGather(slot, this.#times[slot] ?? Number.NaN, source, sourceIndex);
+    this.#writeGather(slot, this.#times[slot] ?? Number.NaN, source, sourceIndex, sourceQuality);
     return true;
   }
 
-  #writeGather(slot: number, t: number, source: Float64Array, sourceIndex: Int32Array): void {
+  #writeGather(
+    slot: number,
+    t: number,
+    source: Float64Array,
+    sourceIndex: Int32Array,
+    sourceQuality?: ArrayLike<number>,
+  ): void {
     this.#times[slot] = t;
     const columns = this.#columns;
     for (let c = 0; c < columns.length; c++) {
-      const v = source[sourceIndex[c] ?? -1] ?? Number.NaN;
+      const idx = sourceIndex[c] ?? -1;
+      const v = source[idx] ?? Number.NaN;
       const column = columns[c];
-      if (column !== undefined) column.values[slot] = Number.isFinite(v) ? v : Number.NaN;
+      if (column !== undefined) {
+        const isFinite = Number.isFinite(v);
+        column.values[slot] = isFinite ? v : Number.NaN;
+        if (sourceQuality !== undefined && idx >= 0) {
+          const q = sourceQuality[idx];
+          column.qualities[slot] = typeof q === 'number' ? q : (isFinite ? Quality.Valid : Quality.Unavailable);
+        } else {
+          column.qualities[slot] = isFinite ? Quality.Valid : Quality.Unavailable;
+        }
+      }
     }
   }
 
@@ -254,6 +289,7 @@ export class TelemetryRingBuffer {
     this.#times[slot] = t;
     for (const column of this.#columns) {
       column.values[slot] = Number.NaN;
+      column.qualities[slot] = Quality.Valid;
     }
     return null;
   }
@@ -276,10 +312,14 @@ export class TelemetryRingBuffer {
     const times = nanTimes(capacity);
     if (!times.ok) return times.error;
     const columns: ColumnArray[] = [];
+    const qualities: Uint8Array[] = [];
     for (const column of this.#columns) {
       const values = nanColumn(capacity, column.single);
       if (!values.ok) return values.error;
       columns.push(values.value);
+      const qs = new Uint8Array(capacity);
+      qs.fill(Quality.Unavailable);
+      qualities.push(qs);
     }
     // Copy only after every allocation succeeded.
     for (let dst = 0; dst < keep; dst++) {
@@ -288,11 +328,15 @@ export class TelemetryRingBuffer {
       this.#columns.forEach((column, c) => {
         const target = columns[c];
         if (target !== undefined) target[dst] = column.values[src] ?? Number.NaN;
+        const targetQ = qualities[c];
+        if (targetQ !== undefined) targetQ[dst] = column.qualities[src] ?? Quality.Unavailable;
       });
     }
     this.#columns.forEach((column, c) => {
       const target = columns[c];
       if (target !== undefined) column.values = target;
+      const targetQ = qualities[c];
+      if (targetQ !== undefined) column.qualities = targetQ;
     });
     this.#times = times.value;
     this.#capacity = capacity;
@@ -314,6 +358,15 @@ export class TelemetryRingBuffer {
     if (column === undefined) return null;
     const v = column.values[this.#slot(i)];
     return v !== undefined && Number.isFinite(v) ? v : null;
+  }
+
+  /** Quality of `id` at logical row `i`; null for unselected channels and rows outside the buffer. */
+  qualityAt(id: number, i: number): Quality | null {
+    if (!Number.isInteger(i) || i < 0 || i >= this.#length) return null;
+    const column = this.#column(id);
+    if (column === undefined) return null;
+    const q = column.qualities[this.#slot(i)];
+    return q !== undefined ? (q as Quality) : null;
   }
 
   /** Oldest stored timestamp. */
@@ -404,15 +457,30 @@ export class TelemetryRingBuffer {
    * Copies the rows of `id` with `t0 <= time <= t1` into caller-owned arrays (gaps stay NaN) and returns the
    * number of rows written, at most the shorter array's length. Allocation-free counterpart of `range`.
    */
-  copyRange(id: number, t0: number, t1: number, outTimes: Float64Array, outValues: Float64Array): number {
+  copyRange(
+    id: number,
+    t0: number,
+    t1: number,
+    outTimes: Float64Array,
+    outValues: Float64Array,
+    outQualities?: Uint8Array,
+  ): number {
     const column = this.#column(id);
     if (column === undefined) return 0;
     const { start, end } = this.rangeIndices(t0, t1);
-    const count = Math.min(end - start, outTimes.length, outValues.length);
+    const count = Math.min(
+      end - start,
+      outTimes.length,
+      outValues.length,
+      outQualities !== undefined ? outQualities.length : Number.POSITIVE_INFINITY,
+    );
     for (let k = 0; k < count; k++) {
       const slot = this.#slot(start + k);
       outTimes[k] = this.#times[slot] ?? Number.NaN;
       outValues[k] = column.values[slot] ?? Number.NaN;
+      if (outQualities !== undefined) {
+        outQualities[k] = column.qualities[slot] ?? Quality.Unavailable;
+      }
     }
     return count;
   }

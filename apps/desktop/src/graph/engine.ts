@@ -15,7 +15,7 @@
  * the source does not carry reads UNAVAILABLE, and without a cursor a stale live feed reads STALE (no value) and a
  * degraded one shows its newest value marked DEGRADED.
  */
-import { Availability, Interpolation, Unit, type ChannelDef } from '../generated/channels';
+import { Availability, Interpolation, Quality, Unit, type ChannelDef } from '../generated/channels';
 import { channelAxisDisplay, unitAxisDisplay, type AxisDisplay } from '../lib/units';
 import { SPEC_DEGRADED_AFTER_MS } from '../telemetry/freshness';
 import { channelDef } from '../telemetry/registry';
@@ -48,7 +48,7 @@ import {
   type StaleSeriesTag,
 } from './overlay';
 import { okStatus, type RendererStatus, type RenderSeries, type SeriesRenderer } from './renderer';
-import { nearestRowX, rowTimeAt, sampleAt, visibleRows } from './sample';
+import { bracket, nearestRowX, rowTimeAt, sampleAt, visibleRows } from './sample';
 import { applyAffine, dataExtent, invertAffine, linearAffine } from './scale';
 import type { GraphSyncGroup, SyncEvent } from './syncBus';
 import {
@@ -1255,7 +1255,17 @@ export class GraphEngine {
     const column = window?.column(id) ?? null;
     if (window === null || column === null) return { kind, sample: readoutSample(id, def, 'unavailable', null) };
     const value = sampleAt(window, column, at, def?.interpolation === Interpolation.Discrete, this.#config.maxGapS);
-    if (value === null) return { kind, sample: readoutSample(id, def, 'noData', null) };
+    if (value === null) {
+      const i = bracket(window, at);
+      if (i >= 0) {
+        const q = window.quality?.(id)?.[i];
+        if (q === Quality.Invalid) return { kind, sample: readoutSample(id, def, 'invalid', null) };
+        if (q === Quality.Unavailable) return { kind, sample: readoutSample(id, def, 'unavailable', null) };
+        if (q === Quality.Stale) return { kind, sample: readoutSample(id, def, 'stale', null) };
+        if (q === Quality.NotSupported) return { kind, sample: readoutSample(id, def, 'notSupported', null) };
+      }
+      return { kind, sample: readoutSample(id, def, 'noData', null) };
+    }
     return { kind, sample: readoutSample(id, def, latest?.state ?? 'live', value) };
   }
 

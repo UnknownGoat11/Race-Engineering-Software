@@ -286,11 +286,36 @@ describe('advanceLapScan', () => {
   });
 });
 
-describe('LiveRingSource data kind (silent-failure H2)', () => {
+describe('LiveRingSource data kind (silent-failure H2 & DEFERRED 18)', () => {
   it('requires an explicit data kind and rejects anything else', () => {
     const h = harness();
     expect(new LiveRingSource(h.store, { xMode: 'time', dataKind: 'synthetic' }).dataKind).toBe('synthetic');
     expect(() => new LiveRingSource(h.store, { xMode: 'time' } as unknown as LiveRingSourceOptions)).toThrow(TypeError);
+  });
+
+  it('reads dataKind from store origin if options.dataKind is omitted (DEFERRED 18)', () => {
+    const h = harness();
+    h.store.setOrigin('lmu');
+    const source = new LiveRingSource(h.store, { xMode: 'time' });
+    expect(source.dataKind).toBe('lmu');
+    h.store.setOrigin('synthetic');
+    expect(source.dataKind).toBe('synthetic');
+  });
+
+  it('provides per-row quality buffer via window.quality (DEFERRED 17)', () => {
+    const h = harness();
+    h.store.setOrigin('lmu');
+    h.send([
+      [100, [rec.f32(ch.SPEED, 50)]],
+      [101, [rec.quality(ch.SPEED, 1)]], // Invalid
+    ]);
+    const source = new LiveRingSource(h.store, { xMode: 'time' });
+    const window = source.read({ min: 100, max: 101 }, [ch.SPEED]);
+    expect(window.count).toBe(2);
+    const qualities = window.quality?.(ch.SPEED);
+    expect(qualities).toBeDefined();
+    expect(qualities?.[0]).toBe(0); // Valid
+    expect(qualities?.[1]).toBe(1); // Invalid
   });
 });
 

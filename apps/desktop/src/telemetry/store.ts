@@ -47,6 +47,7 @@ import {
   type FreshnessThreshold,
 } from './freshness';
 import { CHANNEL_COUNT, channelIndex, isNumericChannel } from './registry';
+import type { Origin } from '../lib/ipc';
 import { err, ok, type Result } from './result';
 import { TelemetryRingBuffer } from './ring';
 import { readTlvBlock, type CodecError, type TlvHeader, type TlvRecordVisitor, type TlvScalar } from './tlv';
@@ -129,6 +130,8 @@ export interface BatchReport {
 export interface TelemetryStoreStatus {
   /** 'waiting' before the first batch, 'rejected' from a refused batch until the next accepted one. */
   readonly state: 'waiting' | 'receiving' | 'rejected';
+  /** Provenance of the telemetry data ('lmu' | 'synthetic'), or null before known (DEFERRED 18). */
+  readonly origin: Origin | null;
   readonly batchesApplied: number;
   readonly batchesRejected: number;
   readonly lastRejection: BatchRejection | null;
@@ -155,6 +158,7 @@ export type LiveRingView = Pick<
   | 'channels'
   | 'timeAt'
   | 'valueAt'
+  | 'qualityAt'
   | 'oldestTime'
   | 'newestTime'
   | 'newest'
@@ -197,6 +201,8 @@ export interface TelemetryStoreOptions {
   readonly freshnessThresholds?: Partial<Record<FrequencyClass, FreshnessThreshold>>;
   /** Channels kept in the live ring (default `defaultRingChannels()`). */
   readonly ringChannels?: readonly number[];
+  /** Stream data origin ('lmu' | 'synthetic') if known in advance (DEFERRED 18). */
+  readonly origin?: Origin | null;
 }
 
 // -------------------------------------------------------------------------------------------------------------
@@ -337,8 +343,12 @@ export class TelemetryStore {
   // Live ring.
   #ring: TelemetryRingBuffer;
   readonly #ringSource: Int32Array;
+  readonly #ringQualities = new Uint8Array(CHANNEL_COUNT).fill(Quality.Unavailable);
   #liveWindowS: number;
   #pendingGap = false;
+
+  // Provenance (DEFERRED 18)
+  #origin: Origin | null = null;
 
   // Sequence.
   #lastSeq: number | null = null;
@@ -415,6 +425,7 @@ export class TelemetryStore {
         this.#applyRecord(channel, quality, valueType, value);
       },
     };
+    this.#origin = options.origin ?? null;
   }
 
   // ----- applying batches -------------------------------------------------------------------------------------
@@ -466,6 +477,7 @@ export class TelemetryStore {
       // rebuilds the whole state, so only a gap without RESET leaves the cached values unconfirmed.
       if (!batch.reset) this.#desync();
     }
+    if (!batch.backfill) this.#lastLiveAtMs = now;
     const counts = this.#batchCounts;
     counts.applied = 0;
     counts.unknownSkipped = 0;
@@ -480,15 +492,17 @@ export class TelemetryStore {
       const applied = readTlvBlock(view, block.offset, block.length, this.#visitor);
       // Pass 1 decoded the same bytes successfully, so this cannot fail.
       if (!applied.ok) throw new Error(`TLV block ${i} failed after validation: ${applied.error.kind}`);
+      if (!batch.backfill) this.#evaluateFreshness(now);
       if (Number.isFinite(header.sourceEtS)) this.#appendRingRow(header.sourceEtS);
     }
     this.#blockHeader = null;
     this.#currentStamp = null;
     headers.length = 0;
 
-    if (!batch.backfill) this.#lastLiveAtMs = now;
-    this.#evaluateFreshness(now);
-    this.#armFreshnessTimer(now);
+    if (!batch.backfill) {
+      this.#evaluateFreshness(now);
+      this.#armFreshnessTimer(now);
+    }
 
     const c = this.#counters;
     c.batchesApplied += 1;
@@ -552,7 +566,13 @@ export class TelemetryStore {
       if (!wasConfirmed) {
         // Re-confirmed after a gap with the value it already had: the sample is unchanged (and keeps its
         // timestamps), but it is current again, so it shows and graphs again.
-        this.#numeric[index] = numericView(value);
+        if (quality === Quality.Valid) {
+          this.#ringQualities[index] = Quality.Valid;
+          this.#numeric[index] = numericView(value);
+        } else {
+          this.#ringQualities[index] = quality;
+          this.#numeric[index] = Number.NaN;
+        }
         this.#markDirty(index);
       }
       return;
@@ -566,7 +586,13 @@ export class TelemetryStore {
     }
     this.#quality[index] = quality;
     this.#value[index] = value;
-    this.#numeric[index] = numericView(value);
+    if (quality === Quality.Valid) {
+      this.#ringQualities[index] = Quality.Valid;
+      this.#numeric[index] = numericView(value);
+    } else {
+      this.#ringQualities[index] = quality;
+      this.#numeric[index] = Number.NaN;
+    }
     this.#stamp[index] = this.#blockStamp();
     this.#version[index] = (this.#version[index] ?? 0) + 1;
     this.#markDirty(index);
@@ -603,6 +629,7 @@ export class TelemetryStore {
     this.#desynced = true;
     this.#syncEpoch += 1;
     this.#numeric.fill(Number.NaN);
+    this.#ringQualities.fill(Quality.Stale);
     for (const index of this.#channelListeners.keys()) {
       if (this.#has[index] === 1) this.#markDirty(index);
     }
@@ -622,6 +649,7 @@ export class TelemetryStore {
         this.#markDirty(index);
       }
     }
+    this.#ringQualities.fill(Quality.Unavailable);
     this.#classSamples.fill(0);
     this.#lastLiveAtMs = null;
     this.#ring.clear();
@@ -649,7 +677,7 @@ export class TelemetryStore {
     if (newest !== null && t === newest) {
       // Same session time as the newest row (e.g. a scoring update between physics frames, or a paused
       // session): keep one row per ET with the latest values instead of piling up rows that evict history.
-      ring.replaceNewestRowGather(this.#numeric, this.#ringSource);
+      ring.replaceNewestRowGather(this.#numeric, this.#ringSource, this.#ringQualities);
       this.#ringChanged();
       return;
     }
@@ -660,12 +688,12 @@ export class TelemetryStore {
     }
     this.#pendingGap = false;
     this.#growRingIfShort(t);
-    let error = ring.pushRowGather(t, this.#numeric, this.#ringSource);
+    let error = ring.pushRowGather(t, this.#numeric, this.#ringSource, this.#ringQualities);
     if (error?.kind === 'TimeRegression') {
       // Session time went backwards: a new session. The ring contract is that the caller clears it.
       ring.clear();
       this.#counters.ringClears += 1;
-      error = ring.pushRowGather(t, this.#numeric, this.#ringSource);
+      error = ring.pushRowGather(t, this.#numeric, this.#ringSource, this.#ringQualities);
     }
     if (error !== null) throw new Error(`live ring append failed: ${error.kind}`);
     this.#ringChanged();
@@ -922,11 +950,32 @@ export class TelemetryStore {
     };
   }
 
+  /**
+   * The provenance of the stream: 'lmu' for real LMU telemetry, 'synthetic' for generated test data
+   * (DEFERRED 18, spec §108–109). Null when unknown/before subscription.
+   */
+  get origin(): Origin | null {
+    return this.#origin;
+  }
+
+  /** Alias for `origin` matching `DataKind`. */
+  get dataOrigin(): Origin | null {
+    return this.#origin;
+  }
+
+  /** Sets the data origin (e.g. from the bridge subscription or core:status) and notifies status listeners. */
+  setOrigin(origin: Origin | null): void {
+    if (this.#origin === origin) return;
+    this.#origin = origin;
+    this.#statusChanged();
+  }
+
   /** Current diagnostics status (same object until something changes). */
   getStatus(): TelemetryStoreStatus {
     if (this.#statusSnapshot === null) {
       this.#statusSnapshot = {
         state: this.#state,
+        origin: this.#origin,
         lastRejection: this.#lastRejection,
         lastBatchSeq: this.#lastSeq,
         resyncNeeded: this.#desynced,
@@ -1008,8 +1057,26 @@ export class TelemetryStore {
   }
 
   #classChanged(c: number): void {
-    for (const index of this.#channelListeners.keys()) {
-      if (this.#classOf[index] === c && this.#has[index] === 1) this.#markDirty(index);
+    const isStale = this.#classFreshness[c] === 'stale';
+    for (let index = 0; index < CHANNEL_COUNT; index++) {
+      if (this.#classOf[index] === c) {
+        if (this.#has[index] !== 1) {
+          this.#ringQualities[index] = Quality.Unavailable;
+          this.#numeric[index] = Number.NaN;
+        } else if (isStale || !this.#isConfirmed(index) || this.#quality[index] === Quality.Stale) {
+          this.#ringQualities[index] = Quality.Stale;
+          this.#numeric[index] = Number.NaN;
+        } else if (this.#quality[index] === Quality.Valid) {
+          this.#ringQualities[index] = Quality.Valid;
+          this.#numeric[index] = numericView(this.#value[index] ?? null);
+        } else {
+          this.#ringQualities[index] = this.#quality[index] ?? Quality.Unavailable;
+          this.#numeric[index] = Number.NaN;
+        }
+        if (this.#has[index] === 1 && this.#channelListeners.has(index)) {
+          this.#markDirty(index);
+        }
+      }
     }
     this.#streamChanged();
   }

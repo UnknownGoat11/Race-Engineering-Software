@@ -6,7 +6,7 @@ import { RecordingContext } from '../test/recordingContext';
 import { encodeTlvBlock, encodeUiBatch, rec, type FixtureRecord } from '../test/tlvEncoder';
 import { SPEC_DEGRADED_AFTER_MS } from '../telemetry/freshness';
 import { TelemetryStore } from '../telemetry/store';
-import { UI_BATCH_FLAG_RESET } from '../telemetry/uiBatch';
+import { UI_BATCH_FLAG_GAP_BEFORE, UI_BATCH_FLAG_RESET } from '../telemetry/uiBatch';
 import { DEFAULT_MAX_GAP_S, GRAPH_ERROR_TEXT, GraphEngine, NO_DATA_TEXT, THEME_FALLBACK, referenceKey, seriesColorSlot, seriesKey, type GraphEngineOptions } from './engine';
 import { axisKey } from './layout';
 import { LiveRingSource } from './liveSource';
@@ -215,6 +215,28 @@ describe('GraphEngine readouts', () => {
     engine.setCursor(100.5);
     engine.flush();
     r = engine.getSnapshot().readouts;
+    // Row 100.5 has explicit quality 3 (Quality.Unavailable), so historical readout shows unavailable (DEFERRED 17)
+    expect(r[seriesKey(ch.SPEED)]?.sample).toMatchObject({ state: 'unavailable', value: null });
+  });
+
+  it('historical readout on a gap row shows NO DATA', () => {
+    const h = harness();
+    h.send([
+      [100, [rec.f32(ch.SPEED, 50)]],
+      [101, [rec.f32(ch.SPEED, 55)]],
+    ]);
+    // Send a batch with GAP_BEFORE: store inserts a gap row between 101 and 103 at 102
+    const result = h.store.applyBatch(
+      encodeUiBatch(UI_BATCH_FLAG_GAP_BEFORE, 1, [
+        encodeTlvBlock({ sourceEtS: 103 }, [rec.f32(ch.SPEED, 60)]),
+      ]),
+    );
+    expect(result.ok).toBe(true);
+    const { engine } = h.engine({ series: [{ channelId: ch.SPEED }] });
+    engine.flush();
+    engine.setCursor(102);
+    engine.flush();
+    const r = engine.getSnapshot().readouts;
     expect(r[seriesKey(ch.SPEED)]?.sample).toMatchObject({ state: 'noData', value: null });
   });
 

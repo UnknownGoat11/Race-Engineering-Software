@@ -12,8 +12,9 @@
  *   can label synthetic data (DEFERRED #18). It is the origin at subscribe time; `core:status.origin` tracks
  *   later changes (e.g. the demo starting).
  */
-import { Channel } from '@tauri-apps/api/core';
-import { IpcError, bridgeSubscribe, bridgeUnsubscribe, type Origin } from '../lib/ipc';
+import { Channel, isTauri } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { IpcError, bridgeSubscribe, bridgeUnsubscribe, type CoreStatus, type Origin } from '../lib/ipc';
 import {
   RESUBSCRIBE_INITIAL_DELAY_MS,
   RESUBSCRIBE_MAX_DELAY_MS,
@@ -143,8 +144,45 @@ export function connectTauriTelemetry(
   store: TelemetryStore,
   options: BridgeSourceOptions = {},
 ): TauriTelemetryConnection {
-  const source = createBridgeSource(options);
+  const mergedOptions: BridgeSourceOptions = {
+    ...options,
+    onOrigin: (origin: Origin) => {
+      store.setOrigin(origin);
+      options.onOrigin?.(origin);
+    },
+  };
+  const source = createBridgeSource(mergedOptions);
   const connectOptions = options.scheduleTimeout === undefined ? {} : { scheduleTimeout: options.scheduleTimeout };
-  const disconnect = connectBatchSource(store, source.subscribe, connectOptions);
+  const disconnectBatch = connectBatchSource(store, source.subscribe, connectOptions);
+
+  let unlistenStatus: UnlistenFn | null = null;
+  let disconnected = false;
+
+  if (isTauri()) {
+    listen<CoreStatus>('core:status', (event) => {
+      store.setOrigin(event.payload.origin);
+    }).then(
+      (unlisten) => {
+        if (disconnected) {
+          unlisten();
+        } else {
+          unlistenStatus = unlisten;
+        }
+      },
+      (error: unknown) => {
+        options.onError?.(asIpcError(error));
+      },
+    );
+  }
+
+  const disconnect = () => {
+    disconnected = true;
+    disconnectBatch();
+    if (unlistenStatus !== null) {
+      unlistenStatus();
+      unlistenStatus = null;
+    }
+  };
+
   return { disconnect, origin: source.origin };
 }

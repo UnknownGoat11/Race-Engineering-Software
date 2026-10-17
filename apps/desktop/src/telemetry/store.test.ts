@@ -755,3 +755,113 @@ describe('live window and ring sizing (spec §63, A-LMU-001)', () => {
     expect(store.ring.length).toBe(0);
   });
 });
+
+describe('frontend store items (DEFERRED 16, 17, 18)', () => {
+  it('DEFERRED 16: stale channels are written as NaN rows in the ring while STALE label stays', () => {
+    const { store, send } = harness({ ringChannels: [ch.SPEED, ch.BEST_LAP_TIME] });
+    // First batch: Physics (SPEED) and Scoring (BEST_LAP_TIME)
+    send(0, [[1, [rec.f32(ch.SPEED, 100), rec.f64(ch.BEST_LAP_TIME, 92.5)]]]);
+    expect(store.ring.valueAt(ch.SPEED, 0)).toBe(100);
+    expect(store.ring.valueAt(ch.BEST_LAP_TIME, 0)).toBe(92.5);
+
+    // Scoring stalls while Physics continues: simulate scoring age passing stale threshold (e.g. 5 s)
+    // Send physics frame with scoring age = 6 s
+    send(0, [
+      [
+        1.01,
+        [
+          rec.f32(ch.SPEED, 101),
+          rec.f32(ch.SRC_SCORING_AGE, 6.0), // 6 seconds old -> Scoring goes STALE
+        ],
+      ],
+    ]);
+
+    expect(store.getStreamState(FrequencyClass.Scoring)).toBe('stale');
+    expect(store.getSample(ch.BEST_LAP_TIME).state).toBe('stale');
+
+    // In the ring: row 1 has SPEED 101, but BEST_LAP_TIME is NaN (line breaks) and quality is Quality.Stale!
+    expect(store.ring.valueAt(ch.SPEED, 1)).toBe(101);
+    expect(store.ring.valueAt(ch.BEST_LAP_TIME, 1)).toBeNull(); // NaN stored, valueAt returns null
+    expect(store.ring.qualityAt(ch.BEST_LAP_TIME, 1)).toBe(Quality.Stale);
+
+    // Next physics frame: scoring still stale, still NaN in the ring
+    send(0, [[1.02, [rec.f32(ch.SPEED, 102)]]]);
+    expect(store.ring.valueAt(ch.SPEED, 2)).toBe(102);
+    expect(store.ring.valueAt(ch.BEST_LAP_TIME, 2)).toBeNull();
+    expect(store.ring.qualityAt(ch.BEST_LAP_TIME, 2)).toBe(Quality.Stale);
+
+    // Scoring recovers: fresh scoring update arrives
+    send(0, [
+      [
+        1.03,
+        [
+          rec.f32(ch.SPEED, 103),
+          rec.f64(ch.BEST_LAP_TIME, 93.0),
+          rec.f32(ch.SRC_SCORING_AGE, 0.05), // fresh -> Scoring recovers
+        ],
+      ],
+    ]);
+
+    expect(store.getStreamState(FrequencyClass.Scoring)).toBe('live');
+    expect(store.getSample(ch.BEST_LAP_TIME).state).toBe('live');
+    expect(store.ring.valueAt(ch.SPEED, 3)).toBe(103);
+    expect(store.ring.valueAt(ch.BEST_LAP_TIME, 3)).toBe(93.0);
+    expect(store.ring.qualityAt(ch.BEST_LAP_TIME, 3)).toBe(Quality.Valid);
+  });
+
+  it('DEFERRED 17: ring buffer stores per-row quality for invalid and unavailable samples', () => {
+    const { store, send } = harness({ ringChannels: [ch.SPEED, ch.GEAR] });
+    // Row 0: SPEED valid, GEAR invalid
+    send(0, [
+      [
+        10,
+        [
+          rec.f32(ch.SPEED, 150),
+          rec.quality(ch.GEAR, Quality.Invalid),
+        ],
+      ],
+    ]);
+    expect(store.ring.valueAt(ch.SPEED, 0)).toBe(150);
+    expect(store.ring.qualityAt(ch.SPEED, 0)).toBe(Quality.Valid);
+    expect(store.ring.valueAt(ch.GEAR, 0)).toBeNull();
+    expect(store.ring.qualityAt(ch.GEAR, 0)).toBe(Quality.Invalid);
+
+    // Row 1: SPEED unavailable, GEAR valid
+    send(0, [
+      [
+        10.01,
+        [
+          rec.quality(ch.SPEED, Quality.Unavailable),
+          rec.i32(ch.GEAR, 4),
+        ],
+      ],
+    ]);
+    expect(store.ring.valueAt(ch.SPEED, 1)).toBeNull();
+    expect(store.ring.qualityAt(ch.SPEED, 1)).toBe(Quality.Unavailable);
+    expect(store.ring.valueAt(ch.GEAR, 1)).toBe(4);
+    expect(store.ring.qualityAt(ch.GEAR, 1)).toBe(Quality.Valid);
+  });
+
+  it('DEFERRED 18: store records origin and notifies status listeners on change', () => {
+    const { store, frames } = harness({ origin: 'lmu' });
+    expect(store.origin).toBe('lmu');
+    expect(store.dataOrigin).toBe('lmu');
+    expect(store.getStatus().origin).toBe('lmu');
+
+    let statusCalls = 0;
+    store.subscribeStatus(() => {
+      statusCalls += 1;
+    });
+
+    store.setOrigin('synthetic');
+    expect(store.origin).toBe('synthetic');
+    expect(store.getStatus().origin).toBe('synthetic');
+    frames.runFrame();
+    expect(statusCalls).toBe(1);
+
+    // Idempotent set does not trigger extra notification
+    store.setOrigin('synthetic');
+    frames.runFrame();
+    expect(statusCalls).toBe(1);
+  });
+});

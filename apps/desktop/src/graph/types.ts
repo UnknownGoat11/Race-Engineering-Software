@@ -44,6 +44,8 @@ export interface GraphWindow {
   readonly monotonicX: boolean;
   /** Values of `channelId` per row (NaN = no valid value at that row), or null if it was not requested/known. */
   column(channelId: number): Float64Array | null;
+  /** In-band quality of `channelId` per row (DEFERRED 17), or null if not requested/unsupported. */
+  quality?(channelId: number): Uint8Array | null;
 }
 
 /** The current car position on the x axis (spec §82) and the freshness of the feed behind it (spec §126). */

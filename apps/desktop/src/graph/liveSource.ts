@@ -24,10 +24,10 @@ interface LiveRingSourceCommon {
   readonly freshnessClass?: FrequencyClass;
   /**
    * What the store holds: 'lmu' for the bridge's LMU telemetry, 'synthetic' for generated test data (labelled
-   * "Synthetic Test Data", spec §108–§109). Required, no default: a forgotten flag is a type error, never a
-   * synthetic feed labelled as LMU (silent-failure H2). The store itself does not carry the data origin yet.
+   * "Synthetic Test Data", spec §108–§109). If omitted, falls back to the store's recorded origin (DEFERRED 18)
+   * or 'synthetic'.
    */
-  readonly dataKind: DataKind;
+  readonly dataKind?: DataKind;
 }
 
 /**
@@ -146,6 +146,7 @@ class WindowBuffers implements GraphWindow {
   count = 0;
   monotonicX = true;
   readonly #columns = new Map<number, Float64Array>();
+  readonly #qualities = new Map<number, Uint8Array>();
   readonly #requested = new Set<number>();
 
   /** Makes room for `rows` rows (growing by doubling); on a time axis `xs` aliases `ts`. */
@@ -160,6 +161,7 @@ class WindowBuffers implements GraphWindow {
     this.ts = new Float64Array(size);
     this.xs = timeAxis ? this.ts : new Float64Array(size);
     for (const id of [...this.#columns.keys()]) this.#columns.set(id, new Float64Array(size));
+    for (const id of [...this.#qualities.keys()]) this.#qualities.set(id, new Uint8Array(size));
   }
 
   /** The value column of `id`, allocated on first use. */
@@ -170,6 +172,16 @@ class WindowBuffers implements GraphWindow {
       this.#columns.set(id, c);
     }
     return c;
+  }
+
+  /** The quality column of `id`, allocated on first use (DEFERRED 17). */
+  ensureQuality(id: number): Uint8Array {
+    let q = this.#qualities.get(id);
+    if (q?.length !== this.ts.length) {
+      q = new Uint8Array(this.ts.length);
+      this.#qualities.set(id, q);
+    }
+    return q;
   }
 
   setRequested(ids: readonly number[]): void {
@@ -185,12 +197,17 @@ class WindowBuffers implements GraphWindow {
     if (!this.#requested.has(channelId)) return null;
     return this.#columns.get(channelId) ?? null;
   }
+
+  quality(channelId: number): Uint8Array | null {
+    if (!this.#requested.has(channelId)) return null;
+    return this.#qualities.get(channelId) ?? null;
+  }
 }
 
 /** A GraphDataSource over the TelemetryStore live ring (see the module comment). */
 export class LiveRingSource implements GraphDataSource {
   readonly origin = 'live' as const;
-  readonly dataKind: DataKind;
+  readonly #configuredDataKind: DataKind | null;
   readonly #store: TelemetryStore;
   readonly #timeAxis: boolean;
   readonly #xChannel: number | null;
@@ -214,7 +231,19 @@ export class LiveRingSource implements GraphDataSource {
     this.#timeAxis = options.xMode === 'time';
     this.#xChannel = checkXChannel(options.xMode, options.xChannel);
     this.#freshnessClass = options.freshnessClass ?? FrequencyClass.Physics;
-    this.dataKind = checkDataKind(options.dataKind);
+    const kind = options.dataKind ?? store.origin;
+    if (kind === null) {
+      throw new TypeError(`graph source dataKind must be 'lmu' or 'synthetic', got ${String(options.dataKind)}`);
+    }
+    this.#configuredDataKind = checkDataKind(kind);
+  }
+
+  /**
+   * Provenance of the stream: reads the store's origin (DEFERRED 18) or falls back to the configured kind,
+   * defaulting to 'synthetic' fail-safe.
+   */
+  get dataKind(): DataKind {
+    return this.#store.origin ?? this.#configuredDataKind ?? 'synthetic';
   }
 
   subscribe(listener: () => void): () => void {
@@ -282,7 +311,7 @@ export class LiveRingSource implements GraphDataSource {
     if (rows === 0) return;
     let timesCopied = false;
     for (const id of channelIds) {
-      const copied = ring.copyRange(id, t0, t1, w.ts, w.columnFor(id));
+      const copied = ring.copyRange(id, t0, t1, w.ts, w.columnFor(id), w.ensureQuality(id));
       if (copied === 0) w.markMissing(id);
       else timesCopied = true;
     }
@@ -323,7 +352,7 @@ export class LiveRingSource implements GraphDataSource {
     }
     w.monotonicX = monotonic;
     for (const id of channelIds) {
-      if (ring.copyRange(id, t0, t1, w.ts, w.columnFor(id)) === 0) w.markMissing(id);
+      if (ring.copyRange(id, t0, t1, w.ts, w.columnFor(id), w.ensureQuality(id)) === 0) w.markMissing(id);
     }
   }
 

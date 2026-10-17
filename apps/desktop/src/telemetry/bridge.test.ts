@@ -20,6 +20,21 @@ vi.mock('@tauri-apps/api/core', () => {
   return { Channel, invoke: vi.fn(), isTauri: vi.fn(() => true) };
 });
 
+const eventListeners = new Map<string, Set<(event: unknown) => void>>();
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: vi.fn((event: string, handler: (event: unknown) => void) => {
+    let set = eventListeners.get(event);
+    if (!set) {
+      set = new Set();
+      eventListeners.set(event, set);
+    }
+    set.add(handler);
+    return Promise.resolve(() => {
+      set.delete(handler);
+    });
+  }),
+}));
+
 interface MockChannel {
   onmessage: (message: ArrayBuffer) => void;
 }
@@ -214,6 +229,7 @@ describe('connectTauriTelemetry', () => {
 
   beforeEach(async () => {
     (await channels()).length = 0;
+    eventListeners.clear();
     backend = new Backend();
     backend.install();
     clock = new FakeClock();
@@ -225,6 +241,7 @@ describe('connectTauriTelemetry', () => {
     backend.accept(0, 1, 'lmu');
     await flush();
     expect(connection.origin()).toBe('lmu');
+    expect(store.origin).toBe('lmu');
 
     const first = (await channels())[0];
     if (first === undefined) throw new Error('no channel');
@@ -240,6 +257,7 @@ describe('connectTauriTelemetry', () => {
     backend.accept(1, 2, 'synthetic');
     await flush();
     expect(connection.origin()).toBe('synthetic');
+    expect(store.origin).toBe('synthetic');
 
     const second = (await channels())[1];
     if (second === undefined) throw new Error('no second channel');
@@ -249,5 +267,26 @@ describe('connectTauriTelemetry', () => {
     connection.disconnect();
     await flush();
     expect(backend.unsubscribed).toEqual([1, 2]);
+  });
+
+  it('tracks core:status.origin mid-subscription and unlistens on disconnect (DEFERRED 18)', async () => {
+    const store = newStore(clock);
+    const connection = connectTauriTelemetry(store, { scheduleTimeout: clock.scheduleTimeout });
+    backend.accept(0, 1, 'lmu');
+    await flush();
+    expect(store.origin).toBe('lmu');
+
+    // Simulate core:status event changing origin mid-subscription (e.g. demo mode starting)
+    const statusListeners = eventListeners.get('core:status') ?? new Set();
+    expect(statusListeners.size).toBe(1);
+
+    for (const listener of statusListeners) {
+      listener({ payload: { origin: 'synthetic' } });
+    }
+    expect(store.origin).toBe('synthetic');
+
+    connection.disconnect();
+    await flush();
+    expect(statusListeners.size).toBe(0);
   });
 });

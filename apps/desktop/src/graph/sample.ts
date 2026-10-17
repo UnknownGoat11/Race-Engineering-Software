@@ -54,7 +54,7 @@ export function visibleRows(window: GraphWindow, range: { readonly min: number; 
  * Index `i` of the newest row pair with `xs[i] <= x <= xs[i + 1]`, `count - 1` when x equals the last row's x,
  * or -1 when x is outside every pair.
  */
-function bracket(window: GraphWindow, x: number): number {
+export function bracket(window: GraphWindow, x: number): number {
   const { xs, count } = window;
   if (count === 0 || !Number.isFinite(x)) return -1;
   if (window.monotonicX) {

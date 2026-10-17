@@ -62,6 +62,10 @@ class SliceWindow implements GraphWindow {
   column(channelId: number): Float64Array | null {
     return this.columns.get(channelId) ?? null;
   }
+
+  quality(): Uint8Array | null {
+    return null;
+  }
 }
 
 /** Immutable rows from arrays (see the module comment). */

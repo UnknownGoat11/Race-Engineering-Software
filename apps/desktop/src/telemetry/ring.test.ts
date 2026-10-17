@@ -1,6 +1,6 @@
 // Ports the scenarios of telemetry-model's ring.rs tests, plus the TypeScript-only additions.
 import { describe, expect, it } from 'vitest';
-import { ch } from '../generated/channels';
+import { Quality, ch } from '../generated/channels';
 import { MAX_RING_BYTES, TelemetryRingBuffer } from './ring';
 
 function ring(capacity: number, channels: readonly number[] = [ch.SPEED, ch.GEAR]): TelemetryRingBuffer {
@@ -251,5 +251,51 @@ describe('store fast paths', () => {
     push(r, 0, [f32, 83.123456789]);
     expect(r.valueAt(ch.SPEED, 0)).toBe(f32);
     expect(r.valueAt(ch.LAP_TIME, 0)).toBe(83.123456789);
+  });
+
+  it('records per-row quality in the ring and preserves it through copyRange and resize (DEFERRED 17)', () => {
+    const r = ring(4, [ch.SPEED, ch.GEAR]);
+    // Row 0: SPEED valid 100, GEAR invalid
+    expect(r.pushRow(1, [100, null], [Quality.Valid, Quality.Invalid])).toBeNull();
+    // Row 1: SPEED unavailable, GEAR stale
+    expect(r.pushRow(2, [null, null], [Quality.Unavailable, Quality.Stale])).toBeNull();
+    // Row 2: SPEED valid 120, GEAR notSupported
+    expect(r.pushRow(3, [120, null], [Quality.Valid, Quality.NotSupported])).toBeNull();
+
+    expect(r.qualityAt(ch.SPEED, 0)).toBe(Quality.Valid);
+    expect(r.qualityAt(ch.GEAR, 0)).toBe(Quality.Invalid);
+    expect(r.qualityAt(ch.SPEED, 1)).toBe(Quality.Unavailable);
+    expect(r.qualityAt(ch.GEAR, 1)).toBe(Quality.Stale);
+    expect(r.qualityAt(ch.SPEED, 2)).toBe(Quality.Valid);
+    expect(r.qualityAt(ch.GEAR, 2)).toBe(Quality.NotSupported);
+    expect(r.qualityAt(ch.SPEED, 3)).toBeNull(); // out of bounds
+    expect(r.qualityAt(99999, 0)).toBeNull(); // unknown channel
+
+    // copyRange with qualities
+    const times = new Float64Array(3);
+    const values = new Float64Array(3);
+    const qualities = new Uint8Array(3);
+    const count = r.copyRange(ch.GEAR, 0.5, 3.5, times, values, qualities);
+    expect(count).toBe(3);
+    expect(Array.from(qualities)).toEqual([Quality.Invalid, Quality.Stale, Quality.NotSupported]);
+
+    // pushRowGather with sourceQuality
+    const currentValues = new Float64Array([130, Number.NaN]);
+    const currentQualities = new Uint8Array([Quality.Valid, Quality.Invalid]);
+    const sourceIndex = new Int32Array([0, 1]);
+    expect(r.pushRowGather(4, currentValues, sourceIndex, currentQualities)).toBeNull();
+    expect(r.qualityAt(ch.SPEED, 3)).toBe(Quality.Valid);
+    expect(r.qualityAt(ch.GEAR, 3)).toBe(Quality.Invalid);
+
+    // replaceNewestRowGather with sourceQuality
+    currentValues[0] = 135;
+    currentQualities[0] = Quality.Stale;
+    expect(r.replaceNewestRowGather(currentValues, sourceIndex, currentQualities)).toBe(true);
+    expect(r.qualityAt(ch.SPEED, 3)).toBe(Quality.Stale);
+
+    // resize preserves qualities
+    expect(r.resize(6)).toBeNull();
+    expect(r.qualityAt(ch.SPEED, 3)).toBe(Quality.Stale);
+    expect(r.qualityAt(ch.GEAR, 3)).toBe(Quality.Invalid);
   });
 });
