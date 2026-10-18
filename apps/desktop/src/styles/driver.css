@@ -45,6 +45,12 @@
   font-family: var(--font-data);
   font-size: 13px;
   color: var(--text-primary);
+  flex: 1;
+}
+
+.driver-error-dismiss {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 /* -------------------------------------------------------------------------

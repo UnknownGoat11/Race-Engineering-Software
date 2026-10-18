@@ -332,4 +332,34 @@ describe('EngineerScreen', () => {
       expect(screen.getByTestId('preset-custom-badge')).toHaveTextContent('CUSTOM (4 CH)');
     });
   });
+
+  it('renders announcer, announces refresh requested, and supports preset a11y states', async () => {
+    render(<EngineerScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('screen-announcer')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-request-snapshot')).toBeInTheDocument();
+    });
+
+    // Test snapshot request announcement (EN14, A11)
+    fireEvent.click(screen.getByTestId('btn-request-snapshot'));
+    await waitFor(() => {
+      expect(screen.getByTestId('screen-announcer-polite')).toHaveTextContent('Refresh requested');
+    });
+
+    // Test graph presets role="group" and aria-pressed states (A04)
+    const presetGroup = screen.getByRole('group', { name: 'Graph presets' });
+    expect(presetGroup).toBeInTheDocument();
+
+    const inputsBtn = screen.getByRole('button', { name: 'Inputs' });
+    expect(inputsBtn).toHaveAttribute('aria-pressed', 'true');
+
+    const powertrainBtn = screen.getByRole('button', { name: 'Powertrain' });
+    expect(powertrainBtn).toHaveAttribute('aria-pressed', 'false');
+
+    // Switch preset and verify aria-pressed updates
+    fireEvent.click(powertrainBtn);
+    expect(powertrainBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(inputsBtn).toHaveAttribute('aria-pressed', 'false');
+  });
 });

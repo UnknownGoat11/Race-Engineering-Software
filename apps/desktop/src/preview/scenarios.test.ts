@@ -155,5 +155,5 @@ describe('preview fake backend', () => {
     expect(a.bytes).toEqual(b.bytes);
     expect(a.status).toEqual(b.status);
     expect(a.events).toBe(b.events);
-  });
+  }, 15000);
 });

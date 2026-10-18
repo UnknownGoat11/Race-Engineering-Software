@@ -67,43 +67,43 @@ export function PitwallBar({
   if (isSynthetic) {
     badgeEl = (
       <span className="badge badge-dq-synthetic" data-testid="stream-health-badge">
-        ▨ SYNTHETIC
+        <span aria-hidden="true">▨ </span>SYNTHETIC
       </span>
     );
   } else if (isLive) {
     badgeEl = (
       <span className="badge badge-status-ok" data-testid="stream-health-badge">
-        ● LIVE STREAM
+        <span aria-hidden="true">● </span>LIVE STREAM
       </span>
     );
   } else if (view.kind === 'stale') {
     badgeEl = (
       <span className="badge badge-status-warn" data-testid="stream-health-badge">
-        ◆ STALE
+        <span aria-hidden="true">◆ </span>STALE
       </span>
     );
   } else if (view.kind === 'away') {
     badgeEl = (
       <span className="badge badge-status-warn" data-testid="stream-health-badge">
-        ◆ DRIVER AWAY
+        <span aria-hidden="true">◆ </span>DRIVER AWAY
       </span>
     );
   } else if (view.kind === 'incompatible') {
     badgeEl = (
       <span className="badge badge-status-critical" data-testid="stream-health-badge">
-        ■ INCOMPATIBLE
+        <span aria-hidden="true">■ </span>INCOMPATIBLE
       </span>
     );
   } else if (view.kind === 'ended') {
     badgeEl = (
       <span className="badge badge-status-critical" data-testid="stream-health-badge">
-        ■ ENDED
+        <span aria-hidden="true">■ </span>ENDED
       </span>
     );
   } else {
     badgeEl = (
       <span className="badge badge-subtle" data-testid="stream-health-badge">
-        □ NOT CONNECTED
+        <span aria-hidden="true">□ </span>NOT CONNECTED
       </span>
     );
   }
@@ -225,7 +225,7 @@ export function PitwallBar({
             aria-label="Settings"
             data-testid="btn-open-settings"
           >
-            ⚙
+            <span aria-hidden="true">⚙</span>
           </button>
         )}
       </div>

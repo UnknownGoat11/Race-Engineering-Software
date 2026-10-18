@@ -20,6 +20,8 @@ export const CONFIRM_TIMEOUT_MS = 5_000;
 export interface ConfirmActionProps {
   /** Trigger button text, e.g. "End session". */
   readonly label: string;
+  /** Accessible name override for the trigger button (e.g. "Remove Ana (@pitwall_ana)") */
+  readonly ariaLabel?: string | undefined;
   /** Question shown in the confirm step, e.g. "End for everyone?". Defaults to `${label}?`. */
   readonly prompt?: string;
   /** What will happen, in one sentence. Required: a confirm without a stated consequence is not allowed. */
@@ -148,6 +150,7 @@ export function ConfirmAction(props: ConfirmActionProps): JSX.Element {
           className={buttonClass}
           disabled={disabled || isConfirming}
           aria-describedby={disabled && disabledReason !== undefined ? reasonId : undefined}
+          aria-label={props.ariaLabel}
           onClick={() => {
             triggerRef.current?.focus();
             setPhase('confirming');

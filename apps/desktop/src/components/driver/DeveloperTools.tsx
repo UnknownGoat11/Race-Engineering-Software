@@ -37,7 +37,7 @@ export function DeveloperTools({
   return (
     <details className="driver-developer" data-testid="driver-developer-tools">
       <summary className="driver-developer-summary">
-        ▸ Developer Tools (Synthetic Demo)
+        <span aria-hidden="true">▸ </span>Developer Tools (Synthetic Demo)
       </summary>
 
       <div className="driver-developer-content">

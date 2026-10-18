@@ -381,4 +381,57 @@ describe('DriverScreen', () => {
       expect(screen.getByTestId('driver-flag-banner')).toBeInTheDocument();
     });
   });
+
+  it('renders live announcer and supports W4.2 screen a11y requirements', async () => {
+    const base = createMockStatus();
+    const mockStatus: ipc.CoreStatus = {
+      ...base,
+      network: {
+        ...base.network,
+        connect_code: 'ABC123',
+        streaming: true,
+        engineers: [
+          {
+            connection_id: 1,
+            username: 'pitwall_ana',
+            display_name: 'Ana',
+            link: 'strong',
+            connected_since_unix_s: 1700000000,
+          },
+        ],
+      },
+    };
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue(mockStatus);
+
+    render(<DriverScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('screen-announcer')).toBeInTheDocument();
+      expect(screen.getByTestId('copy-code-btn')).toBeInTheDocument();
+    });
+
+    // Test code copy announcement
+    fireEvent.click(screen.getByTestId('copy-code-btn'));
+    await waitFor(() => {
+      expect(screen.getByTestId('screen-announcer-polite')).toHaveTextContent(
+        'Engineer code copied to clipboard',
+      );
+    });
+
+    // Test accessible name on Remove engineer button (DR03)
+    const removeBtn = screen.getByRole('button', { name: 'Remove Ana (@pitwall_ana)' });
+    expect(removeBtn).toBeInTheDocument();
+
+    // Test nav tablist role and selection (A04)
+    const nav = screen.getByRole('tablist', { name: 'Driver views' });
+    expect(nav).toBeInTheDocument();
+    const statusTab = screen.getByRole('tab', { name: 'Status Hub' });
+    expect(statusTab).toHaveAttribute('aria-selected', 'true');
+    const telemetryTab = screen.getByRole('tab', { name: 'Telemetry Dashboard' });
+    expect(telemetryTab).toHaveAttribute('aria-selected', 'false');
+
+    // Test marker input label association (A06)
+    const markerInput = screen.getByLabelText('Log marker note');
+    expect(markerInput).toBeInTheDocument();
+  });
 });

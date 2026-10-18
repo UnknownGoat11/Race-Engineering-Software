@@ -139,4 +139,9 @@ describe('ConfirmAction', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Leave session' }));
     expect(screen.getByRole('group', { name: 'Leave session?' })).toBeInTheDocument();
   });
+
+  it('supports ariaLabel for custom accessible name on the trigger', () => {
+    setup({ label: 'Remove', ariaLabel: 'Remove Ana (@pitwall_ana)' });
+    expect(screen.getByRole('button', { name: 'Remove Ana (@pitwall_ana)' })).toBeInTheDocument();
+  });
 });

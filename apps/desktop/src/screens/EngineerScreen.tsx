@@ -15,13 +15,15 @@
  *   - Column 2 (766px): Full-width Track Map (240px), Telemetry Graph (>=300px plot)
  *   - Column 3 (300px): RightColumnTabs with pinned mini-row (24px) + segmented tabs (28px)
  */
-import { useEffect, useMemo, useState, useSyncExternalStore, type JSX } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX } from 'react';
 import { PanelErrorBoundary } from '../components/ErrorBoundary';
 import { EventsLog } from '../components/engineer/EventsLog';
 import { PitwallBar } from '../components/engineer/PitwallBar';
 import { RightColumnTabs, type RightTab } from '../components/engineer/RightColumnTabs';
 import { StateBanner } from '../components/engineer/StateBanner';
 import { StrategyStrip } from '../components/engineer/StrategyStrip';
+import { Announcer } from '../components/ui/Announcer';
+import { useAnnouncer } from '../hooks/useAnnouncer';
 import { AlertsBanner } from '../components/telemetry/AlertsBanner';
 import { BrakePanel } from '../components/telemetry/BrakePanel';
 import { ChannelSelectorModal } from '../components/telemetry/ChannelSelectorModal';
@@ -121,6 +123,15 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
   const [actionError, setActionError] = useState<string | null>(null);
   const [awaySinceMs, setAwaySinceMs] = useState<number | null>(null);
 
+  const { announce, politeMessage, assertiveMessage } = useAnnouncer();
+  const prevViewKindRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (actionError) {
+      announce(`Error: ${actionError}`, 'assertive');
+    }
+  }, [actionError, announce]);
+
   // Track when driver away starts (T08)
   const isDriverAway = (status?.engineer?.driver_away ?? false) || (status?.network.driver_away ?? false);
   useEffect(() => {
@@ -187,6 +198,39 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
     [status, effectiveOrigin, storeStatus, storeFreshness, awaySinceMs],
   );
 
+  // Announce view state transitions to screen readers (REDESIGN.md §4 W4.2, A02, A11)
+  useEffect(() => {
+    if (prevViewKindRef.current !== undefined && prevViewKindRef.current !== view.kind) {
+      switch (view.kind) {
+        case 'live':
+          announce('Connected to driver live stream', 'polite');
+          break;
+        case 'synthetic':
+          announce('Connected to demo stream', 'polite');
+          break;
+        case 'stale':
+          announce('Driver stream is stale', 'polite');
+          break;
+        case 'away':
+          announce('Driver is away from session', 'polite');
+          break;
+        case 'incompatible':
+          announce('Stream incompatible: update required', 'assertive');
+          break;
+        case 'ended':
+          announce('Session ended', 'polite');
+          break;
+        case 'notConnected':
+        case 'waiting':
+          announce('Disconnected from driver session', 'polite');
+          break;
+        default:
+          break;
+      }
+    }
+    prevViewKindRef.current = view.kind;
+  }, [view.kind, announce]);
+
   // Scope DQ for calculation panels, tower, and track map (T05, T06, T07)
   const scopeDq: ScopeDq = useMemo(() => {
     switch (view.kind) {
@@ -228,6 +272,7 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
     setActionError(null);
     try {
       await engineerRequestSnapshot();
+      announce('Refresh requested', 'polite');
       setActionNotice('Snapshot requested from driver.');
       setTimeout(() => {
         setActionNotice(null);
@@ -301,6 +346,9 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
   return (
     <TelemetryStoreContext.Provider value={store}>
       <div className="pitwall">
+        {/* Live region announcer per A02, A11, EN14 */}
+        <Announcer politeMessage={politeMessage} assertiveMessage={assertiveMessage} />
+
         {/* Top Pitwall Bar (y0, 36px), Strategy Strip (y36, 32px), State Banner (y68, 28px) */}
         {!hideHeader && isWatchingOrEnded && (
           <>
@@ -348,17 +396,28 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
 
         {/* Action notices or errors */}
         {actionNotice && (
-          <div className="badge badge-subtle pitwall-action-banner">
+          <div className="badge badge-subtle pitwall-action-banner" role="status">
             {actionNotice}
           </div>
         )}
         {actionError && (
-          <div className="badge badge-status-critical pitwall-action-banner">
-            {actionError}
+          <div className="badge badge-status-critical pitwall-action-banner" role="alert">
+            <span className="pitwall-action-banner-text">{actionError}</span>
+            <button
+              type="button"
+              className="btn btn-xs pitwall-error-dismiss"
+              onClick={() => {
+                setActionError(null);
+              }}
+              aria-label="Dismiss error"
+              data-testid="pitwall-dismiss-error-btn"
+            >
+              Dismiss
+            </button>
           </div>
         )}
         {coreError && (
-          <div className="badge badge-status-critical pitwall-action-banner">
+          <div className="badge badge-status-critical pitwall-action-banner" role="alert">
             CORE STATUS ERROR: {coreError}
           </div>
         )}
@@ -466,9 +525,10 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                         </span>
                       )}
                     </div>
-                    <div className="pitwall-graph-header-actions">
+                    <div className="pitwall-graph-header-actions" role="group" aria-label="Graph presets">
                       <button
                         type="button"
+                        aria-pressed={graphPreset === 'inputs'}
                         className={`btn btn-xs ${graphPreset === 'inputs' ? 'btn-primary' : ''}`}
                         onClick={() => {
                           setGraphPreset('inputs');
@@ -478,6 +538,7 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                       </button>
                       <button
                         type="button"
+                        aria-pressed={graphPreset === 'powertrain'}
                         className={`btn btn-xs ${graphPreset === 'powertrain' ? 'btn-primary' : ''}`}
                         onClick={() => {
                           setGraphPreset('powertrain');
@@ -487,6 +548,7 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                       </button>
                       <button
                         type="button"
+                        aria-pressed={graphPreset === 'tyres'}
                         className={`btn btn-xs ${graphPreset === 'tyres' ? 'btn-primary' : ''}`}
                         onClick={() => {
                           setGraphPreset('tyres');
@@ -496,6 +558,7 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                       </button>
                       <button
                         type="button"
+                        aria-pressed={graphPreset === 'brakes'}
                         className={`btn btn-xs ${graphPreset === 'brakes' ? 'btn-primary' : ''}`}
                         onClick={() => {
                           setGraphPreset('brakes');
@@ -506,6 +569,7 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                       {graphPreset === 'custom' && (
                         <button
                           type="button"
+                          aria-pressed={true}
                           className="btn btn-xs btn-primary"
                           onClick={() => {
                             setGraphPreset('custom');
@@ -524,7 +588,7 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                         title="Configure / select channels to plot (MoTeC i2 Pro style)"
                         data-testid="open-channel-selector-btn"
                       >
-                        <span>⚙</span>
+                        <span aria-hidden="true">⚙</span>
                         <span>Channels...</span>
                       </button>
                     </div>

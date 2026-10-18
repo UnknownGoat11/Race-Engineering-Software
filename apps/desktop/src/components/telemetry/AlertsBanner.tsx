@@ -44,7 +44,7 @@ export function AlertsBanner({ alerts, onDismiss, onClearAll }: AlertsBannerProp
               role={alert.level === 'critical' ? 'alert' : 'status'}
             >
               <span className={`badge ${badgeClass} alert-strip-badge`}>
-                {glyph} {alert.level.toUpperCase()}
+                <span aria-hidden="true">{glyph} </span>{alert.level.toUpperCase()}
               </span>
               <span className="alert-strip-message">
                 <strong>{alert.name}:</strong> {alert.message}

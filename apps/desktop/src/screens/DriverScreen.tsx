@@ -11,14 +11,16 @@
  * - Collapsible Developer tools disclosure (visible only when environment !== 'production')
  * - Telemetry Dashboard pit board tab fed via TelemetryStoreContext (4 glance items per C7)
  */
-import { useEffect, useMemo, useState, type JSX } from 'react';
+import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { PanelErrorBoundary } from '../components/ErrorBoundary';
 import { AttentionRow } from '../components/driver/AttentionRow';
 import { DeveloperTools } from '../components/driver/DeveloperTools';
 import { DriverDetails } from '../components/driver/DriverDetails';
 import { GlanceTile } from '../components/driver/GlanceTile';
 import { DriverTelemetryTab } from '../components/telemetry/DriverTelemetryTab';
+import { Announcer } from '../components/ui/Announcer';
 import { ConfirmAction } from '../components/ui/ConfirmAction';
+import { useAnnouncer } from '../hooks/useAnnouncer';
 import { useCoreStatus } from '../hooks/useCoreStatus';
 import {
   demoStart,
@@ -81,6 +83,82 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
   const [markerText, setMarkerText] = useState('');
   const [selectedScenario, setSelectedScenario] = useState<DemoScenario>('demo');
   const [actionError, setActionError] = useState<string | null>(null);
+
+  const { announce, politeMessage, assertiveMessage } = useAnnouncer();
+  const prevLmuStateRef = useRef<string | undefined>(undefined);
+  const prevStreamingRef = useRef<boolean | undefined>(undefined);
+  const prevRecordingStateRef = useRef<string | undefined>(undefined);
+  const prevEngineersRef = useRef<
+    readonly { connection_id: number; username: string; display_name?: string }[] | undefined
+  >(undefined);
+
+  // Announce state transitions to screen readers (REDESIGN.md §4 W4.2, A02, A11)
+  useEffect(() => {
+    if (!status) return;
+
+    // LMU state transition
+    const currentLmu = status.lmu.state;
+    if (prevLmuStateRef.current !== undefined && prevLmuStateRef.current !== currentLmu) {
+      if (currentLmu === 'LIVE') {
+        announce('LMU connected', 'polite');
+      } else if (currentLmu === 'STALE') {
+        announce('LMU data is stale', 'polite');
+      } else if (currentLmu === 'ERROR' || currentLmu === 'NOT_RUNNING') {
+        announce('LMU not running', 'polite');
+      }
+    }
+    prevLmuStateRef.current = currentLmu;
+
+    // Streaming transition
+    const currentStreaming = status.network.streaming;
+    if (prevStreamingRef.current !== undefined && prevStreamingRef.current !== currentStreaming) {
+      if (currentStreaming) {
+        announce('Streaming started', 'polite');
+      } else {
+        announce('Streaming stopped', 'polite');
+      }
+    }
+    prevStreamingRef.current = currentStreaming;
+
+    // Recording transition
+    const currentRec = status.recording.state;
+    if (prevRecordingStateRef.current !== undefined && prevRecordingStateRef.current !== currentRec) {
+      if (currentRec === 'active') {
+        announce('Recording started', 'polite');
+      } else if (currentRec === 'paused') {
+        announce('Recording paused', 'polite');
+      } else if (currentRec === 'failed') {
+        announce('Recording failed', 'assertive');
+      }
+    }
+    prevRecordingStateRef.current = currentRec;
+
+    // Engineer joined / left
+    const currentEngineers = status.network.engineers;
+    if (prevEngineersRef.current !== undefined) {
+      const prevIds = new Set(prevEngineersRef.current.map((e) => e.connection_id));
+      const currIds = new Set(currentEngineers.map((e) => e.connection_id));
+      for (const eng of currentEngineers) {
+        if (!prevIds.has(eng.connection_id)) {
+          const name = eng.display_name.trim() !== '' ? eng.display_name : eng.username;
+          announce(`Engineer ${name} joined`, 'polite');
+        }
+      }
+      for (const eng of prevEngineersRef.current) {
+        if (!currIds.has(eng.connection_id)) {
+          const name = eng.display_name.trim() !== '' ? eng.display_name : eng.username;
+          announce(`Engineer ${name} left`, 'polite');
+        }
+      }
+    }
+    prevEngineersRef.current = currentEngineers;
+  }, [status, announce]);
+
+  useEffect(() => {
+    if (actionError) {
+      announce(`Error: ${actionError}`, 'assertive');
+    }
+  }, [actionError, announce]);
 
   // Details disclosure state & active section highlighted
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -145,6 +223,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
     try {
       await navigator.clipboard.writeText(code);
       setCopiedCode(true);
+      announce('Engineer code copied to clipboard', 'polite');
       setTimeout(() => {
         setCopiedCode(false);
       }, 2000);
@@ -310,10 +389,12 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
           </div>
 
           <div className="screen-header-right">
-            <nav className="shell-nav" aria-label="Driver views">
+            <nav className="shell-nav" role="tablist" aria-label="Driver views">
               <button
                 type="button"
+                role="tab"
                 className="btn btn-sm"
+                aria-selected={activeTab === 'status'}
                 aria-current={activeTab === 'status' ? 'page' : undefined}
                 onClick={() => {
                   setActiveTab('status');
@@ -324,7 +405,9 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
               </button>
               <button
                 type="button"
+                role="tab"
                 className="btn btn-sm"
+                aria-selected={activeTab === 'telemetry'}
                 aria-current={activeTab === 'telemetry' ? 'page' : undefined}
                 onClick={() => {
                   setActiveTab('telemetry');
@@ -337,6 +420,9 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
           </div>
         </div>
 
+        {/* Live region announcer per A02, A11 */}
+        <Announcer politeMessage={politeMessage} assertiveMessage={assertiveMessage} />
+
         {/* Demo banner per §3.1 */}
         {isSynthetic && (
           <div className="driver-demo-band" data-testid="driver-demo-band">
@@ -348,6 +434,17 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
           <div className="driver-error-banner" role="alert">
             <span className="status-badge status-badge-error">ERROR</span>
             <span className="driver-error-message">{actionError}</span>
+            <button
+              type="button"
+              className="btn btn-xs driver-error-dismiss"
+              onClick={() => {
+                setActionError(null);
+              }}
+              aria-label="Dismiss error"
+              data-testid="driver-dismiss-error-btn"
+            >
+              Dismiss
+            </button>
           </div>
         )}
 
@@ -419,29 +516,38 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
               >
                 {network?.engineers && network.engineers.length > 0 && (
                   <div className="glance-engineers-list">
-                    {network.engineers.map((eng) => (
-                      <div key={eng.connection_id} className="glance-engineer-item">
-                        <div className="glance-engineer-info">
-                          <span
-                            className={`glance-eng-dot glance-eng-dot--${eng.link}`}
-                            title={`Link: ${eng.link}`}
-                            aria-label={`Link: ${eng.link}`}
+                    {network.engineers.map((eng) => {
+                      const engineerName = eng.display_name || eng.username;
+                      const handle = eng.username ? `@${eng.username}` : '';
+                      const removeAriaLabel = handle
+                        ? `Remove ${engineerName} (${handle})`
+                        : `Remove ${engineerName}`;
+
+                      return (
+                        <div key={eng.connection_id} className="glance-engineer-item">
+                          <div className="glance-engineer-info">
+                            <span
+                              className={`glance-eng-dot glance-eng-dot--${eng.link}`}
+                              title={`Link: ${eng.link}`}
+                              aria-label={`Link: ${eng.link}`}
+                            />
+                            <span className="glance-engineer-name" title={engineerName}>
+                              {engineerName}
+                            </span>
+                          </div>
+                          <ConfirmAction
+                            label="Remove"
+                            ariaLabel={removeAriaLabel}
+                            prompt={`Remove ${engineerName}?`}
+                            consequence={`Disconnects ${engineerName}. They will need a new code to reconnect.`}
+                            onConfirm={() => handleKickEngineer(eng.connection_id)}
+                            variant="danger"
+                            size="sm"
+                            testId={`kick-engineer-${eng.connection_id}`}
                           />
-                          <span className="glance-engineer-name" title={eng.display_name || eng.username}>
-                            {eng.display_name || eng.username}
-                          </span>
                         </div>
-                        <ConfirmAction
-                          label="Remove"
-                          prompt={`Remove ${eng.display_name || eng.username}?`}
-                          consequence={`Disconnects ${eng.display_name || eng.username}. They will need a new code to reconnect.`}
-                          onConfirm={() => handleKickEngineer(eng.connection_id)}
-                          variant="danger"
-                          size="sm"
-                          testId={`kick-engineer-${eng.connection_id}`}
-                        />
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </GlanceTile>
@@ -543,7 +649,11 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
               </div>
 
               <div className="action-bar-group">
+                <label htmlFor="driver-marker-input" className="sr-only">
+                  Log marker note
+                </label>
                 <input
+                  id="driver-marker-input"
                   type="text"
                   className="input driver-marker-input"
                   placeholder="Log marker note..."
