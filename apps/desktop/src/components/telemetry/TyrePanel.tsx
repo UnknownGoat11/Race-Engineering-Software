@@ -2,6 +2,8 @@ import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
 import { formatPressure, formatTemperature, NO_VALUE } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
+import { useScopeDq } from './presentation';
+import './telemetry.css';
 
 const TYRE_CHANNELS = [
   // FL
@@ -80,7 +82,7 @@ function renderCorner(title: string, data: CornerData, testId: string): JSX.Elem
       <div className="tyre-footer-row">
         <span className="card-row-label">Carcass: {formatTemperature(data.carcass, { withUnit: true })}</span>
         <span className="card-row-label">
-          Wear: {data.wear != null ? `${(data.wear * 100).toFixed(0)}%` : NO_VALUE}
+          Wear (raw): {data.wear != null ? data.wear.toFixed(2) : NO_VALUE}
         </span>
       </div>
     </div>
@@ -105,6 +107,7 @@ export function TyrePanel(): JSX.Element {
 }
 
 function TyrePanelContent(): JSX.Element {
+  const dq = useScopeDq();
   const samples = useChannelValues(TYRE_CHANNELS);
 
   const channelMap = useMemo(() => {
@@ -161,25 +164,36 @@ function TyrePanelContent(): JSX.Element {
   const balLR = num(ch.TYRE_TEMP_BALANCE_LEFT_RIGHT);
 
   return (
-    <div className="card" data-testid="panel-tyres">
+    <div className="card" data-testid="panel-tyres" data-dq={dq ?? undefined}>
       <div className="card-header">
         <span className="card-header-title">TYRE CORNERS (4-WHEEL)</span>
-        {(balFR != null || balLR != null) && (
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {balFR != null && (
-              <span className="status-badge status-badge-neutral">
-                F/R {balFR.toFixed(1)}%
-              </span>
-            )}
-            {balLR != null && (
-              <span className="status-badge status-badge-neutral">
-                L/R {balLR.toFixed(1)}%
-              </span>
-            )}
-          </div>
-        )}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {dq === 'stale' && (
+            <span className="status-badge status-badge-stale">STALE</span>
+          )}
+          {dq === 'untrusted' && (
+            <span className="status-badge status-badge-error">UNTRUSTED</span>
+          )}
+          {(balFR != null || balLR != null) && (
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {balFR != null && (
+                <span className="status-badge status-badge-neutral">
+                  F/R {balFR > 0 ? '+' : ''}{balFR.toFixed(1)}°C
+                </span>
+              )}
+              {balLR != null && (
+                <span className="status-badge status-badge-neutral">
+                  L/R {balLR > 0 ? '+' : ''}{balLR.toFixed(1)}°C
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       </div>
       <div className="card-body">
+        {dq === 'untrusted' && (
+          <div className="panel-untrusted-note">Untrusted — data format mismatch</div>
+        )}
         <div className="tyres-grid-2x2">
           {renderCorner('FRONT LEFT', fl, 'tyre-fl')}
           {renderCorner('FRONT RIGHT', fr, 'tyre-fr')}

@@ -76,7 +76,7 @@ describe('ValueReadout', () => {
     expect(readout().textContent).not.toContain('0.00');
   });
 
-  it('shows DEGRADED with the value, then STALE without it, as the stream ages', () => {
+  it('shows DEGRADED with the value, then STALE keeping the last value, as the stream ages (C5)', () => {
     const { clock, frames, send, wrapper } = setup();
     render(<ValueReadout channelId={ch.TYRE_PRESSURE_FL} />, { wrapper });
     send([rec.f32(ch.TYRE_PRESSURE_FL, 182_300)]);
@@ -91,7 +91,7 @@ describe('ValueReadout', () => {
       clock.advance(1_000);
       frames.runFrame();
     });
-    expect(readout()).not.toHaveTextContent('1.82');
+    expect(readout()).toHaveTextContent('1.82');
     expect(readout()).toHaveTextContent('STALE');
   });
 

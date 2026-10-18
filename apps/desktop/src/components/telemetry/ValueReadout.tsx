@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import { useChannelSample } from '../../telemetry/hooks';
 import type { ChannelSample } from '../../telemetry/store';
-import { presentSample, unknownChannelLabel } from './presentation';
+import { presentSample, unknownChannelLabel, useScopeDq, type PresentSampleOptions, type ScopeDq } from './presentation';
 import './telemetry.css';
 
 export interface SampleReadoutProps {
@@ -12,6 +12,10 @@ export interface SampleReadoutProps {
   readonly decimals?: number;
   /** Show the unit label (default true). */
   readonly showUnit?: boolean;
+  /** Optional explicit scope data quality override (otherwise inherited from ScopeDqContext). */
+  readonly scopeDq?: ScopeDq;
+  /** Optional data age in ms for stale tag formatting. */
+  readonly ageMs?: number | null;
 }
 
 /**
@@ -19,11 +23,31 @@ export interface SampleReadoutProps {
  * / INVALID / STALE / NO DATA state — never a zero. Tabular figures in a fixed-width slot keep digits from
  * shifting (spec §161); the accessible label reads the value with its unit name.
  */
-export function SampleReadout({ sample, label, decimals, showUnit = true }: SampleReadoutProps): JSX.Element {
+export function SampleReadout({
+  sample,
+  label,
+  decimals,
+  showUnit = true,
+  scopeDq: explicitDq,
+  ageMs,
+}: SampleReadoutProps): JSX.Element {
+  const contextDq = useScopeDq();
+  const dq = explicitDq ?? contextDq;
   const name = label ?? sample.def?.label ?? unknownChannelLabel(sample.id);
-  const p = presentSample(sample, name, decimals === undefined ? undefined : { decimals });
+  const options: PresentSampleOptions = {
+    ...(decimals !== undefined ? { decimals } : {}),
+    ...(dq !== null ? { scopeDq: dq } : {}),
+    ...(ageMs !== undefined ? { ageMs } : {}),
+  };
+  const p = presentSample(sample, name, options);
   return (
-    <div className="telemetry-readout" data-state={p.state} role="group" aria-label={p.ariaLabel}>
+    <div
+      className="telemetry-readout"
+      data-state={p.state}
+      data-dq={dq ?? undefined}
+      role="group"
+      aria-label={p.ariaLabel}
+    >
       <span className="telemetry-readout__label" aria-hidden="true">
         {name}
       </span>

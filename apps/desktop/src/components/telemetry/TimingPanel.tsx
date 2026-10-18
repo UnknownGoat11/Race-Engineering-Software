@@ -2,6 +2,8 @@ import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
 import { formatDelta, formatLapTime, NO_VALUE } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
+import { useScopeDq } from './presentation';
+import './telemetry.css';
 
 const TIMING_CHANNELS = [
   ch.LAP_NUMBER,
@@ -39,6 +41,7 @@ export function TimingPanel(): JSX.Element {
 }
 
 function TimingPanelContent(): JSX.Element {
+  const dq = useScopeDq();
   const samples = useChannelValues(TIMING_CHANNELS);
 
   const channelMap = useMemo(() => {
@@ -73,31 +76,40 @@ function TimingPanelContent(): JSX.Element {
       return { text: NO_VALUE, className: 'delta-chip delta-neutral' };
     }
     const text = formatDelta(deltaPb);
-    if (deltaPb < -0.005) {
+    if (deltaPb < -0.050) {
       return { text, className: 'delta-chip delta-ahead' };
     }
-    if (deltaPb > 0.005) {
+    if (deltaPb > 0.050) {
       return { text, className: 'delta-chip delta-behind' };
     }
     return { text, className: 'delta-chip delta-neutral' };
   }, [deltaPb]);
 
   return (
-    <div className="card" data-testid="panel-timing">
+    <div className="card" data-testid="panel-timing" data-dq={dq ?? undefined}>
       <div className="card-header">
         <span className="card-header-title">LAP TIMING & POSITION</span>
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {dq === 'stale' && (
+            <span className="status-badge status-badge-stale">STALE</span>
+          )}
+          {dq === 'untrusted' && (
+            <span className="status-badge status-badge-error">UNTRUSTED</span>
+          )}
           <span className="status-badge status-badge-info">
             P{overallPos != null ? Math.round(overallPos) : NO_VALUE} (CP
             {classPos != null ? Math.round(classPos) : NO_VALUE})
           </span>
           <span className="status-badge status-badge-neutral">
             L{lapNum != null ? Math.round(lapNum) : NO_VALUE} / S
-            {sector != null ? Math.round(sector) : NO_VALUE}
+            {sector != null ? Math.round(sector) + 1 : NO_VALUE}
           </span>
         </div>
       </div>
       <div className="card-body">
+        {dq === 'untrusted' && (
+          <div className="panel-untrusted-note">Untrusted — data format mismatch</div>
+        )}
         <div className="delta-hero-container" style={{ margin: '4px 0 12px 0' }}>
           <div className="delta-hero-label">DELTA TO PERSONAL BEST</div>
           <div className={`delta-hero-value ${deltaStyle.className}`} data-testid="timing-delta-pb">
@@ -120,7 +132,7 @@ function TimingPanelContent(): JSX.Element {
           </div>
           <div className="card-row">
             <span className="card-row-label">Best Lap</span>
-            <span className="card-row-value" style={{ color: 'var(--color-ahead)' }}>
+            <span className="card-row-value" style={{ color: 'var(--delta-faster, #2fd27a)' }}>
               {formatLapTime(bestLap)}
             </span>
           </div>

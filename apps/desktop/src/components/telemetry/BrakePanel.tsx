@@ -2,6 +2,8 @@ import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
 import { formatTemperature } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
+import { useScopeDq } from './presentation';
+import './telemetry.css';
 
 const BRAKE_CHANNELS = [
   ch.BRAKE_TEMP_FL,
@@ -16,14 +18,6 @@ const BRAKE_CHANNELS = [
   ch.BRAKE_BIAS_REAR,
   ch.BRAKE_TEMP_FRONT_REAR,
 ] as const;
-
-function getBrakeColor(tempC: number | null | undefined): string {
-  if (tempC == null || isNaN(tempC)) return 'var(--color-text-muted)';
-  if (tempC < 300) return '#60a5fa'; // Blue (cold)
-  if (tempC <= 600) return '#4ade80'; // Green (optimal)
-  if (tempC <= 750) return '#fbbf24'; // Amber (hot)
-  return '#f87171'; // Red (fading / overheated)
-}
 
 export function BrakePanel(): JSX.Element {
   const store = useContext(TelemetryStoreContext);
@@ -43,6 +37,7 @@ export function BrakePanel(): JSX.Element {
 }
 
 function BrakePanelContent(): JSX.Element {
+  const dq = useScopeDq();
   const samples = useChannelValues(BRAKE_CHANNELS);
 
   const channelMap = useMemo(() => {
@@ -72,70 +67,73 @@ function BrakePanelContent(): JSX.Element {
   const biasFront = num(ch.BRAKE_BIAS_FRONT);
   const tempDiffFR = num(ch.BRAKE_TEMP_FRONT_REAR);
 
-  const maxTemp = Math.max(tFL ?? 0, tFR ?? 0, tRL ?? 0, tRR ?? 0);
-  const isOverheating = maxTemp > 750;
-
   return (
-    <div className="card" data-testid="panel-brakes">
+    <div className="card" data-testid="panel-brakes" data-dq={dq ?? undefined}>
       <div className="card-header">
         <span className="card-header-title">BRAKE SYSTEM</span>
-        {biasFront != null && (
-          <span className="status-badge status-badge-info">
-            BIAS {(biasFront * 100).toFixed(1)}% F
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {dq === 'stale' && (
+            <span className="status-badge status-badge-stale">STALE</span>
+          )}
+          {dq === 'untrusted' && (
+            <span className="status-badge status-badge-error">UNTRUSTED</span>
+          )}
+          {biasFront != null && (
+            <span className="status-badge status-badge-info">
+              BIAS {(biasFront * 100).toFixed(1)}% F
+            </span>
+          )}
+          <span className="status-badge status-badge-neutral">
+            No threshold set
           </span>
-        )}
+        </div>
       </div>
       <div className="card-body">
-        {isOverheating && (
-          <div
-            className="status-badge status-badge-error"
-            style={{ width: '100%', marginBottom: '8px', textAlign: 'center' }}
-          >
-            DISC TEMPERATURE CRITICAL (&gt; 750°C)
-          </div>
+        {dq === 'untrusted' && (
+          <div className="panel-untrusted-note">Untrusted — data format mismatch</div>
         )}
 
-        <div className="tyres-grid-2x2">
+        <div className="brakes-grid-2x2">
           {/* FL */}
-          <div className="tyre-corner-box">
-            <div className="tyre-corner-header">
-              <span className="tyre-corner-title">FRONT LEFT</span>
-              <span className="card-row-label">Peak: {formatTemperature(pFL)}</span>
+          <div className="brake-corner-box">
+            <div className="brake-corner-header">
+              <span className="brake-corner-title">FRONT LEFT</span>
+              <span className="brake-peak-label">Peak: {formatTemperature(pFL)}</span>
             </div>
-            <div style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'monospace', color: getBrakeColor(tFL), textAlign: 'center', margin: '6px 0' }}>
+            <div className="brake-temp-value">
               {formatTemperature(tFL, { withUnit: true })}
             </div>
           </div>
 
           {/* FR */}
-          <div className="tyre-corner-box">
-            <div className="tyre-corner-header">
-              <span className="tyre-corner-title">FRONT RIGHT</span>
-              <span className="card-row-label">Peak: {formatTemperature(pFR)}</span>
+          <div className="brake-corner-box">
+            <div className="brake-corner-header">
+              <span className="brake-corner-title">FRONT RIGHT</span>
+              <span className="brake-peak-label">Peak: {formatTemperature(pFR)}</span>
             </div>
-            <div style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'monospace', color: getBrakeColor(tFR), textAlign: 'center', margin: '6px 0' }}>
+            <div className="brake-temp-value">
               {formatTemperature(tFR, { withUnit: true })}
             </div>
           </div>
 
           {/* RL */}
-          <div className="tyre-corner-box">
-            <div className="tyre-corner-header">
-              <span className="tyre-corner-title">REAR LEFT</span>
-              <span className="card-row-label">Peak: {formatTemperature(pRL)}</span>
+          <div className="brake-corner-box">
+            <div className="brake-corner-header">
+              <span className="brake-corner-title">REAR LEFT</span>
+              <span className="brake-peak-label">Peak: {formatTemperature(pRL)}</span>
             </div>
-            <div style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'monospace', color: getBrakeColor(tRL), textAlign: 'center', margin: '6px 0' }}>
+            <div className="brake-temp-value">
               {formatTemperature(tRL, { withUnit: true })}
             </div>
           </div>
 
           {/* RR */}
-          <div className="tyre-corner-box">
-            <div className="tyre-corner-header">
-              <span className="tyre-corner-title">REAR RIGHT</span>
-              <span className="card-row-label">Peak: {formatTemperature(pRR)}</span>
+          <div className="brake-corner-box">
+            <div className="brake-corner-header">
+              <span className="brake-corner-title">REAR RIGHT</span>
+              <span className="brake-peak-label">Peak: {formatTemperature(pRR)}</span>
             </div>
-            <div style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'monospace', color: getBrakeColor(tRR), textAlign: 'center', margin: '6px 0' }}>
+            <div className="brake-temp-value">
               {formatTemperature(tRR, { withUnit: true })}
             </div>
           </div>

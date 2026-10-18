@@ -2,6 +2,8 @@ import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
 import { formatFuel, formatFuelPerLap, NO_VALUE } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
+import { useScopeDq } from './presentation';
+import './telemetry.css';
 
 const FUEL_CHANNELS = [
   ch.FUEL,
@@ -32,6 +34,7 @@ export function FuelPanel(): JSX.Element {
 }
 
 function FuelPanelContent(): JSX.Element {
+  const dq = useScopeDq();
   const samples = useChannelValues(FUEL_CHANNELS);
 
   const channelMap = useMemo(() => {
@@ -60,24 +63,36 @@ function FuelPanelContent(): JSX.Element {
   const fuelPct = fuel != null && capacity != null && capacity > 0 ? (fuel / capacity) * 100 : null;
 
   return (
-    <div className="card" data-testid="panel-fuel">
+    <div className="card" data-testid="panel-fuel" data-dq={dq ?? undefined}>
       <div className="card-header">
         <span className="card-header-title">FUEL CALCULATION</span>
-        {lapsRemaining != null && (
-          <span
-            className={`status-badge ${
-              lapsRemaining <= 2
-                ? 'status-badge-error'
-                : lapsRemaining <= 4
-                  ? 'status-badge-warn'
-                  : 'status-badge-live'
-            }`}
-          >
-            {lapsRemaining.toFixed(1)} LAPS LEFT
-          </span>
-        )}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {dq === 'stale' && (
+            <span className="status-badge status-badge-stale">STALE</span>
+          )}
+          {dq === 'untrusted' && (
+            <span className="status-badge status-badge-error">UNTRUSTED</span>
+          )}
+          {lapsRemaining != null && (
+            <span
+              className={`status-badge ${
+                lapsRemaining <= 2
+                  ? 'status-badge-error'
+                  : lapsRemaining <= 4
+                    ? 'status-badge-warn'
+                    : 'status-badge-live'
+              }`}
+            >
+              {lapsRemaining.toFixed(1)} LAPS LEFT
+            </span>
+          )}
+        </div>
       </div>
       <div className="card-body">
+        {dq === 'untrusted' && (
+          <div className="panel-untrusted-note">Untrusted — data format mismatch</div>
+        )}
+
         <div className="fuel-hero" style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '8px' }}>
           <span style={{ fontSize: '26px', fontWeight: 700, fontFamily: 'monospace' }}>
             {formatFuel(fuel)}
@@ -90,30 +105,33 @@ function FuelPanelContent(): JSX.Element {
           )}
         </div>
 
-        {/* Visual fuel capacity bar */}
-        <div
-          style={{
-            height: '8px',
-            backgroundColor: 'var(--color-surface)',
-            borderRadius: '4px',
-            overflow: 'hidden',
-            marginBottom: '12px',
-          }}
-        >
+        {/* Visual fuel capacity bar — rendered ONLY when fuel percentage is known (T03) */}
+        {fuelPct != null && (
           <div
+            data-testid="fuel-bar"
             style={{
-              height: '100%',
-              width: `${Math.min(100, Math.max(0, fuelPct ?? 0))}%`,
-              backgroundColor:
-                (fuelPct ?? 100) < 15
-                  ? 'var(--color-error)'
-                  : (fuelPct ?? 100) < 30
-                    ? 'var(--color-warn)'
-                    : 'var(--color-accent)',
-              transition: 'width 0.3s ease',
+              height: '8px',
+              backgroundColor: 'var(--color-surface)',
+              borderRadius: '4px',
+              overflow: 'hidden',
+              marginBottom: '12px',
             }}
-          />
-        </div>
+          >
+            <div
+              style={{
+                height: '100%',
+                width: `${Math.min(100, Math.max(0, fuelPct))}%`,
+                backgroundColor:
+                  fuelPct < 15
+                    ? 'var(--color-error)'
+                    : fuelPct < 30
+                      ? 'var(--color-warn)'
+                      : 'var(--color-accent)',
+                transition: 'width 0.3s ease',
+              }}
+            />
+          </div>
+        )}
 
         <div className="telemetry-grid-2x2">
           <div className="card-row">
@@ -131,7 +149,12 @@ function FuelPanelContent(): JSX.Element {
             </span>
           </div>
           <div className="card-row">
-            <span className="card-row-label">Fuel to Add</span>
+            <span className="card-row-label">
+              Fuel to Add
+              <span style={{ display: 'block', fontSize: '10px', color: 'var(--color-text-dim)' }}>
+                (reserve not reported)
+              </span>
+            </span>
             <span className="card-row-value" style={{ fontWeight: 600 }}>
               {fuelToAdd != null ? formatFuel(fuelToAdd, { withUnit: true }) : NO_VALUE}
             </span>

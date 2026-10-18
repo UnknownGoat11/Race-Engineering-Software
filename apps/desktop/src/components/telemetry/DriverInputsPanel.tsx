@@ -2,6 +2,8 @@ import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
 import { formatSpeed, NO_VALUE } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
+import { useScopeDq } from './presentation';
+import './telemetry.css';
 
 const INPUT_CHANNELS = [
   ch.SPEED,
@@ -11,7 +13,7 @@ const INPUT_CHANNELS = [
   ch.THROTTLE,
   ch.BRAKE,
   ch.CLUTCH,
-  ch.STEERING,
+  ch.STEERING_ANGLE,
 ] as const;
 
 function formatGear(gear: number | null | undefined): string {
@@ -40,6 +42,7 @@ export function DriverInputsPanel(): JSX.Element {
 }
 
 function DriverInputsPanelContent(): JSX.Element {
+  const dq = useScopeDq();
   const samples = useChannelValues(INPUT_CHANNELS);
 
   const channelMap = useMemo(() => {
@@ -58,24 +61,34 @@ function DriverInputsPanelContent(): JSX.Element {
 
   const speed = num(ch.SPEED);
   const rpm = num(ch.RPM);
-  const maxRpm = num(ch.RPM_MAX) ?? 9000;
+  const maxRpm = num(ch.RPM_MAX);
   const gear = num(ch.GEAR);
   const throttle = num(ch.THROTTLE);
   const brake = num(ch.BRAKE);
   const clutch = num(ch.CLUTCH);
-  const steeringRad = num(ch.STEERING);
+  const steeringRad = num(ch.STEERING_ANGLE);
 
-  const steeringDeg = steeringRad != null ? (steeringRad * 180) / Math.PI : null;
-  const rpmPct = rpm != null && maxRpm > 0 ? (rpm / maxRpm) * 100 : 0;
+  const steeringDeg = steeringRad != null ? Math.round((steeringRad * 180) / Math.PI) : null;
+  const hasRpmMax = maxRpm != null && maxRpm > 0;
+  const rpmPct = hasRpmMax && rpm != null ? (rpm / maxRpm) * 100 : null;
   const throttlePct = throttle != null ? Math.min(100, Math.max(0, throttle * 100)) : 0;
   const brakePct = brake != null ? Math.min(100, Math.max(0, brake * 100)) : 0;
 
   return (
-    <div className="card" data-testid="panel-driver-inputs">
+    <div className="card" data-testid="panel-driver-inputs" data-dq={dq ?? undefined}>
       <div className="card-header">
         <span className="card-header-title">DRIVER INPUTS & POWERTRAIN</span>
+        {dq === 'stale' && (
+          <span className="status-badge status-badge-stale">STALE</span>
+        )}
+        {dq === 'untrusted' && (
+          <span className="status-badge status-badge-error">UNTRUSTED</span>
+        )}
       </div>
       <div className="card-body">
+        {dq === 'untrusted' && (
+          <div className="panel-untrusted-note">Untrusted — data format mismatch</div>
+        )}
         {/* Cockpit HUD: Gear and Speed */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', margin: '4px 0 12px 0' }}>
           <div style={{ textAlign: 'center' }}>
@@ -109,7 +122,7 @@ function DriverInputsPanelContent(): JSX.Element {
           </div>
         </div>
 
-        {/* RPM Bar */}
+        {/* RPM Bar — rendered only when RPM_MAX is known (T15) */}
         <div style={{ marginBottom: '12px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
             <span className="card-row-label">RPM</span>
@@ -117,28 +130,31 @@ function DriverInputsPanelContent(): JSX.Element {
               {rpm != null ? Math.round(rpm).toLocaleString() : NO_VALUE}
             </span>
           </div>
-          <div
-            style={{
-              height: '8px',
-              backgroundColor: 'var(--color-surface)',
-              borderRadius: '4px',
-              overflow: 'hidden',
-            }}
-          >
+          {hasRpmMax && rpmPct != null && (
             <div
+              data-testid="rpm-bar"
               style={{
-                height: '100%',
-                width: `${Math.min(100, Math.max(0, rpmPct))}%`,
-                backgroundColor:
-                  rpmPct > 92
-                    ? 'var(--color-error)'
-                    : rpmPct > 80
-                      ? 'var(--color-warn)'
-                      : 'var(--color-ahead)',
-                transition: 'width 0.05s linear',
+                height: '8px',
+                backgroundColor: 'var(--color-surface)',
+                borderRadius: '4px',
+                overflow: 'hidden',
               }}
-            />
-          </div>
+            >
+              <div
+                style={{
+                  height: '100%',
+                  width: `${Math.min(100, Math.max(0, rpmPct))}%`,
+                  backgroundColor:
+                    rpmPct > 92
+                      ? 'var(--color-error)'
+                      : rpmPct > 80
+                        ? 'var(--color-warn)'
+                        : 'var(--delta-faster, #2fd27a)',
+                  transition: 'width 0.05s linear',
+                }}
+              />
+            </div>
+          )}
         </div>
 
         {/* Throttle & Brake Pedals (Dual linear bars) */}
@@ -146,7 +162,7 @@ function DriverInputsPanelContent(): JSX.Element {
           {/* Throttle */}
           <div style={{ flex: 1 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '2px' }}>
-              <span className="card-row-label" style={{ color: 'var(--color-ahead)' }}>
+              <span className="card-row-label" style={{ color: 'var(--delta-faster, #2fd27a)' }}>
                 THROTTLE
               </span>
               <span style={{ fontFamily: 'monospace', fontSize: '12px' }}>
@@ -165,7 +181,7 @@ function DriverInputsPanelContent(): JSX.Element {
                 style={{
                   height: '100%',
                   width: `${throttlePct}%`,
-                  backgroundColor: 'var(--color-ahead)',
+                  backgroundColor: 'var(--delta-faster, #2fd27a)',
                   transition: 'width 0.05s linear',
                 }}
               />
@@ -207,7 +223,7 @@ function DriverInputsPanelContent(): JSX.Element {
           <div className="card-row">
             <span className="card-row-label">Steering Angle</span>
             <span className="card-row-value">
-              {steeringDeg != null ? `${steeringDeg.toFixed(1)}°` : NO_VALUE}
+              {steeringDeg != null ? `${steeringDeg}°` : NO_VALUE}
             </span>
           </div>
           <div className="card-row">
