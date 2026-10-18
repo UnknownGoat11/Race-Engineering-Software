@@ -1,20 +1,26 @@
 /**
- * Driver Application UI (spec §88–89, §2108–2150).
- * Lightweight, low-overhead interface for sim drivers:
- * - Real-time glanceable status tiles derived via deriveDriverTiles (LMU, Recording, Streaming, Engineers, Code)
- * - Attention strip for pipeline overruns, recording failures, or relogin needs
- * - Connection code display with countdown, single-use, and session full guard
- * - Safe actions with inline ConfirmAction for destructive actions (End session, Remove engineer)
- * - Collapsible diagnostics details & developer demo tools
- * - Telemetry Dashboard pit board tab fed via TelemetryStoreContext
+ * Driver Application UI (spec §88–89, §2108–2150, REDESIGN.md §3.1 & §4 W3.1).
+ * Lightweight, glanceable interface for sim drivers:
+ * - 5 primary glance tiles (LMU, Recording, Streaming, Engineers, Code)
+ * - Tile height 220px (1920), 168px (1366), 293px (2560)
+ * - Tile state word 56px (1920), 44px (1366), 75px (2560)
+ * - Worst-state escalation (critical tile full red border, warning amber)
+ * - Dedicated action bar (64px) with primary Start Streaming (48px)
+ * - Worst-first attention rows (48px each, max 3 + N)
+ * - Collapsible Details disclosure table (4 columns at 1920, 2 columns at 1366)
+ * - Collapsible Developer tools disclosure (visible only when environment !== 'production')
+ * - Telemetry Dashboard pit board tab fed via TelemetryStoreContext (4 glance items per C7)
  */
 import { useEffect, useMemo, useState, type JSX } from 'react';
 import { PanelErrorBoundary } from '../components/ErrorBoundary';
-import { ConfirmAction } from '../components/ui/ConfirmAction';
+import { AttentionRow } from '../components/driver/AttentionRow';
+import { DeveloperTools } from '../components/driver/DeveloperTools';
+import { DriverDetails } from '../components/driver/DriverDetails';
+import { GlanceTile } from '../components/driver/GlanceTile';
 import { DriverTelemetryTab } from '../components/telemetry/DriverTelemetryTab';
+import { ConfirmAction } from '../components/ui/ConfirmAction';
 import { useCoreStatus } from '../hooks/useCoreStatus';
 import {
-  DEMO_SCENARIOS,
   demoStart,
   demoStop,
   driverAddMarker,
@@ -24,17 +30,18 @@ import {
   driverSetRecording,
   driverStartStreaming,
   driverStopStreaming,
+  getAppInfo,
   type DemoScenario,
+  type Environment,
 } from '../lib/ipc';
-import { demoScenarioLabel } from '../lib/labels';
 import {
   EMPTY_HISTORY,
   deriveDriverTiles,
   recordStatus,
-  type Level,
   type StatusHistory,
+  type TileAction,
 } from '../lib/statusModel';
-import { NO_VALUE, formatByteSize } from '../lib/units';
+import { NO_VALUE } from '../lib/units';
 import { connectTauriTelemetry } from '../telemetry/bridge';
 import { TelemetryStoreContext } from '../telemetry/hooks';
 import { TelemetryStore } from '../telemetry/store';
@@ -43,22 +50,7 @@ import '../styles/driver.css';
 
 export interface DriverScreenProps {
   readonly onRequireLogin?: () => void;
-}
-
-function levelGlyph(level: Level): string {
-  switch (level) {
-    case 'ok':
-      return '●';
-    case 'warning':
-      return '◆';
-    case 'critical':
-      return '■';
-    case 'synthetic':
-      return '▨';
-    case 'off':
-    default:
-      return '□';
-  }
+  readonly environment?: Environment;
 }
 
 function lmuStateBadgeClass(state: string | undefined, isSynthetic: boolean): string {
@@ -80,6 +72,7 @@ function lmuStateBadgeClass(state: string | undefined, isSynthetic: boolean): st
 
 export function DriverScreen(props?: DriverScreenProps): JSX.Element {
   const onRequireLogin = props?.onRequireLogin;
+  const [fetchedEnv, setFetchedEnv] = useState<Environment | null>(null);
   const { status, error, refresh } = useCoreStatus();
   const [history, setHistory] = useState<StatusHistory>(EMPTY_HISTORY);
   const [nowMs, setNowMs] = useState(0);
@@ -88,6 +81,30 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
   const [markerText, setMarkerText] = useState('');
   const [selectedScenario, setSelectedScenario] = useState<DemoScenario>('demo');
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Details disclosure state & active section highlighted
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [activeSection, setActiveSection] = useState<
+    'lmu' | 'recording' | 'streaming' | 'engineers' | 'code' | 'pipeline' | null
+  >(null);
+
+  // Resolve environment for developer tools gating (T27)
+  useEffect(() => {
+    if (props?.environment) return;
+    let active = true;
+    getAppInfo()
+      .then((info) => {
+        if (active) {
+          setFetchedEnv(info.environment);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [props?.environment]);
+
+  const env: Environment = props?.environment ?? fetchedEnv ?? 'production';
 
   // Live TelemetryStore & Bridge connection (fixes B06)
   const store = useMemo(() => new TelemetryStore(), []);
@@ -118,8 +135,6 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
   const session = status?.session;
   const network = status?.network;
   const recording = status?.recording;
-  const rates = status?.rates;
-  const drops = status?.drops;
   const isSynthetic = status?.origin === 'synthetic';
 
   const isStreaming = network?.streaming === true;
@@ -224,11 +239,38 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
     }
   };
 
+  const handleTileClick = (section: 'lmu' | 'recording' | 'streaming' | 'engineers' | 'code') => {
+    setDetailsOpen(true);
+    setActiveSection(section);
+  };
+
+  const handleAttentionAction = (action: TileAction) => {
+    switch (action) {
+      case 'sign_in':
+        if (onRequireLogin) {
+          onRequireLogin();
+        } else {
+          setActionError('Please sign in to continue streaming.');
+        }
+        break;
+      case 'new_code':
+        void handleNewCode();
+        break;
+      case 'open_recordings':
+        // Highlight local recording section in details
+        setDetailsOpen(true);
+        setActiveSection('recording');
+        break;
+      default:
+        break;
+    }
+  };
+
   return (
     <TelemetryStoreContext value={store}>
-      <div className="screen-container" data-testid="driver-screen">
-        {/* System Status Header Banner */}
-        <div className="screen-header-banner">
+      <div className="screen-container driver-screen-container" data-testid="driver-screen">
+        {/* System Status Header Banner (C6 session context in app bar) */}
+        <div className="screen-header-banner driver-header-banner">
           <div className="screen-header-left">
             <span
               className={`status-badge ${lmuStateBadgeClass(lmu?.state, isSynthetic)}`}
@@ -303,22 +345,16 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
         )}
 
         {actionError && (
-          <div
-            className="screen-header-banner"
-            style={{ backgroundColor: 'var(--color-error-bg)', borderColor: 'var(--color-error)' }}
-          >
+          <div className="driver-error-banner" role="alert">
             <span className="status-badge status-badge-error">ERROR</span>
-            <span className="card-row-value">{actionError}</span>
+            <span className="driver-error-message">{actionError}</span>
           </div>
         )}
 
         {error && (
-          <div
-            className="screen-header-banner"
-            style={{ backgroundColor: 'var(--color-error-bg)', borderColor: 'var(--color-error)' }}
-          >
+          <div className="driver-error-banner" role="alert">
             <span className="status-badge status-badge-error">CORE STATUS ERROR</span>
-            <span className="card-row-value">{error}</span>
+            <span className="driver-error-message">{error}</span>
           </div>
         )}
 
@@ -330,246 +366,143 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
           <>
             {/* Glanceable Status Strip (5 Tiles per §3.1) */}
             <div className="driver-status-strip" data-testid="driver-status-strip">
-              {/* LMU Tile */}
-              <div
-                className={`glance-tile glance-tile-${tiles.lmu.level}`}
-                data-testid="tile-lmu"
-              >
-                <div className="glance-header">
-                  <span className="glance-label">LMU</span>
-                  <span className="glance-glyph" aria-hidden="true">
-                    {levelGlyph(tiles.lmu.level)}
-                  </span>
-                </div>
-                <div className="glance-body">
-                  <div className="glance-word">{tiles.lmu.word}</div>
-                </div>
-                <div className="glance-footer">
-                  {tiles.lmu.detail && <span className="glance-detail">{tiles.lmu.detail}</span>}
-                  {tiles.lmu.reason && <span className="glance-reason">{tiles.lmu.reason}</span>}
-                </div>
-              </div>
+              {/* Tile 1: LMU */}
+              <GlanceTile
+                id="lmu"
+                label="LMU"
+                level={tiles.lmu.level}
+                word={tiles.lmu.word}
+                detail={tiles.lmu.detail}
+                reason={tiles.lmu.reason}
+                onClick={() => {
+                  handleTileClick('lmu');
+                }}
+              />
 
-              {/* Recording Tile */}
-              <div
-                className={`glance-tile glance-tile-${tiles.recording.level}`}
-                data-testid="tile-recording"
-              >
-                <div className="glance-header">
-                  <span className="glance-label">RECORDING</span>
-                  <span className="glance-glyph" aria-hidden="true">
-                    {levelGlyph(tiles.recording.level)}
-                  </span>
-                </div>
-                <div className="glance-body">
-                  <div className="glance-word">{tiles.recording.word}</div>
-                </div>
-                <div className="glance-footer">
-                  {tiles.recording.detail && (
-                    <span className="glance-detail">{tiles.recording.detail}</span>
-                  )}
-                  {tiles.recording.reason && (
-                    <span className="glance-reason">{tiles.recording.reason}</span>
-                  )}
-                </div>
-              </div>
+              {/* Tile 2: Recording */}
+              <GlanceTile
+                id="recording"
+                label="RECORDING"
+                level={tiles.recording.level}
+                word={tiles.recording.word}
+                detail={tiles.recording.detail}
+                reason={tiles.recording.reason}
+                onClick={() => {
+                  handleTileClick('recording');
+                }}
+              />
 
-              {/* Streaming Tile */}
-              <div
-                className={`glance-tile glance-tile-${tiles.streaming.level}`}
-                data-testid="tile-streaming"
-              >
-                <div className="glance-header">
-                  <span className="glance-label">STREAMING</span>
-                  <span className="glance-glyph" aria-hidden="true">
-                    {levelGlyph(tiles.streaming.level)}
-                  </span>
-                </div>
-                <div className="glance-body">
-                  <div className="glance-word">{tiles.streaming.word}</div>
-                </div>
-                <div className="glance-footer">
-                  {tiles.streaming.detail && (
-                    <span className="glance-detail">{tiles.streaming.detail}</span>
-                  )}
-                  {tiles.streaming.reason && (
-                    <span className="glance-reason">{tiles.streaming.reason}</span>
-                  )}
-                </div>
-              </div>
+              {/* Tile 3: Streaming */}
+              <GlanceTile
+                id="streaming"
+                label="STREAMING"
+                level={tiles.streaming.level}
+                word={tiles.streaming.word}
+                detail={tiles.streaming.detail}
+                reason={tiles.streaming.reason}
+                onClick={() => {
+                  handleTileClick('streaming');
+                }}
+              />
 
-              {/* Engineers Tile */}
-              <div
-                className={`glance-tile glance-tile-${tiles.engineers.level}`}
-                data-testid="tile-engineers"
+              {/* Tile 4: Engineers */}
+              <GlanceTile
+                id="engineers"
+                label="ENGINEERS"
+                level={tiles.engineers.level}
+                word={tiles.engineers.word}
+                detail={tiles.engineers.detail}
+                reason={tiles.engineers.reason}
+                onClick={() => {
+                  handleTileClick('engineers');
+                }}
               >
-                <div className="glance-header">
-                  <span className="glance-label">ENGINEERS</span>
-                  <span className="glance-glyph" aria-hidden="true">
-                    {levelGlyph(tiles.engineers.level)}
-                  </span>
-                </div>
-                <div className="glance-body">
-                  <div className="glance-word" data-testid="engineers-count">
-                    {tiles.engineers.word}
-                  </div>
-                </div>
-                <div className="glance-footer">
-                  {tiles.engineers.detail && (
-                    <span className="glance-detail">{tiles.engineers.detail}</span>
-                  )}
-                  {tiles.engineers.reason && (
-                    <span className="glance-reason">{tiles.engineers.reason}</span>
-                  )}
-                  {network?.engineers && network.engineers.length > 0 && (
-                    <div className="glance-engineers-list">
-                      {network.engineers.map((eng) => (
-                        <div key={eng.connection_id} className="glance-engineer-item">
-                          <span>
-                            {eng.display_name || eng.username} &bull; {eng.link}
-                          </span>
-                          <ConfirmAction
-                            label="Remove"
-                            prompt={`Remove ${eng.display_name || eng.username}?`}
-                            consequence={`Disconnects ${eng.display_name || eng.username}. They will need a new code to reconnect.`}
-                            onConfirm={() => handleKickEngineer(eng.connection_id)}
-                            variant="danger"
-                            size="sm"
-                            testId={`kick-engineer-${eng.connection_id}`}
+                {network?.engineers && network.engineers.length > 0 && (
+                  <div className="glance-engineers-list">
+                    {network.engineers.map((eng) => (
+                      <div key={eng.connection_id} className="glance-engineer-item">
+                        <div className="glance-engineer-info">
+                          <span
+                            className={`glance-eng-dot glance-eng-dot--${eng.link}`}
+                            title={`Link: ${eng.link}`}
+                            aria-label={`Link: ${eng.link}`}
                           />
+                          <span className="glance-engineer-name" title={eng.display_name || eng.username}>
+                            {eng.display_name || eng.username}
+                          </span>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
+                        <ConfirmAction
+                          label="Remove"
+                          prompt={`Remove ${eng.display_name || eng.username}?`}
+                          consequence={`Disconnects ${eng.display_name || eng.username}. They will need a new code to reconnect.`}
+                          onConfirm={() => handleKickEngineer(eng.connection_id)}
+                          variant="danger"
+                          size="sm"
+                          testId={`kick-engineer-${eng.connection_id}`}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </GlanceTile>
 
-              {/* Engineer Code Tile */}
-              <div
-                className={`glance-tile glance-tile-${tiles.code.level}`}
-                data-testid="tile-code"
+              {/* Tile 5: Engineer Code */}
+              <GlanceTile
+                id="code"
+                label="ENGINEER CODE"
+                level={tiles.code.level}
+                word={currentCode ?? (tiles.code.sessionFull ? 'SESSION FULL' : tiles.code.word)}
+                detail={tiles.code.detail}
+                reason={tiles.code.reason}
+                isCode={true}
+                isSessionFull={tiles.code.sessionFull}
+                onClick={() => {
+                  handleTileClick('code');
+                }}
               >
-                <div className="glance-header">
-                  <span className="glance-label">ENGINEER CODE</span>
-                  <span className="glance-glyph" aria-hidden="true">
-                    {levelGlyph(tiles.code.level)}
-                  </span>
-                </div>
-                <div className="glance-body">
-                  {currentCode ? (
-                    <span className="glance-code-text" data-testid="driver-connect-code">
-                      {currentCode}
-                    </span>
-                  ) : tiles.code.sessionFull ? (
-                    <span className="glance-code-full" data-testid="driver-connect-code">
-                      SESSION FULL
-                    </span>
-                  ) : (
-                    <span className="glance-code-slots" data-testid="driver-connect-code">
-                      {tiles.code.word === NO_VALUE ? '——————' : tiles.code.word}
-                    </span>
-                  )}
-                </div>
-                <div className="glance-footer">
-                  {tiles.code.reason && <span className="glance-reason">{tiles.code.reason}</span>}
-                  <div className="glance-code-actions">
-                    {currentCode && (
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => {
-                          void handleCopyCode(currentCode);
-                        }}
-                        data-testid="copy-code-btn"
-                      >
-                        {copiedCode ? 'Copied!' : 'Copy Code'}
-                      </button>
-                    )}
+                <div className="glance-code-actions">
+                  {currentCode && (
                     <button
                       type="button"
                       className="btn btn-sm"
                       onClick={() => {
-                        void handleNewCode();
+                        void handleCopyCode(currentCode);
                       }}
-                      disabled={!isStreaming || tiles.code.sessionFull || isSynthetic}
-                      title={
-                        isSynthetic
-                          ? 'Not available in demo'
-                          : tiles.code.sessionFull
-                            ? 'Session full (2/2). Remove an engineer to add another.'
-                            : !isStreaming
-                              ? 'Start streaming to get a code'
-                              : undefined
-                      }
-                      data-testid="new-code-btn"
+                      data-testid="copy-code-btn"
                     >
-                      New Code
+                      {copiedCode ? 'Copied!' : 'Copy Code'}
                     </button>
-                  </div>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => {
+                      void handleNewCode();
+                    }}
+                    disabled={!isStreaming || tiles.code.sessionFull || isSynthetic}
+                    title={
+                      isSynthetic
+                        ? 'Not available in demo'
+                        : tiles.code.sessionFull
+                          ? 'Session full (2/2). Remove an engineer to add another.'
+                          : !isStreaming
+                            ? 'Start streaming to get a code'
+                            : undefined
+                    }
+                    data-testid="new-code-btn"
+                  >
+                    New Code
+                  </button>
                 </div>
-              </div>
+              </GlanceTile>
             </div>
 
-            {/* Attention Strip (Worst-first issues per §2.7, §3.1) */}
-            {tiles.attention.length > 0 && (
-              <div className="driver-attention-strip" data-testid="driver-attention-strip">
-                {tiles.attention.slice(0, 3).map((item) => (
-                  <div
-                    key={item.id}
-                    className={`attention-row attention-row-${item.level}`}
-                    data-testid={`attention-${item.id}`}
-                  >
-                    <span className="attention-glyph" aria-hidden="true">
-                      {item.level === 'critical' ? '■' : '◆'}
-                    </span>
-                    <div className="attention-body">
-                      <strong className="attention-title">{item.title}</strong>
-                      {item.detail && <span className="attention-detail"> — {item.detail}</span>}
-                    </div>
-                    {item.action === 'sign_in' && (
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-primary"
-                        onClick={() => {
-                          if (onRequireLogin) {
-                            onRequireLogin();
-                          } else {
-                            setActionError('Please sign in to continue streaming.');
-                          }
-                        }}
-                        data-testid="attention-action-sign-in"
-                      >
-                        Sign in again
-                      </button>
-                    )}
-                    {item.action === 'new_code' && (
-                      <button
-                        type="button"
-                        className="btn btn-sm"
-                        onClick={() => {
-                          void handleNewCode();
-                        }}
-                        data-testid="attention-action-new-code"
-                      >
-                        New code
-                      </button>
-                    )}
-                  </div>
-                ))}
-                {tiles.attention.length > 3 && (
-                  <div className="attention-overflow">
-                    +{tiles.attention.length - 3} more issues
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Action Controls Bar */}
-            <div className="action-bar" data-testid="driver-action-bar">
+            {/* Action Bar (64px, §3.1) */}
+            <div className="action-bar driver-action-bar" data-testid="driver-action-bar">
               <div className="action-bar-group">
                 <button
                   type="button"
-                  className={isStreaming ? 'btn' : 'btn btn-primary'}
+                  className={isStreaming ? 'btn btn-driver-action' : 'btn btn-primary btn-driver-action'}
                   disabled={isSynthetic}
                   title={isSynthetic ? 'Demo is display-only' : undefined}
                   onClick={() => {
@@ -581,7 +514,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                 </button>
                 <button
                   type="button"
-                  className="btn"
+                  className="btn btn-driver-action"
                   onClick={() => {
                     void handleToggleRecording();
                   }}
@@ -612,8 +545,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
               <div className="action-bar-group">
                 <input
                   type="text"
-                  className="input"
-                  style={{ width: '180px' }}
+                  className="input driver-marker-input"
                   placeholder="Log marker note..."
                   value={markerText}
                   onChange={(e) => {
@@ -627,7 +559,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                 />
                 <button
                   type="button"
-                  className="btn"
+                  className="btn btn-driver-action"
                   onClick={() => {
                     void handleAddMarker();
                   }}
@@ -639,196 +571,45 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
               </div>
             </div>
 
+            {/* Attention Strip (Worst-first issues per §2.7, §3.1) */}
+            {tiles.attention.length > 0 && (
+              <div className="driver-attention-strip" data-testid="driver-attention-strip">
+                {tiles.attention.slice(0, 3).map((item) => (
+                  <AttentionRow
+                    key={item.id}
+                    item={item}
+                    onAction={handleAttentionAction}
+                  />
+                ))}
+                {tiles.attention.length > 3 && (
+                  <div className="attention-overflow">
+                    +{tiles.attention.length - 3} more issues
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Diagnostics Details Table (Collapsed by default per §3.1) */}
-            <details className="driver-details" data-testid="driver-details">
-              <summary className="driver-details-summary">▸ Details (Diagnostics & Pipeline)</summary>
-              <div className="driver-details-grid">
-                {/* Source Column */}
-                <div className="driver-details-col">
-                  <h4 className="driver-details-title">LMU Telemetry Source</h4>
-                  <div className="driver-details-row">
-                    <span>State</span>
-                    <span>{lmu?.state ?? NO_VALUE}</span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Game Version</span>
-                    <span>{lmu?.game_version !== null && lmu?.game_version !== undefined ? String(lmu.game_version) : NO_VALUE}</span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Read Rate</span>
-                    <span>
-                      {rates?.telemetry_read_hz !== null && rates?.telemetry_read_hz !== undefined
-                        ? `${Math.round(rates.telemetry_read_hz)} Hz`
-                        : NO_VALUE}
-                    </span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Detail</span>
-                    <span>{lmu?.detail ?? NO_VALUE}</span>
-                  </div>
-                </div>
+            <DriverDetails
+              status={status}
+              tiles={tiles}
+              nowMs={nowMs}
+              open={detailsOpen}
+              onToggle={setDetailsOpen}
+              activeSection={activeSection}
+            />
 
-                {/* Streaming Column */}
-                <div className="driver-details-col">
-                  <h4 className="driver-details-title">Relay Streaming</h4>
-                  <div className="driver-details-row">
-                    <span>State</span>
-                    <span>{network?.state ?? NO_VALUE}</span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Send Rate</span>
-                    <span>
-                      {rates?.frames_sent_hz !== null && rates?.frames_sent_hz !== undefined
-                        ? `${Math.round(rates.frames_sent_hz)} Hz`
-                        : NO_VALUE}
-                    </span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Relay RTT</span>
-                    <span>
-                      {network?.rtt_ms !== null && network?.rtt_ms !== undefined
-                        ? `${Math.round(network.rtt_ms)} ms`
-                        : NO_VALUE}
-                    </span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Degraded Reason</span>
-                    <span>{network?.degraded_reason ?? NO_VALUE}</span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Last Error</span>
-                    <span>{network?.last_error ?? NO_VALUE}</span>
-                  </div>
-                </div>
-
-                {/* Recording Column */}
-                <div className="driver-details-col">
-                  <h4 className="driver-details-title">Local Recording</h4>
-                  <div className="driver-details-row">
-                    <span>State</span>
-                    <span>{recording?.state ?? NO_VALUE}</span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Frames Written</span>
-                    <span>
-                      {recording ? recording.frames_written.toLocaleString() : NO_VALUE}
-                    </span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Bytes Written</span>
-                    <span>
-                      {recording ? formatByteSize(recording.bytes_written) : NO_VALUE}
-                    </span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Disk Free</span>
-                    <span>
-                      {recording?.disk_free_bytes !== null && recording?.disk_free_bytes !== undefined
-                        ? formatByteSize(recording.disk_free_bytes)
-                        : NO_VALUE}
-                    </span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Error</span>
-                    <span>{recording?.error ?? NO_VALUE}</span>
-                  </div>
-                </div>
-
-                {/* Pipeline Health Column */}
-                <div className="driver-details-col">
-                  <h4 className="driver-details-title">Pipeline Health</h4>
-                  <div className="driver-details-row">
-                    <span>Overall Health</span>
-                    <span>{tiles.pipeline.word} ({tiles.pipeline.label})</span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Reader Overrun</span>
-                    <span>
-                      {drops ? drops.reader_overrun.toLocaleString() : NO_VALUE}
-                    </span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Pipeline Overrun</span>
-                    <span>
-                      {drops ? drops.pipeline_overrun.toLocaleString() : NO_VALUE}
-                    </span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Recorder Drops</span>
-                    <span>
-                      {drops ? drops.recorder_overrun.toLocaleString() : NO_VALUE}
-                    </span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>Net Dropped</span>
-                    <span>
-                      {drops ? drops.net_dropped_obsolete.toLocaleString() : NO_VALUE}
-                    </span>
-                  </div>
-                  <div className="driver-details-row">
-                    <span>UI Dropped</span>
-                    <span>
-                      {drops ? drops.ui_dropped.toLocaleString() : NO_VALUE}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </details>
-
-            {/* Developer / Demo Controls (Collapsible) */}
-            <details className="driver-developer" data-testid="driver-developer-tools">
-              <summary className="driver-developer-summary">▸ Developer Tools (Synthetic Demo)</summary>
-              <div
-                className="action-bar"
-                style={{ marginTop: '8px', backgroundColor: 'var(--color-surface-raised)' }}
-              >
-                <div className="action-bar-group">
-                  <span className="card-row-label">Demo Scenario:</span>
-                  <select
-                    className="select"
-                    value={selectedScenario}
-                    onChange={(e) => {
-                      setSelectedScenario(e.target.value as DemoScenario);
-                    }}
-                    data-testid="demo-scenario-select"
-                  >
-                    {DEMO_SCENARIOS.map((sc) => (
-                      <option key={sc} value={sc}>
-                        {demoScenarioLabel(sc)} ({sc})
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                      void handleStartDemo();
-                    }}
-                    disabled={isStreaming || isRecordingActive}
-                    title={
-                      isStreaming || isRecordingActive
-                        ? 'Cannot start demo while streaming or recording'
-                        : undefined
-                    }
-                    data-testid="start-demo-btn"
-                  >
-                    Start Demo
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                      void handleStopDemo();
-                    }}
-                    disabled={!isSynthetic}
-                    title={!isSynthetic ? 'Demo is not active' : undefined}
-                    data-testid="stop-demo-btn"
-                  >
-                    Stop Demo
-                  </button>
-                </div>
-              </div>
-            </details>
+            {/* Developer / Demo Controls (Collapsible, hidden in production per §3.1) */}
+            <DeveloperTools
+              environment={env}
+              isSynthetic={isSynthetic}
+              isStreaming={isStreaming}
+              isRecordingActive={isRecordingActive}
+              selectedScenario={selectedScenario}
+              onSelectScenario={setSelectedScenario}
+              onStartDemo={handleStartDemo}
+              onStopDemo={handleStopDemo}
+            />
           </>
         )}
       </div>

@@ -1,61 +1,172 @@
 /*
- * Driver Mode screen (DriverScreen, DriverTelemetryTab). Owned by W1.2 / W3.1.
- * REDESIGN.md §3.1 Driver glanceable status & pit board.
+ * Driver Mode stylesheet (DriverScreen, GlanceTile, AttentionRow, DriverDetails, DeveloperTools, DriverTelemetryTab).
+ * Owned by UI W3.1 per REDESIGN.md §3.1, §4 W3.1, C6, C7, DR01-DR09, LY05.
+ * Strictly tokenized, zero hardcoded hex/px styling in components, zero text < 16 px on pit board.
  */
 
 /* -------------------------------------------------------------------------
- * Driver Glanceable Status Strip (5 tiles)
+ * Layout & Containers
+ * ------------------------------------------------------------------------- */
+.driver-screen-container {
+  padding: 24px;
+  box-sizing: border-box;
+  min-height: 100%;
+  background-color: var(--surface-app);
+}
+
+@media (max-width: 1440px) {
+  .driver-screen-container {
+    padding: 16px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .driver-screen-container {
+    padding: 32px;
+  }
+}
+
+.driver-header-banner {
+  margin-bottom: 16px;
+}
+
+.driver-error-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  background-color: var(--status-critical-bg, #2e1214);
+  border: 1px solid var(--status-critical, #ff4d4d);
+  border-radius: var(--radius-1, 2px);
+}
+
+.driver-error-message {
+  font-family: var(--font-data);
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+/* -------------------------------------------------------------------------
+ * Demo Band (32px height, hatched per C3)
+ * ------------------------------------------------------------------------- */
+.driver-demo-band {
+  background-color: var(--dq-synthetic-bg, #2a1026);
+  border: 1px dashed var(--dq-synthetic, #ff4fd8);
+  color: var(--dq-synthetic, #ff4fd8);
+  font-family: var(--font-data);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: center;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  border-radius: var(--radius-1, 2px);
+  box-sizing: border-box;
+}
+
+/* -------------------------------------------------------------------------
+ * Glanceable Status Strip (5 tiles per §3.1)
+ * Primary 1920: height 220px, gap 12px
+ * 1366: height 168px, gap 8px
+ * 2560: height 293px, max-width 480px per tile, strip centered
  * ------------------------------------------------------------------------- */
 .driver-status-strip {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr 1.6fr;
   gap: 12px;
-  min-height: 220px;
-  margin-bottom: 12px;
+  height: 220px;
+  margin-bottom: 16px;
 }
 
 @media (max-width: 1440px) {
   .driver-status-strip {
-    min-height: 168px;
+    height: 168px;
     gap: 8px;
+    margin-bottom: 12px;
   }
 }
 
+@media (min-width: 2400px) {
+  .driver-status-strip {
+    height: 293px;
+    gap: 16px;
+    margin-bottom: 24px;
+    justify-content: center;
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Glance Tile Anatomy
+ * ------------------------------------------------------------------------- */
 .glance-tile {
   position: relative;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
+  height: 100%;
   padding: 14px 16px;
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-top: 3px solid var(--color-text-dim);
-  border-radius: var(--radius-sm, 2px);
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-top: 3px solid var(--status-off);
+  border-radius: var(--radius-1, 2px);
   box-sizing: border-box;
+  overflow: hidden;
 }
 
+@media (max-width: 1440px) {
+  .glance-tile {
+    padding: 10px 12px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .glance-tile {
+    padding: 20px 24px;
+    max-width: 480px;
+  }
+}
+
+.glance-tile-interactive {
+  cursor: pointer;
+  transition: background-color 120ms ease-out, border-color 120ms ease-out;
+}
+
+.glance-tile-interactive:hover {
+  background-color: var(--surface-hover);
+}
+
+.glance-tile-interactive:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+/* Worst-state escalation: critical / warning get full border */
 .glance-tile-ok {
-  border-top-color: var(--color-ok);
+  border-top-color: var(--status-ok);
 }
 
 .glance-tile-warning {
-  border-top-color: var(--color-warn);
-  border-color: var(--color-warn);
+  border: 1px solid var(--status-warn);
+  border-top: 3px solid var(--status-warn);
 }
 
 .glance-tile-critical {
-  border-top-color: var(--color-error);
-  border-color: var(--color-error);
+  border: 1px solid var(--status-critical);
+  border-top: 3px solid var(--status-critical);
 }
 
 .glance-tile-synthetic {
-  border-top-color: var(--dq-synthetic, #ff4fd8);
+  border-top-color: var(--dq-synthetic);
 }
 
 .glance-tile-off {
-  border-top-color: var(--color-text-dim);
+  border-top-color: var(--status-off);
 }
 
+/* Tile Header */
 .glance-header {
   display: flex;
   align-items: center;
@@ -69,7 +180,19 @@
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--color-text-muted);
+  color: var(--text-secondary);
+}
+
+@media (max-width: 1440px) {
+  .glance-label {
+    font-size: 12px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .glance-label {
+    font-size: 17px;
+  }
 }
 
 .glance-glyph {
@@ -77,97 +200,133 @@
   line-height: 1;
 }
 
+@media (min-width: 2400px) {
+  .glance-glyph {
+    font-size: 16px;
+  }
+}
+
 .glance-tile-ok .glance-glyph {
-  color: var(--color-ok);
+  color: var(--status-ok);
 }
 
 .glance-tile-warning .glance-glyph {
-  color: var(--color-warn);
+  color: var(--status-warn);
 }
 
 .glance-tile-critical .glance-glyph {
-  color: var(--color-error);
+  color: var(--status-critical);
 }
 
 .glance-tile-synthetic .glance-glyph {
-  color: var(--dq-synthetic, #ff4fd8);
+  color: var(--dq-synthetic);
 }
 
 .glance-tile-off .glance-glyph {
-  color: var(--color-text-dim);
+  color: var(--status-off);
 }
 
+/* Tile Body & State Word (56px / 44px / 75px per §3.1) */
 .glance-body {
   display: flex;
   flex-direction: column;
   justify-content: center;
   flex: 1;
-  margin: 6px 0;
+  margin: 4px 0;
+  min-height: 0;
 }
 
 .glance-word {
-  font-family: var(--font-mono);
-  font-size: 44px;
+  font-family: var(--font-data);
+  font-size: 56px;
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1;
   text-transform: uppercase;
+  letter-spacing: -0.02em;
   word-break: break-word;
 }
 
 @media (max-width: 1440px) {
   .glance-word {
-    font-size: 34px;
+    font-size: 44px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .glance-word {
+    font-size: 75px;
   }
 }
 
 .glance-tile-ok .glance-word {
-  color: var(--color-ok);
+  color: var(--status-ok);
 }
 
 .glance-tile-warning .glance-word {
-  color: var(--color-warn);
+  color: var(--status-warn);
 }
 
 .glance-tile-critical .glance-word {
-  color: var(--color-error);
+  color: var(--status-critical);
 }
 
 .glance-tile-synthetic .glance-word {
-  color: var(--dq-synthetic, #ff4fd8);
+  color: var(--dq-synthetic);
 }
 
 .glance-tile-off .glance-word {
-  color: var(--color-text-dim);
+  color: var(--text-disabled);
 }
 
+/* Code Tile Typography (64px / 48px / 85px) */
 .glance-code-text {
-  font-family: var(--font-mono);
-  font-size: 40px;
+  font-family: var(--font-data);
+  font-size: 64px;
   font-weight: 700;
-  letter-spacing: 2px;
-  color: var(--color-text);
-  line-height: 1.1;
+  letter-spacing: 0.12em;
+  color: var(--text-primary);
+  line-height: 1;
 }
 
 @media (max-width: 1440px) {
   .glance-code-text {
-    font-size: 32px;
+    font-size: 48px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .glance-code-text {
+    font-size: 85px;
   }
 }
 
 .glance-code-slots {
-  font-family: var(--font-mono);
-  font-size: 36px;
+  font-family: var(--font-data);
+  font-size: 48px;
   font-weight: 700;
-  letter-spacing: 4px;
-  color: var(--color-text-dim);
+  letter-spacing: 0.15em;
+  color: var(--text-disabled);
+  line-height: 1;
+}
+
+@media (max-width: 1440px) {
+  .glance-code-slots {
+    font-size: 36px;
+  }
 }
 
 .glance-code-full {
-  font-family: var(--font-mono);
-  font-size: 28px;
+  font-family: var(--font-data);
+  font-size: 36px;
   font-weight: 700;
-  color: var(--color-warn);
+  color: var(--status-warn);
+  line-height: 1.1;
+}
+
+@media (max-width: 1440px) {
+  .glance-code-full {
+    font-size: 26px;
+  }
 }
 
 .glance-code-actions {
@@ -178,6 +337,7 @@
   flex-wrap: wrap;
 }
 
+/* Tile Footer */
 .glance-footer {
   display: flex;
   flex-direction: column;
@@ -187,16 +347,39 @@
 }
 
 .glance-detail {
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--color-text);
+  font-family: var(--font-data);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  line-height: 1.3;
+}
+
+@media (max-width: 1440px) {
+  .glance-detail {
+    font-size: 14px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .glance-detail {
+    font-size: 21px;
+  }
 }
 
 .glance-reason {
-  font-size: 12px;
-  color: var(--color-text-muted);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.3;
 }
 
+@media (max-width: 1440px) {
+  .glance-reason {
+    font-size: 12px;
+  }
+}
+
+/* Connected Engineers List inside tile */
 .glance-engineers-list {
   display: flex;
   flex-direction: column;
@@ -209,57 +392,170 @@
   align-items: center;
   justify-content: space-between;
   font-size: 12px;
-  padding: 3px 6px;
-  background-color: var(--color-surface-raised);
-  border-radius: var(--radius-sm, 2px);
+  padding: 4px 8px;
+  background-color: var(--surface-hover);
+  border-radius: var(--radius-1, 2px);
   gap: 8px;
 }
 
-/* -------------------------------------------------------------------------
- * Demo Band
- * ------------------------------------------------------------------------- */
-.driver-demo-band {
-  background-color: var(--dq-synthetic-bg, #2a1026);
-  border: 1px dashed var(--dq-synthetic, #ff4fd8);
-  color: var(--dq-synthetic, #ff4fd8);
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: 700;
-  text-align: center;
-  padding: 6px 12px;
-  margin-bottom: 12px;
-  border-radius: var(--radius-sm, 2px);
+.glance-engineer-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.glance-eng-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  display: inline-block;
+  background-color: var(--status-ok);
+}
+
+.glance-eng-dot--degraded {
+  background-color: var(--status-warn);
+}
+
+.glance-eng-dot--dead,
+.glance-eng-dot--error {
+  background-color: var(--status-critical);
+}
+
+.glance-engineer-name {
+  font-family: var(--font-ui);
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 /* -------------------------------------------------------------------------
- * Attention Strip
+ * Action Bar (64px height per §3.1)
+ * ------------------------------------------------------------------------- */
+.driver-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-height: 64px;
+  padding: 8px 16px;
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
+  box-sizing: border-box;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 1440px) {
+  .driver-action-bar {
+    min-height: 56px;
+    padding: 6px 12px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .driver-action-bar {
+    min-height: 80px;
+    padding: 12px 24px;
+  }
+}
+
+.btn-driver-action {
+  height: 48px;
+  padding: 0 20px;
+  font-size: 14px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+@media (max-width: 1440px) {
+  .btn-driver-action {
+    height: 40px;
+    padding: 0 16px;
+    font-size: 13px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .btn-driver-action {
+    height: 56px;
+    padding: 0 24px;
+    font-size: 17px;
+  }
+}
+
+.driver-marker-input {
+  width: 180px;
+  height: 48px;
+  box-sizing: border-box;
+}
+
+@media (max-width: 1440px) {
+  .driver-marker-input {
+    height: 40px;
+    width: 160px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .driver-marker-input {
+    height: 56px;
+    width: 220px;
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Attention Strip & Rows (48px each, max 3 per §3.1)
  * ------------------------------------------------------------------------- */
 .driver-attention-strip {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin: 10px 0;
+  margin-bottom: 16px;
 }
 
 .attention-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 44px;
-  padding: 8px 14px;
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-left: 3px solid;
-  border-radius: var(--radius-sm, 2px);
+  min-height: 48px;
+  padding: 8px 16px;
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-left: 3px solid var(--status-warn);
+  border-radius: var(--radius-1, 2px);
   gap: 12px;
+  box-sizing: border-box;
+}
+
+@media (max-width: 1440px) {
+  .attention-row {
+    min-height: 40px;
+    padding: 6px 12px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .attention-row {
+    min-height: 60px;
+    padding: 12px 20px;
+  }
 }
 
 .attention-row-warning {
-  border-left-color: var(--color-warn);
+  border-left-color: var(--status-warn);
 }
 
 .attention-row-critical {
-  border-left-color: var(--color-error);
+  border-left-color: var(--status-critical);
 }
 
 .attention-glyph {
@@ -268,17 +564,31 @@
 }
 
 .attention-row-warning .attention-glyph {
-  color: var(--color-warn);
+  color: var(--status-warn);
 }
 
 .attention-row-critical .attention-glyph {
-  color: var(--color-error);
+  color: var(--status-critical);
 }
 
 .attention-body {
   flex: 1;
+  font-family: var(--font-ui);
   font-size: 13px;
-  color: var(--color-text);
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+@media (max-width: 1440px) {
+  .attention-body {
+    font-size: 12px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .attention-body {
+    font-size: 16px;
+  }
 }
 
 .attention-title {
@@ -286,229 +596,465 @@
 }
 
 .attention-detail {
-  color: var(--color-text-muted);
+  color: var(--text-secondary);
+}
+
+.attention-action-btn {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 12px;
 }
 
 .attention-overflow {
   font-size: 12px;
-  color: var(--color-text-muted);
+  color: var(--text-tertiary);
   padding: 2px 8px;
 }
 
 /* -------------------------------------------------------------------------
- * Details Accordion (Diagnostics & Pipeline)
+ * Details Accordion (Diagnostics & Pipeline, 4 cols @ 1920, 2 cols @ 1366)
  * ------------------------------------------------------------------------- */
 .driver-details {
-  margin-top: 14px;
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm, 2px);
-  padding: 10px 14px;
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
+  padding: 12px 16px;
+  margin-bottom: 16px;
 }
 
 .driver-details-summary {
   cursor: pointer;
+  font-family: var(--font-ui);
   font-size: 13px;
   font-weight: 700;
-  color: var(--color-text-muted);
+  color: var(--text-secondary);
   user-select: none;
+}
+
+.driver-details-summary:hover {
+  color: var(--text-primary);
 }
 
 .driver-details-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(4, 1fr);
   gap: 16px;
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid var(--color-border);
+  border-top: 1px solid var(--border-subtle);
+}
+
+@media (max-width: 1440px) {
+  .driver-details-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+  }
 }
 
 .driver-details-col {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  padding: 8px;
+  border-radius: var(--radius-1, 2px);
+}
+
+.driver-details-col-active {
+  background-color: var(--surface-hover);
+  border-left: 2px solid var(--text-primary);
 }
 
 .driver-details-title {
-  font-size: 12px;
+  font-family: var(--font-ui);
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  color: var(--color-text-dim);
-  margin: 0 0 4px 0;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  margin: 0 0 6px 0;
 }
 
 .driver-details-row {
   display: flex;
   justify-content: space-between;
   font-size: 12px;
+  line-height: 1.5;
+  gap: 8px;
 }
 
-.driver-details-row span:first-child {
-  color: var(--color-text-muted);
+.driver-details-label {
+  color: var(--text-secondary);
 }
 
-.driver-details-row span:last-child {
-  font-family: var(--font-mono);
-  color: var(--color-text);
+.driver-details-val {
+  font-family: var(--font-data);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.driver-details-error-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  background-color: var(--status-critical-bg, #2e1214);
+  border-left: 2px solid var(--status-critical);
+  border-radius: var(--radius-1, 2px);
+}
+
+.driver-details-error-label {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--status-critical);
+}
+
+.driver-details-error-text {
+  font-family: var(--font-data);
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-word;
 }
 
 /* -------------------------------------------------------------------------
- * Developer / Demo Controls Accordion
+ * Developer Tools Accordion (Hidden in production per §3.1)
  * ------------------------------------------------------------------------- */
 .driver-developer {
-  margin-top: 12px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm, 2px);
-  padding: 10px 14px;
-  background-color: var(--color-surface);
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
+  padding: 12px 16px;
+  margin-bottom: 16px;
 }
 
 .driver-developer-summary {
   cursor: pointer;
+  font-family: var(--font-ui);
   font-size: 13px;
   font-weight: 600;
-  color: var(--color-text-muted);
+  color: var(--text-secondary);
   user-select: none;
 }
 
-/* -------------------------------------------------------------------------
- * Preserved Existing Card & Action Bar Styles
- * ------------------------------------------------------------------------- */
-.cards-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-  gap: 12px;
+.driver-developer-content {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
 }
 
-.connect-code-box {
+.driver-developer-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  background-color: var(--color-surface-raised);
-  border: 1px solid var(--color-border-strong);
-  border-radius: 4px;
-  padding: 8px 12px;
-  margin: 4px 0;
-}
-
-.connect-code-display {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xl);
-  font-weight: 700;
-  letter-spacing: 2px;
-  color: var(--color-accent-strong);
-}
-
-.action-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
   gap: 10px;
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  padding: 10px 14px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background-color: var(--surface-hover);
+  border-radius: var(--radius-1, 2px);
 }
 
-.action-bar-group {
+.driver-developer-label {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.driver-developer-select {
+  height: 32px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+/* -------------------------------------------------------------------------
+ * Driver Pit Board (DriverTelemetryTab per §3.1 & C7)
+ * STRICT REQUIREMENT: No text < 16 px anywhere on this board!
+ * ------------------------------------------------------------------------- */
+.pit-board {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 0;
+  background-color: var(--surface-app);
+}
+
+.pit-board-empty-message {
+  font-family: var(--font-ui);
+  font-size: 18px;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 48px;
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
+}
+
+/* Item 3: Flag Summary Strip (full width) */
+.pit-board-flag-banner {
+  min-height: 48px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  justify-content: center;
 }
 
-/* Driver Telemetry Tab / Pitboard */
-.telemetry-board {
+.flag-strip {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-ui);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: var(--radius-1, 2px);
+  padding: 8px 16px;
+  box-sizing: border-box;
+}
+
+.flag-strip-warn {
+  background-color: var(--status-warn-bg, #2a2410);
+  border: 1px solid var(--status-warn);
+  color: var(--status-warn);
+}
+
+.flag-strip-critical {
+  background-color: var(--status-critical-bg, #2e1214);
+  border: 1px solid var(--status-critical);
+  color: var(--status-critical);
+}
+
+.flag-strip-blue {
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-control);
+  color: var(--text-primary);
+}
+
+.flag-strip-clear {
+  background-color: var(--status-ok-bg, #0f2a1b);
+  border: 1px solid var(--status-ok);
+  color: var(--status-ok);
+}
+
+.flag-strip-chequered {
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+}
+
+/* Item 1: Delta to Personal Best (96 px Hero) */
+.pit-board-hero {
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
+  padding: 24px 32px;
   display: flex;
   flex-direction: column;
   gap: 12px;
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  padding: 14px;
 }
 
-/* Delta Banner */
-.delta-hero {
+.pit-board-hero-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 18px;
-  border-radius: 4px;
-  background-color: var(--color-surface-raised);
-  border: 1px solid var(--color-border-strong);
 }
 
-.delta-label {
+.pit-board-hero-title {
   font-family: var(--font-ui);
-  font-size: var(--font-size-sm);
+  font-size: 18px;
   font-weight: 700;
   text-transform: uppercase;
-  color: var(--color-text-muted);
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
 }
 
-.delta-value {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-display);
+.pit-board-hero-badge {
+  font-family: var(--font-ui);
+  font-size: 18px;
   font-weight: 700;
-  letter-spacing: 1px;
+  padding: 4px 14px;
+  border-radius: var(--radius-1, 2px);
+  letter-spacing: 0.04em;
+}
+
+.pit-board-hero-value {
+  font-family: var(--font-data);
+  font-size: 96px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+@media (max-width: 1440px) {
+  .pit-board-hero-value {
+    font-size: 80px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .pit-board-hero-value {
+    font-size: 128px;
+  }
 }
 
 .delta-negative {
-  color: var(--delta-faster, var(--color-ok));
+  color: var(--delta-faster, #2fd27a);
 }
 
 .delta-positive {
-  color: var(--delta-slower, var(--color-error));
+  color: var(--delta-slower, #ff4d4d);
 }
 
 .delta-zero {
-  color: var(--color-text-dim);
+  color: var(--text-primary);
 }
 
-/* Tyre 4-Corner Layout */
-.tyre-car-footprint {
+.delta-neutral {
+  color: var(--text-disabled);
+}
+
+.pit-board-hero-footer {
+  font-family: var(--font-ui);
+  font-size: 16px;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  margin-top: 4px;
+}
+
+/* Grid: Item 2 (Laps Remaining) & Item 4 (Pit Limiter) */
+.pit-board-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin: 6px 0;
+  gap: 16px;
 }
 
-.wheel-card {
-  background-color: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
-  border-radius: 4px;
-  padding: 8px 10px;
+.pit-board-tile {
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-top: 3px solid var(--status-off);
+  border-radius: var(--radius-1, 2px);
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 200px;
+  box-sizing: border-box;
+}
+
+.pit-board-tile-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pit-board-tile-title {
+  font-family: var(--font-ui);
+  font-size: 18px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.pit-board-tile-glyph {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.pit-board-tile-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  margin: 12px 0;
+}
+
+.pit-board-tile-value {
+  font-family: var(--font-data);
+  font-size: 64px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+@media (max-width: 1440px) {
+  .pit-board-tile-value {
+    font-size: 52px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .pit-board-tile-value {
+    font-size: 85px;
+  }
+}
+
+.pit-board-limiter-value {
+  font-size: 56px;
+}
+
+@media (max-width: 1440px) {
+  .pit-board-limiter-value {
+    font-size: 44px;
+  }
+}
+
+.pit-board-tile-footer {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.wheel-card-header {
-  display: flex;
-  justify-content: space-between;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  font-weight: 700;
-  color: var(--color-text-dim);
-  border-bottom: 1px solid var(--color-border);
-  padding-bottom: 2px;
-}
-
-.wheel-temps-trio {
-  display: flex;
-  justify-content: space-between;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  color: var(--color-text);
+.pit-board-tile-detail {
+  font-family: var(--font-data);
+  font-size: 18px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 
-.wheel-metric-row {
-  display: flex;
-  justify-content: space-between;
-  font-size: var(--font-size-xs);
-  font-family: var(--font-mono);
-  color: var(--color-text-muted);
+.pit-board-tile-subtext {
+  font-family: var(--font-ui);
+  font-size: 16px;
+  color: var(--text-secondary);
+}
+
+/* Pit Board Levels */
+.pit-board-level-ok {
+  border-top-color: var(--status-ok);
+}
+
+.pit-board-level-ok .pit-board-tile-value,
+.pit-board-level-ok .pit-board-tile-glyph {
+  color: var(--status-ok);
+}
+
+.pit-board-level-warn {
+  border: 1px solid var(--status-warn);
+  border-top: 3px solid var(--status-warn);
+}
+
+.pit-board-level-warn .pit-board-tile-value,
+.pit-board-level-warn .pit-board-tile-glyph {
+  color: var(--status-warn);
+}
+
+.pit-board-level-critical {
+  border: 1px solid var(--status-critical);
+  border-top: 3px solid var(--status-critical);
+}
+
+.pit-board-level-critical .pit-board-tile-value,
+.pit-board-level-critical .pit-board-tile-glyph {
+  color: var(--status-critical);
+}
+
+.pit-board-level-off {
+  border-top-color: var(--status-off);
+}
+
+.pit-board-level-off .pit-board-tile-value,
+.pit-board-level-off .pit-board-tile-glyph {
+  color: var(--text-disabled);
 }

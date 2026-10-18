@@ -1,12 +1,12 @@
 /**
- * Driver Telemetry Dashboard Tab (spec §88, §1814–1875).
- * High-visibility pit board display optimized for drivers on a secondary screen:
- * - Prominent Lap Delta to PB (large green/red indicator with ±0.050 s deadband)
- * - Lap Timing (current, last, best)
- * - Fuel Calculator (remaining, fuel/lap, laps remaining, fuel to add)
- * - 4-Wheel Tyre Board (Inner/Middle/Outer temps, pressure, raw wear per C17)
- * - Brake Temperatures (FL, FR, RL, RR)
- * - Active Flags (via flags.summary 0x0B0C per EN08) & Limiter indicator
+ * Driver Telemetry Dashboard Tab / Pit Board (spec §88, §1814–1875, REDESIGN.md §3.1 & C7).
+ * High-visibility, glanceable display optimized for sim drivers read from ~1 m:
+ * Exactly 4 items (C7):
+ * 1. Delta to Personal Best (96 px hero, ±0.050 s deadband per C12)
+ * 2. Laps left on limiting resource fuel-or-VE (64 px, amber <= 3 laps, red <= 1 lap)
+ * 3. Flag summary strip from flags.summary (0x0B0C)
+ * 4. Pit limiter status tile (0x0015)
+ * Strict requirement: no text < 16 px anywhere on this board!
  */
 import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
@@ -15,15 +15,13 @@ import {
   formatFuel,
   formatFuelPerLap,
   formatLapTime,
-  formatPressure,
-  formatTemperature,
   NO_VALUE,
 } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
 
 const DELTA_DEADBAND_S = 0.050;
 
-const DRIVER_CHANNELS = [
+const DRIVER_BOARD_CHANNELS = [
   ch.DELTA_PERSONAL_BEST,
   ch.DELTA_BEST,
   ch.LAP_TIME,
@@ -34,34 +32,11 @@ const DRIVER_CHANNELS = [
   ch.FUEL_PER_LAP,
   ch.FUEL_LAPS_REMAINING,
   ch.FUEL_TO_ADD,
-  ch.TYRE_TEMP_INNER_FL,
-  ch.TYRE_TEMP_MIDDLE_FL,
-  ch.TYRE_TEMP_OUTER_FL,
-  ch.TYRE_PRESSURE_FL,
-  ch.TYRE_WEAR_FL,
-  ch.TYRE_TEMP_INNER_FR,
-  ch.TYRE_TEMP_MIDDLE_FR,
-  ch.TYRE_TEMP_OUTER_FR,
-  ch.TYRE_PRESSURE_FR,
-  ch.TYRE_WEAR_FR,
-  ch.TYRE_TEMP_INNER_RL,
-  ch.TYRE_TEMP_MIDDLE_RL,
-  ch.TYRE_TEMP_OUTER_RL,
-  ch.TYRE_PRESSURE_RL,
-  ch.TYRE_WEAR_RL,
-  ch.TYRE_TEMP_INNER_RR,
-  ch.TYRE_TEMP_MIDDLE_RR,
-  ch.TYRE_TEMP_OUTER_RR,
-  ch.TYRE_PRESSURE_RR,
-  ch.TYRE_WEAR_RR,
-  ch.BRAKE_TEMP_FL,
-  ch.BRAKE_TEMP_FR,
-  ch.BRAKE_TEMP_RL,
-  ch.BRAKE_TEMP_RR,
-  ch.YELLOW_FLAG_STATE,
-  ch.BLUE_FLAG,
+  ch.VE_LAPS_REMAINING,
   ch.SPEED_LIMITER,
   ch.FLAG_SUMMARY,
+  ch.YELLOW_FLAG_STATE,
+  ch.BLUE_FLAG,
 ] as const;
 
 export function DriverTelemetryTab(): JSX.Element {
@@ -71,19 +46,21 @@ export function DriverTelemetryTab(): JSX.Element {
 
 function DriverTelemetryEmpty(): JSX.Element {
   return (
-    <div className="telemetry-board" data-testid="driver-telemetry-empty">
-      <p className="card-row-label">No live telemetry store active.</p>
+    <div className="pit-board" data-testid="driver-telemetry-empty">
+      <div className="pit-board-empty-message">
+        No live telemetry store active.
+      </div>
     </div>
   );
 }
 
 function DriverTelemetryContent(): JSX.Element {
-  const samples = useChannelValues(DRIVER_CHANNELS);
+  const samples = useChannelValues(DRIVER_BOARD_CHANNELS);
 
   const channelMap = useMemo(() => {
     const map = new Map<number, number>();
-    for (let i = 0; i < DRIVER_CHANNELS.length; i++) {
-      const id = DRIVER_CHANNELS[i];
+    for (let i = 0; i < DRIVER_BOARD_CHANNELS.length; i++) {
+      const id = DRIVER_BOARD_CHANNELS[i];
       const s = samples[i];
       if (id !== undefined && s && typeof s.value === 'number' && Number.isFinite(s.value)) {
         map.set(id, s.value);
@@ -94,233 +71,201 @@ function DriverTelemetryContent(): JSX.Element {
 
   const num = (id: number): number | null => channelMap.get(id) ?? null;
 
-  // Delta to Personal Best
+  // 1. Delta to Personal Best
   const deltaPb = num(ch.DELTA_PERSONAL_BEST) ?? num(ch.DELTA_BEST);
   const lapTime = num(ch.LAP_TIME);
   const lastLapTime = num(ch.LAST_LAP_TIME);
   const bestLapTime = num(ch.BEST_LAP_TIME);
   const lapNumber = num(ch.LAP_NUMBER);
 
-  // Fuel
+  // 2. Limiting resource: Fuel vs VE
   const fuelL = num(ch.FUEL);
   const fuelPerLap = num(ch.FUEL_PER_LAP);
   const fuelLapsRemaining = num(ch.FUEL_LAPS_REMAINING);
   const fuelToAdd = num(ch.FUEL_TO_ADD);
+  const veLapsLeft = num(ch.VE_LAPS_REMAINING);
 
-  // Tyres FL
-  const tyreInFL = num(ch.TYRE_TEMP_INNER_FL);
-  const tyreMidFL = num(ch.TYRE_TEMP_MIDDLE_FL);
-  const tyreOutFL = num(ch.TYRE_TEMP_OUTER_FL);
-  const tyrePressFL = num(ch.TYRE_PRESSURE_FL);
-  const tyreWearFL = num(ch.TYRE_WEAR_FL);
+  // Determine limiting resource (C7)
+  const isVeLimiting =
+    veLapsLeft !== null &&
+    (fuelLapsRemaining === null || veLapsLeft < fuelLapsRemaining);
+  const limitingResourceLabel = isVeLimiting ? 'VE' : 'FUEL';
+  const limitingLapsRemaining = isVeLimiting ? veLapsLeft : fuelLapsRemaining;
 
-  // Tyres FR
-  const tyreInFR = num(ch.TYRE_TEMP_INNER_FR);
-  const tyreMidFR = num(ch.TYRE_TEMP_MIDDLE_FR);
-  const tyreOutFR = num(ch.TYRE_TEMP_OUTER_FR);
-  const tyrePressFR = num(ch.TYRE_PRESSURE_FR);
-  const tyreWearFR = num(ch.TYRE_WEAR_FR);
+  // Limiting resource alert level
+  const lapsLevelClass = (() => {
+    if (limitingLapsRemaining === null) return 'pit-board-level-off';
+    if (limitingLapsRemaining <= 1.0) return 'pit-board-level-critical';
+    if (limitingLapsRemaining <= 3.0) return 'pit-board-level-warn';
+    return 'pit-board-level-ok';
+  })();
 
-  // Tyres RL
-  const tyreInRL = num(ch.TYRE_TEMP_INNER_RL);
-  const tyreMidRL = num(ch.TYRE_TEMP_MIDDLE_RL);
-  const tyreOutRL = num(ch.TYRE_TEMP_OUTER_RL);
-  const tyrePressRL = num(ch.TYRE_PRESSURE_RL);
-  const tyreWearRL = num(ch.TYRE_WEAR_RL);
-
-  // Tyres RR
-  const tyreInRR = num(ch.TYRE_TEMP_INNER_RR);
-  const tyreMidRR = num(ch.TYRE_TEMP_MIDDLE_RR);
-  const tyreOutRR = num(ch.TYRE_TEMP_OUTER_RR);
-  const tyrePressRR = num(ch.TYRE_PRESSURE_RR);
-  const tyreWearRR = num(ch.TYRE_WEAR_RR);
-
-  // Brakes
-  const brakeFL = num(ch.BRAKE_TEMP_FL);
-  const brakeFR = num(ch.BRAKE_TEMP_FR);
-  const brakeRL = num(ch.BRAKE_TEMP_RL);
-  const brakeRR = num(ch.BRAKE_TEMP_RR);
-
-  // Flags & limiter
+  // 3. Flags
   const flagSummary = num(ch.FLAG_SUMMARY);
   const yellowState = num(ch.YELLOW_FLAG_STATE);
   const blueFlag = num(ch.BLUE_FLAG);
+
+  // 4. Pit Limiter
   const pitLimiter = num(ch.SPEED_LIMITER);
+  const isLimiterOn = pitLimiter !== null && pitLimiter > 0;
 
-  const deltaClass =
-    deltaPb === null || Math.abs(deltaPb) <= DELTA_DEADBAND_S
-      ? 'delta-zero'
-      : deltaPb < -DELTA_DEADBAND_S
-        ? 'delta-negative'
-        : 'delta-positive';
-
-  const hasFlagsOrLimiter =
-    (flagSummary !== null && flagSummary > 0) ||
-    (yellowState !== null && yellowState > 0) ||
-    (blueFlag !== null && blueFlag > 0) ||
-    (pitLimiter !== null && pitLimiter > 0);
+  // Delta deadband & qualifier (C12)
+  const deltaInfo = (() => {
+    if (deltaPb === null) {
+      return {
+        className: 'delta-neutral',
+        qualifier: 'NO DELTA',
+        text: '—',
+      };
+    }
+    if (Math.abs(deltaPb) <= DELTA_DEADBAND_S) {
+      return {
+        className: 'delta-zero',
+        qualifier: 'ON PACE',
+        text: formatDelta(deltaPb, { withUnit: true }),
+      };
+    }
+    if (deltaPb < -DELTA_DEADBAND_S) {
+      return {
+        className: 'delta-negative',
+        qualifier: '▼ FASTER',
+        text: formatDelta(deltaPb, { withUnit: true }),
+      };
+    }
+    return {
+      className: 'delta-positive',
+      qualifier: '▲ SLOWER',
+      text: formatDelta(deltaPb, { withUnit: true }),
+    };
+  })();
 
   return (
-    <div className="telemetry-board" data-testid="driver-telemetry-board">
-      {/* Flags / Alerts Banner */}
-      {hasFlagsOrLimiter ? (
-        <div className="screen-header-banner" style={{ backgroundColor: 'var(--color-warn-bg)', borderColor: 'var(--color-warn)' }}>
-          {flagSummary === 1 && <span className="status-badge status-badge-warn">⚠️ LOCAL YELLOW</span>}
-          {flagSummary === 2 && <span className="status-badge status-badge-warn">⚠️ FULL COURSE YELLOW / SAFETY CAR</span>}
-          {flagSummary === 3 && (
-            <span className="status-badge" style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6' }}>
-              🔵 BLUE FLAG
-            </span>
-          )}
-          {flagSummary === 4 && <span className="status-badge status-badge-error">🛑 RED FLAG</span>}
-          {flagSummary === 5 && <span className="status-badge status-badge-neutral">🏁 CHEQUERED FLAG</span>}
-          {flagSummary === null && yellowState !== null && yellowState > 0 && (
-            <span className="status-badge status-badge-warn">⚠️ YELLOW FLAG</span>
-          )}
-          {flagSummary === null && blueFlag !== null && blueFlag > 0 && (
-            <span className="status-badge" style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6' }}>
-              🔵 BLUE FLAG
-            </span>
-          )}
-          {pitLimiter !== null && pitLimiter > 0 && (
-            <span className="status-badge status-badge-live">PIT LIMITER ON</span>
-          )}
-        </div>
-      ) : null}
-
-      {/* Delta to Personal Best */}
-      <div className="delta-hero" data-testid="driver-delta-hero">
-        <div>
-          <div className="delta-label">DELTA TO PERSONAL BEST</div>
-          <div className="card-row-label">
-            Lap {lapNumber !== null ? Math.round(lapNumber) : NO_VALUE} &bull; Current: {formatLapTime(lapTime, { allowZero: true })}
+    <div className="pit-board" data-testid="driver-telemetry-board">
+      {/* Item 3: Flag Summary Strip (full width) */}
+      <div className="pit-board-flag-banner" data-testid="driver-flag-banner">
+        {flagSummary === 1 && (
+          <div className="flag-strip flag-strip-warn">
+            ⚠️ LOCAL YELLOW FLAG
           </div>
+        )}
+        {flagSummary === 2 && (
+          <div className="flag-strip flag-strip-warn">
+            ⚠️ FULL COURSE YELLOW / SAFETY CAR
+          </div>
+        )}
+        {flagSummary === 3 && (
+          <div className="flag-strip flag-strip-blue">
+            ◆ BLUE FLAG — YIELD POSITION
+          </div>
+        )}
+        {flagSummary === 4 && (
+          <div className="flag-strip flag-strip-critical">
+            🛑 RED FLAG — SESSION STOPPED
+          </div>
+        )}
+        {flagSummary === 5 && (
+          <div className="flag-strip flag-strip-chequered">
+            🏁 CHEQUERED FLAG
+          </div>
+        )}
+        {flagSummary === null && yellowState !== null && yellowState > 0 && (
+          <div className="flag-strip flag-strip-warn">
+            ⚠️ YELLOW FLAG
+          </div>
+        )}
+        {flagSummary === null && blueFlag !== null && blueFlag > 0 && (
+          <div className="flag-strip flag-strip-blue">
+            ◆ BLUE FLAG
+          </div>
+        )}
+        {flagSummary === null &&
+          (yellowState === null || yellowState === 0) &&
+          (blueFlag === null || blueFlag === 0) && (
+            <div className="flag-strip flag-strip-clear">
+              ● GREEN FLAG · TRACK CLEAR
+            </div>
+          )}
+      </div>
+
+      {/* Item 1: Delta to Personal Best (96 px hero) */}
+      <div className="pit-board-hero" data-testid="driver-delta-hero">
+        <div className="pit-board-hero-header">
+          <span className="pit-board-hero-title">DELTA TO PERSONAL BEST</span>
+          <span className={`pit-board-hero-badge ${deltaInfo.className}`}>
+            {deltaInfo.qualifier}
+          </span>
         </div>
-        <div className={`delta-value ${deltaClass}`} data-testid="driver-delta-value">
-          {formatDelta(deltaPb, { withUnit: true })}
+
+        <div className={`pit-board-hero-value ${deltaInfo.className}`} data-testid="driver-delta-value">
+          {deltaInfo.text}
+        </div>
+
+        <div className="pit-board-hero-footer">
+          <span>Lap {lapNumber !== null ? Math.round(lapNumber) : NO_VALUE}</span>
+          <span>Current: {formatLapTime(lapTime, { allowZero: true })}</span>
+          <span>Best: {formatLapTime(bestLapTime)}</span>
         </div>
       </div>
 
-      <div className="cards-grid">
-        {/* Lap Timing */}
-        <div className="card">
-          <div className="card-header">Lap Timing</div>
-          <div className="card-body">
-            <div className="card-row">
-              <span className="card-row-label">Current Lap</span>
-              <span className="card-row-value">{formatLapTime(lapTime, { allowZero: true })}</span>
+      {/* Grid: Item 2 (Fuel/VE Laps) & Item 4 (Pit Limiter) */}
+      <div className="pit-board-grid">
+        {/* Item 2: Laps Remaining on Limiting Resource */}
+        <div className={`pit-board-tile ${lapsLevelClass}`} data-testid="driver-fuel-tile">
+          <div className="pit-board-tile-header">
+            <span className="pit-board-tile-title">
+              LAPS REMAINING ({limitingResourceLabel})
+            </span>
+            <span className="pit-board-tile-glyph" aria-hidden="true">
+              {limitingLapsRemaining !== null && limitingLapsRemaining <= 1.0
+                ? '■'
+                : limitingLapsRemaining !== null && limitingLapsRemaining <= 3.0
+                  ? '◆'
+                  : '●'}
+            </span>
+          </div>
+
+          <div className="pit-board-tile-body">
+            <div className="pit-board-tile-value" data-testid="driver-laps-remaining">
+              {limitingLapsRemaining !== null
+                ? limitingLapsRemaining.toFixed(1)
+                : NO_VALUE}
             </div>
-            <div className="card-row">
-              <span className="card-row-label">Last Lap</span>
-              <span className="card-row-value">{formatLapTime(lastLapTime)}</span>
+          </div>
+
+          <div className="pit-board-tile-footer">
+            <div className="pit-board-tile-detail">
+              Fuel: {formatFuel(fuelL, { withUnit: true })} · Avg: {formatFuelPerLap(fuelPerLap, { withUnit: true })}
             </div>
-            <div className="card-row">
-              <span className="card-row-label">Personal Best</span>
-              <span className="card-row-value">{formatLapTime(bestLapTime)}</span>
+            <div className="pit-board-tile-subtext">
+              Target Refuel: {formatFuel(fuelToAdd, { withUnit: true })}
             </div>
           </div>
         </div>
 
-        {/* Fuel Calculator */}
-        <div className="card">
-          <div className="card-header">Fuel Calculator</div>
-          <div className="card-body">
-            <div className="card-row">
-              <span className="card-row-label">Remaining Fuel</span>
-              <span className="card-row-value">{formatFuel(fuelL, { withUnit: true })}</span>
-            </div>
-            <div className="card-row">
-              <span className="card-row-label">Avg Consumption</span>
-              <span className="card-row-value">{formatFuelPerLap(fuelPerLap, { withUnit: true })}</span>
-            </div>
-            <div className="card-row">
-              <span className="card-row-label">Estimated Laps Left</span>
-              <span className="card-row-value">
-                {fuelLapsRemaining !== null ? `${fuelLapsRemaining.toFixed(1)} laps` : NO_VALUE}
-              </span>
-            </div>
-            <div className="card-row">
-              <span className="card-row-label">Target Refuel</span>
-              <span className="card-row-value">{formatFuel(fuelToAdd, { withUnit: true })}</span>
+        {/* Item 4: Pit Limiter */}
+        <div
+          className={`pit-board-tile ${isLimiterOn ? 'pit-board-level-ok' : 'pit-board-level-off'}`}
+          data-testid="driver-limiter-tile"
+        >
+          <div className="pit-board-tile-header">
+            <span className="pit-board-tile-title">PIT LIMITER</span>
+            <span className="pit-board-tile-glyph" aria-hidden="true">
+              {isLimiterOn ? '●' : '□'}
+            </span>
+          </div>
+
+          <div className="pit-board-tile-body">
+            <div className="pit-board-tile-value pit-board-limiter-value" data-testid="driver-limiter-state">
+              {isLimiterOn ? 'ACTIVE' : 'OFF'}
             </div>
           </div>
-        </div>
-      </div>
 
-      {/* 4-Wheel Tyre Board */}
-      <div className="card">
-        <div className="card-header">
-          <span>Tyres (Inner / Middle / Outer)</span>
-          <span>Pressure &bull; Wear</span>
-        </div>
-        <div className="card-body">
-          <div className="tyre-car-footprint">
-            {/* Front Left */}
-            <div className="wheel-card" data-testid="wheel-fl">
-              <div className="wheel-card-header">
-                <span>FL</span>
-                <span>{formatPressure(tyrePressFL, { withUnit: true })}</span>
-              </div>
-              <div className="wheel-temps-trio">
-                <span>{formatTemperature(tyreInFL)}</span>
-                <span>{formatTemperature(tyreMidFL)}</span>
-                <span>{formatTemperature(tyreOutFL)}</span>
-              </div>
-              <div className="wheel-metric-row">
-                <span>Wear (raw): {tyreWearFL !== null ? tyreWearFL.toFixed(2) : NO_VALUE}</span>
-                <span>Brake: {formatTemperature(brakeFL, { withUnit: true })}</span>
-              </div>
+          <div className="pit-board-tile-footer">
+            <div className="pit-board-tile-detail">
+              {isLimiterOn ? 'Pit Limiter Engaged' : 'Pit Limiter Disengaged'}
             </div>
-
-            {/* Front Right */}
-            <div className="wheel-card" data-testid="wheel-fr">
-              <div className="wheel-card-header">
-                <span>FR</span>
-                <span>{formatPressure(tyrePressFR, { withUnit: true })}</span>
-              </div>
-              <div className="wheel-temps-trio">
-                <span>{formatTemperature(tyreOutFR)}</span>
-                <span>{formatTemperature(tyreMidFR)}</span>
-                <span>{formatTemperature(tyreInFR)}</span>
-              </div>
-              <div className="wheel-metric-row">
-                <span>Wear (raw): {tyreWearFR !== null ? tyreWearFR.toFixed(2) : NO_VALUE}</span>
-                <span>Brake: {formatTemperature(brakeFR, { withUnit: true })}</span>
-              </div>
-            </div>
-
-            {/* Rear Left */}
-            <div className="wheel-card" data-testid="wheel-rl">
-              <div className="wheel-card-header">
-                <span>RL</span>
-                <span>{formatPressure(tyrePressRL, { withUnit: true })}</span>
-              </div>
-              <div className="wheel-temps-trio">
-                <span>{formatTemperature(tyreInRL)}</span>
-                <span>{formatTemperature(tyreMidRL)}</span>
-                <span>{formatTemperature(tyreOutRL)}</span>
-              </div>
-              <div className="wheel-metric-row">
-                <span>Wear (raw): {tyreWearRL !== null ? tyreWearRL.toFixed(2) : NO_VALUE}</span>
-                <span>Brake: {formatTemperature(brakeRL, { withUnit: true })}</span>
-              </div>
-            </div>
-
-            {/* Rear Right */}
-            <div className="wheel-card" data-testid="wheel-rr">
-              <div className="wheel-card-header">
-                <span>RR</span>
-                <span>{formatPressure(tyrePressRR, { withUnit: true })}</span>
-              </div>
-              <div className="wheel-temps-trio">
-                <span>{formatTemperature(tyreOutRR)}</span>
-                <span>{formatTemperature(tyreMidRR)}</span>
-                <span>{formatTemperature(tyreInRR)}</span>
-              </div>
-              <div className="wheel-metric-row">
-                <span>Wear (raw): {tyreWearRR !== null ? tyreWearRR.toFixed(2) : NO_VALUE}</span>
-                <span>Brake: {formatTemperature(brakeRR, { withUnit: true })}</span>
-              </div>
+            <div className="pit-board-tile-subtext">
+              Last Lap: {formatLapTime(lastLapTime)}
             </div>
           </div>
         </div>

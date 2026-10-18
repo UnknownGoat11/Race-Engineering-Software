@@ -28,6 +28,14 @@ vi.mock('../lib/ipc', async () => {
   return {
     ...actual,
     getCoreStatus: vi.fn(),
+    getAppInfo: vi.fn().mockResolvedValue({
+      name: 'lmu-race-engineering',
+      version: '0.1.0',
+      identifier: 'com.lmu.race-engineering',
+      build_profile: 'debug',
+      environment: 'development',
+      log_dir: 'D:\\RaceEngineeringData\\logs',
+    }),
     driverStartStreaming: vi.fn().mockResolvedValue(undefined),
     driverStopStreaming: vi.fn().mockResolvedValue(undefined),
     driverNewCode: vi.fn().mockResolvedValue(undefined),
@@ -310,7 +318,43 @@ describe('DriverScreen', () => {
     expect(screen.getByTestId('attention-pipeline')).toBeInTheDocument();
   });
 
-  it('dashboard renders values when the store has samples', async () => {
+  it('Details table is collapsed by default and opens when a tile is clicked', async () => {
+    render(<DriverScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('driver-details')).toBeInTheDocument();
+    });
+
+    const details = screen.getByTestId('driver-details');
+    expect(details).not.toHaveAttribute('open');
+
+    // Clicking a tile opens Details and focuses that section
+    const recordingTile = screen.getByTestId('tile-recording');
+    fireEvent.click(recordingTile);
+
+    expect(details).toHaveAttribute('open');
+    expect(screen.getByTestId('details-section-recording')).toHaveClass('driver-details-col-active');
+  });
+
+  it('Developer tools are hidden in production environment', async () => {
+    render(<DriverScreen environment="production" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tile-lmu')).toBeInTheDocument();
+    });
+
+    expect(screen.queryByTestId('driver-developer-tools')).not.toBeInTheDocument();
+  });
+
+  it('Developer tools are visible in development environment', async () => {
+    render(<DriverScreen environment="development" />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('driver-developer-tools')).toBeInTheDocument();
+    });
+  });
+
+  it('dashboard renders 4 glance items when the store has samples', async () => {
     const testStore = new TelemetryStore();
     testStore.applyBatch(
       encodeUiBatch(0, 0, [
@@ -318,7 +362,7 @@ describe('DriverScreen', () => {
           rec.f64(ch.LAP_TIME, 94.215),
           rec.f64(ch.DELTA_PERSONAL_BEST, -0.342),
           rec.f32(ch.FUEL, 45.2),
-          rec.f32(ch.TYRE_WEAR_FL, 0.88),
+          rec.f32(ch.FUEL_LAPS_REMAINING, 12.5),
         ]),
       ]),
     );
@@ -331,8 +375,10 @@ describe('DriverScreen', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('driver-delta-value')).toHaveTextContent('-0.342');
-      expect(screen.getByText('Wear (raw): 0.88')).toBeInTheDocument();
-      expect(screen.getByText('45.2 L')).toBeInTheDocument();
+      expect(screen.getByTestId('driver-laps-remaining')).toHaveTextContent('12.5');
+      expect(screen.getByText(/Fuel: 45.2 L/)).toBeInTheDocument();
+      expect(screen.getByTestId('driver-limiter-tile')).toBeInTheDocument();
+      expect(screen.getByTestId('driver-flag-banner')).toBeInTheDocument();
     });
   });
 });
