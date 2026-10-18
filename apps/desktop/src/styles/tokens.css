@@ -130,4 +130,34 @@
   --control-height-sm: 22px;
   --control-height-lg: 48px;
   --content-max-width: 1200px;
+
+  /*
+   * REDESIGN.md W1.1 additions (additive; the full three-layer system arrives in W2.1).
+   * Class hues (C1, owner approval 2026-10-18) sit in bands no status colour uses; red and amber stay
+   * reserved for alerts. Class colour is used only as a row stripe, a map dot and a 3-char chip.
+   */
+  --p-class-cyan: #22d3ee;
+  --p-class-blue: #4d7cff;
+  --p-class-lime: #a3e635;
+  --p-class-grey: #8b95a3;
+  --class-hypercar: var(--p-class-cyan);
+  --class-lmp2: var(--p-class-blue);
+  --class-gt3: var(--p-class-lime);
+  --class-gte: var(--p-class-lime);
+  --class-unknown: var(--p-class-grey);
+
+  /* Delta / timing convention (only in delta values, sector chips and delta graph fill). */
+  --delta-faster: #2fd27a;
+  --delta-slower: #ff4d4d;
+  /* Alias used by TimingPanel / DriverInputsPanel before W1.5 (was undefined); removed in W2.1. */
+  --color-ahead: var(--delta-faster);
+
+  /* Data-quality states (C3, C5): synthetic is magenta, never amber; stale values keep a neutral dim grey. */
+  --dq-synthetic: #ff4fd8;
+  --dq-synthetic-bg: #2a1026;
+  --dq-stale-value: #8b95a3;
+  --dq-untrusted: #ff4d4d;
+
+  /* Own car (C2): white ring / rule / cursor; cyan now belongs to the Hypercar class. */
+  --player-highlight: #ffffff;
 }

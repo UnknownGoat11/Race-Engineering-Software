@@ -34,7 +34,9 @@ import { TelemetryStoreContext } from '../telemetry/hooks';
 import { TelemetryStore } from '../telemetry/store';
 import { ChannelSelectorModal } from '../components/telemetry/ChannelSelectorModal';
 import { JoinSessionModal } from './JoinSessionModal';
-import '../styles/screens.css';
+import '../styles/common.css';
+import '../styles/engineer.css';
+import '../styles/modal.css';
 
 type StandardGraphPreset = 'inputs' | 'powertrain' | 'tyres' | 'brakes';
 type GraphPreset = StandardGraphPreset | 'custom';

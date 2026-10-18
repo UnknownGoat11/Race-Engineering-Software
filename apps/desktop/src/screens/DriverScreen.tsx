@@ -24,7 +24,8 @@ import {
   type DemoScenario,
 } from '../lib/ipc';
 import { NO_VALUE } from '../lib/units';
-import '../styles/screens.css';
+import '../styles/common.css';
+import '../styles/driver.css';
 
 function formatBytes(bytes: number | null | undefined): string {
   if (bytes === null || bytes === undefined || !Number.isFinite(bytes)) return NO_VALUE;

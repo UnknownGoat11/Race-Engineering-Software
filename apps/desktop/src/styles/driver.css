@@ -1,0 +1,147 @@
+/*
+ * Driver Mode screen (DriverScreen, DriverTelemetryTab). Owned by W1.2 / W3.1.
+ * Moved verbatim from screens.css (REDESIGN W1.1).
+ */
+
+
+/* 2x2 Grid of Cards */
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+}
+
+/* Connect Code Box */
+.connect-code-box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 4px 0;
+}
+
+.connect-code-display {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--color-accent-strong);
+}
+
+/* Controls Bar */
+.action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 10px 14px;
+}
+
+.action-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Driver Telemetry Tab / Pitboard */
+.telemetry-board {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 14px;
+}
+
+/* Delta Banner */
+.delta-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-radius: 4px;
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border-strong);
+}
+
+.delta-label {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.delta-value {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-display);
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.delta-negative {
+  color: var(--color-ok);
+}
+
+.delta-positive {
+  color: var(--color-error);
+}
+
+.delta-zero {
+  color: var(--color-text-dim);
+}
+
+/* Tyre 4-Corner Layout */
+.tyre-car-footprint {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 6px 0;
+}
+
+.wheel-card {
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wheel-card-header {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: var(--color-text-dim);
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 2px;
+}
+
+.wheel-temps-trio {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.wheel-metric-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+}

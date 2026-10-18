@@ -1,0 +1,22 @@
+/*
+ * Modal backdrop and frame (JoinSessionModal, ChannelSelectorModal). Owned by W1.3 / W4.1.
+ * Moved verbatim from screens.css (REDESIGN W1.1).
+ */
+
+
+/* Modal Backdrop & Content */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.modal-content {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--color-border);
+}

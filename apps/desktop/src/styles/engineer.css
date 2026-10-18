@@ -1,0 +1,65 @@
+/*
+ * Engineer Mode pitwall layout (EngineerScreen). Owned by W1.3 / W3.2.
+ * Moved verbatim from screens.css (REDESIGN W1.1).
+ */
+
+
+/* Engineer Multicolumn Workspace */
+.engineer-workspace {
+  display: grid;
+  grid-template-columns: 290px minmax(360px, 1fr) 340px;
+  grid-template-rows: 1fr;
+  gap: 12px;
+  min-height: 0;
+  flex: 1;
+  width: 100%;
+}
+
+.engineer-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+.engineer-col-left {
+  grid-column: 1;
+}
+
+.engineer-col-center {
+  grid-column: 2;
+}
+
+.engineer-col-right {
+  grid-column: 3;
+}
+
+@media (max-width: 1280px) {
+  .engineer-workspace {
+    grid-template-columns: 280px 1fr;
+    grid-template-rows: auto auto;
+  }
+  .engineer-col-left {
+    grid-column: 1;
+  }
+  .engineer-col-center {
+    grid-column: 2;
+  }
+  .engineer-col-right {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 850px) {
+  .engineer-workspace {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+  }
+  .engineer-col-left,
+  .engineer-col-center,
+  .engineer-col-right {
+    grid-column: 1;
+  }
+}

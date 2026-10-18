@@ -23,6 +23,7 @@ import {
   paToBar,
   type DisplayKind,
 } from './units';
+import * as slots from './units';
 
 const INVALID: readonly (number | null | undefined)[] = [
   null,
@@ -370,5 +371,172 @@ describe('formatChannelValue (selected by the generated unit metadata)', () => {
     }
     expect(channelUnitLabel(channel('chassis.front_ride_height_m'))).toEqual({ label: 'mm', name: 'millimetres' });
     expect(channelUnitLabel(channel('vehicle.speed_mps'))).toEqual({ label: 'km/h', name: 'kilometres per hour' });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Fixed-width slot formatters (REDESIGN.md §2.8)
+// ---------------------------------------------------------------------------------------------------------------
+
+const FS = slots.FIGURE_SPACE;
+const NB = slots.UNIT_SPACE;
+const pad = (text: string, width: number): string => FS.repeat(Math.max(0, width - text.length)) + text;
+const MISSING_INPUTS: readonly (number | null | undefined)[] = [null, undefined, Number.NaN, Infinity, -Infinity];
+
+describe('slot formatters: unknown is a padded dash, never 0', () => {
+  const cases: readonly [string, (v: number | null | undefined) => string, number][] = [
+    ['formatLapTimeSlot', (v) => slots.formatLapTimeSlot(v), slots.SLOT_WIDTH.lapTime],
+    ['formatSector', slots.formatSector, slots.SLOT_WIDTH.sector],
+    ['formatDeltaSlot', slots.formatDeltaSlot, slots.SLOT_WIDTH.delta],
+    ['formatTowerGap', (v) => slots.formatTowerGap({ seconds: v }), slots.SLOT_WIDTH.gap],
+    ['formatInterval', (v) => slots.formatInterval({ seconds: v }), slots.SLOT_WIDTH.gap],
+    ['formatLitres', slots.formatLitres, slots.SLOT_WIDTH.fuel],
+    ['formatConsumption', slots.formatConsumption, slots.SLOT_WIDTH.consumption],
+    ['formatLaps', (v) => slots.formatLaps(v), slots.SLOT_WIDTH.laps],
+    ['formatLaps signed', (v) => slots.formatLaps(v, { signed: true }), slots.SLOT_WIDTH.laps],
+    ['formatVe', slots.formatVe, slots.SLOT_WIDTH.ve],
+    ['formatPercent', slots.formatPercent, slots.SLOT_WIDTH.percent],
+    ['formatTempC', slots.formatTempC, slots.SLOT_WIDTH.temperature],
+    ['formatTempDiff', slots.formatTempDiff, slots.SLOT_WIDTH.temperatureDiff],
+    ['formatPressureBar', slots.formatPressureBar, slots.SLOT_WIDTH.pressure],
+    ['formatSpeedKmh', slots.formatSpeedKmh, slots.SLOT_WIDTH.speed],
+    ['formatRpm', slots.formatRpm, slots.SLOT_WIDTH.rpm],
+    ['formatSteeringDeg', slots.formatSteeringDeg, slots.SLOT_WIDTH.steering],
+    ['formatSessionClock', slots.formatSessionClock, slots.SLOT_WIDTH.sessionClock],
+    ['formatRtt', slots.formatRtt, slots.SLOT_WIDTH.rtt],
+    ['formatCountdown', slots.formatCountdown, slots.SLOT_WIDTH.countdown],
+  ];
+  it.each(cases)('%s', (_name, fn, width) => {
+    for (const v of MISSING_INPUTS) {
+      const out = fn(v);
+      expect(out).toBe(pad(NO_VALUE, width));
+      expect(out.length).toBe(width);
+      expect(out).not.toMatch(/\d/);
+    }
+  });
+  it('unpadded formatters return a bare dash', () => {
+    for (const v of MISSING_INPUTS) {
+      expect(slots.formatCount(v)).toBe(NO_VALUE);
+      expect(slots.formatAgeShort(v)).toBe(NO_VALUE);
+      expect(slots.formatLapCounter(v)).toBe(NO_VALUE);
+      expect(slots.formatByteSize(v)).toBe(NO_VALUE);
+    }
+  });
+  it('a measured 0 is shown as 0 where 0 is a valid measurement', () => {
+    expect(slots.formatCount(0)).toBe('0');
+    expect(slots.formatLitres(0)).toBe(pad('0.0', 5));
+    expect(slots.formatTempC(0)).toBe(pad('0', 3));
+    expect(slots.formatSpeedKmh(0)).toBe(pad('0', 3));
+    expect(slots.formatRtt(0)).toBe(pad('0', 4));
+    expect(slots.formatPercent(0)).toBe(pad('0', 3));
+  });
+});
+
+describe('slot formatters: values and widths', () => {
+  it('lap time 8ch', () => {
+    expect(slots.formatLapTimeSlot(114.968)).toBe('1:54.968');
+    expect(slots.formatLapTimeSlot(0)).toBe(pad(NO_VALUE, 8));
+    expect(slots.formatLapTimeSlot(0, { allowZero: true })).toBe('0:00.000');
+  });
+  it('sector', () => {
+    expect(slots.formatSector(43.527)).toBe('43.527');
+    expect(slots.formatSector(9.5)).toBe(pad('9.500', 6));
+    expect(slots.formatSector(61.2)).toBe('1:01.200');
+    expect(slots.formatSector(0)).toBe(pad(NO_VALUE, 6));
+    expect(slots.formatSector(-1)).toBe(pad(NO_VALUE, 6));
+  });
+  it('delta: signed 3 dp, ±0.000 at zero, no -0', () => {
+    expect(slots.formatDeltaSlot(-0.421)).toBe(pad('-0.421', 7));
+    expect(slots.formatDeltaSlot(0.18)).toBe(pad('+0.180', 7));
+    expect(slots.formatDeltaSlot(0)).toBe(pad('±0.000', 7));
+    expect(slots.formatDeltaSlot(-0.0004)).toBe(pad('±0.000', 7));
+    expect(slots.formatDeltaSlot(12.3456)).toBe('+12.346');
+  });
+  it('tower gap: LDR, seconds, minutes, laps', () => {
+    expect(slots.formatTowerGap({ seconds: 0, isLeader: true })).toBe(pad('LDR', 8));
+    expect(slots.formatTowerGap({ seconds: null, isLeader: true })).toBe(pad('LDR', 8));
+    expect(slots.formatTowerGap({ seconds: 21.491 })).toBe(pad('+21.491', 8));
+    expect(slots.formatTowerGap({ seconds: 62.34 })).toBe(pad('+1:02.3', 8));
+    expect(slots.formatTowerGap({ seconds: 59.9996 })).toBe(pad('+1:00.0', 8));
+    expect(slots.formatTowerGap({ seconds: 600.04 })).toBe('+10:00.0');
+    expect(slots.formatTowerGap({ seconds: 80, laps: 1 })).toBe(pad('+1 LAP', 8));
+    expect(slots.formatTowerGap({ seconds: 80, laps: 3 })).toBe(pad('+3 LAPS', 8));
+    expect(slots.formatTowerGap({ seconds: 4.2, laps: 0 })).toBe(pad('+4.200', 8));
+    expect(slots.formatTowerGap({ seconds: 4.2, laps: 1.5 })).toBe(pad('+4.200', 8));
+    expect(slots.formatTowerGap({ seconds: null, laps: null })).toBe(pad(NO_VALUE, 8));
+    expect(slots.formatInterval({ seconds: 1.234 })).toBe(pad('+1.234', 8));
+    expect(slots.formatInterval({ seconds: 1, isLeader: true })).toBe(pad('LDR', 8));
+  });
+  it('fuel, consumption, laps, VE, percent', () => {
+    expect(slots.formatLitres(49.84)).toBe(pad('49.8', 5));
+    expect(slots.formatLitres(100)).toBe('100.0');
+    expect(slots.formatConsumption(3.624)).toBe('3.62');
+    expect(slots.formatLaps(13.84)).toBe(pad('13.8', 5));
+    expect(slots.formatLaps(1.2, { signed: true })).toBe(pad('+1.2', 5));
+    expect(slots.formatLaps(-0.44, { signed: true })).toBe(pad('-0.4', 5));
+    expect(slots.formatLaps(0.04, { signed: true })).toBe(pad('±0.0', 5));
+    expect(slots.formatVe(0.688)).toBe(pad('68.8', 5));
+    expect(slots.formatVe(1)).toBe('100.0');
+    expect(slots.formatPercent(1)).toBe('100');
+    expect(slots.formatPercent(0.5)).toBe(pad('50', 3));
+  });
+  it('temperatures and pressure', () => {
+    expect(slots.formatTempC(242.4)).toBe('242');
+    expect(slots.formatTempC(87.5)).toBe(pad('88', 3));
+    expect(slots.formatTempDiff(3.84)).toBe(pad('+3.8', 6));
+    expect(slots.formatTempDiff(-0.4)).toBe(pad('-0.4', 6));
+    expect(slots.formatTempDiff(0)).toBe(pad('±0.0', 6));
+    expect(slots.formatPressureBar(188_000)).toBe('1.88');
+  });
+  it('speed, rpm, steering', () => {
+    expect(slots.formatSpeedKmh(68.06)).toBe('245');
+    expect(slots.formatRpm(7426)).toBe(`7${NB}426`);
+    expect(slots.formatRpm(950)).toBe(pad('950', 5));
+    expect(slots.formatRpm(12_345.6)).toBe(`12${NB}346`);
+    expect(slots.formatSteeringDeg(0.5)).toBe(pad('29°', 5));
+    expect(slots.formatSteeringDeg(-0.21)).toBe(pad('-12°', 5));
+    expect(slots.formatSteeringDeg(-0.001)).toBe(pad('0°', 5));
+  });
+  it('counts and bytes', () => {
+    expect(slots.formatCount(241_506)).toBe(`241${NB}506`);
+    expect(slots.formatCount(1_208)).toBe(`1${NB}208`);
+    expect(slots.formatCount(12)).toBe('12');
+    expect(slots.formatCount(-1_000)).toBe(`-1${NB}000`);
+    expect(slots.formatCount(12_345_678_901_234_567_890n)).toBe(
+      ['12', '345', '678', '901', '234', '567', '890'].join(NB),
+    );
+    expect(slots.formatByteSize(123_633_664)).toBe(`117.9${NB}MiB`);
+    expect(slots.formatByteSize(0)).toBe(`0${NB}B`);
+  });
+  it('age', () => {
+    expect(slots.formatAgeShort(0.1)).toBe(`0.1${NB}s`);
+    expect(slots.formatAgeShort(6.29)).toBe(`6.2${NB}s`);
+    expect(slots.formatAgeShort(9.99)).toBe(`9.9${NB}s`);
+    expect(slots.formatAgeShort(12.7)).toBe(`12${NB}s`);
+    expect(slots.formatAgeShort(185)).toBe(`3${NB}m 05${NB}s`);
+    expect(slots.formatAgeShort(3_725)).toBe(`1${NB}h 02${NB}m`);
+    expect(slots.formatAgeShort(-1)).toBe(NO_VALUE);
+  });
+  it('session clock, lap counter, rtt, countdown', () => {
+    expect(slots.formatSessionClock(9_667)).toBe('2:41:07');
+    expect(slots.formatSessionClock(300.9)).toBe('0:05:00');
+    expect(slots.formatSessionClock(-5)).toBe(pad(NO_VALUE, 7));
+    expect(slots.formatLapCounter(109, 312)).toBe('L109 / 312');
+    expect(slots.formatLapCounter(109)).toBe('L109');
+    expect(slots.formatLapCounter(109, null)).toBe('L109');
+    expect(slots.formatLapCounter(1.5)).toBe(NO_VALUE);
+    expect(slots.formatRtt(38.4)).toBe(pad('38', 4));
+    expect(slots.formatRtt(-3)).toBe(pad(NO_VALUE, 4));
+    expect(slots.formatCountdown(522)).toBe('8:42');
+    expect(slots.formatCountdown(0.2)).toBe('0:01');
+    expect(slots.formatCountdown(0)).toBe('0:00');
+    expect(slots.formatCountdown(-10)).toBe('0:00');
+  });
+  it('joinUnit and padSlot', () => {
+    expect(slots.joinUnit('49.8', 'L')).toBe(`49.8${NB}L`);
+    expect(slots.joinUnit(pad(NO_VALUE, 5), 'L')).toBe(pad(NO_VALUE, 5));
+    expect(slots.joinUnit('3', '')).toBe('3');
+    expect(slots.padSlot('123456789', 4)).toBe('123456789');
+    expect(pad('x', 3).trim()).toBe('x');
   });
 });

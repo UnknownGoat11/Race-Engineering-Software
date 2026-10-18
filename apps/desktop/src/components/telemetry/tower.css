@@ -1,0 +1,173 @@
+/*
+ * Timing tower / standings (TimingTower). Owned by W1.6 / W3.3.
+ * Moved verbatim from screens.css (REDESIGN W1.1).
+ */
+
+
+/* Standings Table */
+.standings-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.standings-table th {
+  background-color: var(--color-surface-raised);
+  color: var(--color-text-dim);
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--color-border);
+  font-weight: 700;
+}
+
+.standings-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text);
+}
+
+.standings-row-driver {
+  background-color: var(--color-selected-bg);
+}
+
+.standings-row-driver td {
+  font-weight: 700;
+  color: var(--color-accent-strong);
+}
+
+/* Standings Tower & Details */
+.standings-tower {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  overflow: hidden;
+  height: 100%;
+  min-height: 0;
+}
+
+.standings-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background-color: var(--color-surface-raised);
+  border-bottom: 1px solid var(--color-border);
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.standings-class-filter {
+  display: flex;
+  gap: 4px;
+}
+
+.standings-empty {
+  padding: 24px;
+  text-align: center;
+}
+
+.standings-table-container {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.standings-col-pos,
+.standings-col-cpos {
+  width: 28px;
+  text-align: center;
+  font-weight: 700;
+}
+
+.standings-col-driver {
+  max-width: 140px;
+  min-width: 90px;
+  overflow: hidden;
+}
+
+.standings-driver-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.standings-driver-name-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
+
+.standings-sub-info {
+  font-size: 10px;
+  color: var(--color-text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.driver-pill {
+  background-color: var(--color-accent);
+  color: #000;
+  font-size: 9px;
+  font-weight: 800;
+  padding: 1px 3px;
+  border-radius: 2px;
+}
+
+.standings-col-class {
+  width: 50px;
+}
+
+.class-badge {
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-weight: 600;
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+}
+
+.standings-col-gap,
+.standings-col-time {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.standings-col-pit {
+  width: 32px;
+  text-align: center;
+}
+
+.pit-badge {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.pit-badge-in {
+  background-color: var(--color-warn-bg);
+  color: var(--color-warn);
+  border: 1px solid var(--color-warn);
+}
+
+.pit-badge-garage {
+  background-color: var(--color-error-bg);
+  color: var(--color-error);
+  border: 1px solid var(--color-error);
+}
+
+.pit-stops-count {
+  color: var(--color-text-dim);
+  font-size: 11px;
+}

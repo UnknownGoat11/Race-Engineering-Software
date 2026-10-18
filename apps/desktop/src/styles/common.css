@@ -1,0 +1,250 @@
+/*
+ * Shared screen primitives used by both modes and by telemetry panels: screen shell, header banner,
+ * status badges, meta chips, cards, alert rows, extra-small buttons, inline confirm (ConfirmAction).
+ * Moved verbatim from screens.css (REDESIGN W1.1); replaced by components/ui primitives in W2.2.
+ * Spec refs of the original file: §72–89, §1735–1755, §2108–2150. Tokens only (tokens.css).
+ *
+ * Load order: every importer imports this file BEFORE its area file (driver/engineer/modal/tower.css), because
+ * `.card` + `.modal-content` share elements and the area rule must win, as it did inside screens.css.
+ */
+
+/* Common Screen Shell */
+.screen-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  gap: 12px;
+  padding: 12px 16px;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+/* System Status Header */
+.screen-header-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 10px 16px;
+}
+
+.screen-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.screen-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.status-badge-live {
+  background-color: rgba(63, 207, 115, 0.15);
+  color: var(--color-ok);
+  border: 1px solid rgba(63, 207, 115, 0.3);
+}
+
+.status-badge-stale {
+  background-color: rgba(167, 139, 250, 0.15);
+  color: var(--color-quality-stale);
+  border: 1px solid rgba(167, 139, 250, 0.3);
+}
+
+.status-badge-warn {
+  background-color: rgba(245, 184, 61, 0.15);
+  color: var(--color-warn);
+  border: 1px solid rgba(245, 184, 61, 0.3);
+}
+
+.status-badge-error {
+  background-color: rgba(255, 95, 95, 0.15);
+  color: var(--color-error);
+  border: 1px solid rgba(255, 95, 95, 0.3);
+}
+
+.status-badge-neutral {
+  background-color: var(--color-surface-raised);
+  color: var(--color-text-dim);
+  border: 1px solid var(--color-border);
+}
+
+.status-badge-info {
+  background-color: rgba(76, 157, 255, 0.15);
+  color: var(--color-info);
+  border: 1px solid rgba(76, 157, 255, 0.3);
+}
+
+.meta-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--font-size-xs);
+}
+
+.meta-chip-label {
+  font-family: var(--font-ui);
+  color: var(--color-text-dim);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.meta-chip-value {
+  font-family: var(--font-mono);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.telemetry-grid-2x2 {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 16px;
+}
+
+.card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background-color: var(--color-surface-raised);
+  border-bottom: 1px solid var(--color-border);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  letter-spacing: 0.5px;
+}
+
+.card-header-title {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  letter-spacing: 0.5px;
+}
+
+.card-body {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+}
+
+.card-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.card-row-label {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.card-row-value {
+  font-family: var(--font-mono);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* Alerts Toast / List */
+.alerts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.alert-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-size: var(--font-size-xs);
+  font-family: var(--font-ui);
+}
+
+.alert-item-critical {
+  background-color: var(--color-error-bg);
+  border: 1px solid var(--color-error);
+  color: var(--color-error);
+}
+
+.alert-item-warning {
+  background-color: var(--color-warn-bg);
+  border: 1px solid var(--color-warn);
+  color: var(--color-warn);
+}
+
+.alert-item-info {
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-info);
+  color: var(--color-info);
+}
+
+.btn-xs {
+  padding: 1px 6px;
+  font-size: 10px;
+  height: 20px;
+  line-height: 18px;
+}
+
+/* Inline two-step confirmation (components/ui/ConfirmAction.tsx; W1.1, new). */
+.confirm-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.confirm-action-open {
+  flex-wrap: wrap;
+  padding: var(--space-1) var(--space-2);
+  border: var(--border-width) solid var(--color-error);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-error-bg);
+}
+
+.confirm-action-prompt {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text);
+}
+
+.confirm-action-consequence,
+.confirm-action-reason {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}

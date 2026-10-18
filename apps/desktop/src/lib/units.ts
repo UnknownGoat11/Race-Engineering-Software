@@ -634,3 +634,272 @@ export function formatAxisTick(display: number, decimals: number, style: AxisTic
       return clockTickText(display, decimals, true);
   }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Fixed-width slot formatters (REDESIGN.md §2.8, C16)
+//
+// Each returns the VALUE only (no unit), padded at the start with FIGURE SPACE (U+2007, digit width in tabular
+// fonts, never collapsed by HTML) to the slot width, so digits do not shift as values change. A missing or
+// invalid value is NO_VALUE ("—") padded to the same width — never 0. A 0 appears only when 0 was measured.
+// Use `joinUnit` to attach a unit with a narrow no-break space. `String.prototype.trim()` removes the padding.
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Pads slot values (U+2007 FIGURE SPACE). */
+export const FIGURE_SPACE = ' ';
+/** Separates a value from its unit and groups thousands (U+202F NARROW NO-BREAK SPACE). */
+export const UNIT_SPACE = ' ';
+
+/** Pads `text` at the start to `width` characters (longer text is returned unchanged, never truncated). */
+export function padSlot(text: string, width: number): string {
+  return text.length >= width ? text : FIGURE_SPACE.repeat(width - text.length) + text;
+}
+
+/** `value` + narrow no-break space + `unit`; a missing value gets no unit ("—", not "— L"). */
+export function joinUnit(value: string, unit: string): string {
+  if (value.trim() === NO_VALUE || unit === '') return value;
+  return `${value}${UNIT_SPACE}${unit}`;
+}
+
+/** Slot widths of §2.8, in characters. */
+export const SLOT_WIDTH = {
+  lapTime: 8,
+  sector: 6,
+  delta: 7,
+  gap: 8,
+  fuel: 5,
+  consumption: 4,
+  laps: 5,
+  ve: 5,
+  temperature: 3,
+  temperatureDiff: 6,
+  pressure: 4,
+  percent: 3,
+  speed: 3,
+  rpm: 5,
+  steering: 5,
+  sessionClock: 7,
+  rtt: 4,
+  countdown: 4,
+} as const;
+
+/** Sign shown for a signed value that rounds to zero (§2.8: "±0.000 at 0"). */
+const ZERO_SIGN = '±';
+
+/** Signed fixed-point text: "-0.421", "+0.180", "±0.000" (a value rounding to zero is never "-0" or "+0"). */
+function signedFixed(value: number, decimals: number): string {
+  const units = roundedMagnitude(value, decimals);
+  const body = fixedFromUnits(units, decimals);
+  if (units === 0) return `${ZERO_SIGN}${body}`;
+  return `${value < 0 ? '-' : '+'}${body}`;
+}
+
+/** Inserts UNIT_SPACE between groups of three digits of an unsigned integer digit string. */
+function groupThousands(digits: string): string {
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, UNIT_SPACE);
+}
+
+/** Lap time `m:ss.SSS`, 8ch. 0 and negatives are not lap times (see `formatLapTime`). */
+export function formatLapTimeSlot(seconds: MaybeNumber, options?: LapTimeOptions): string {
+  return padSlot(formatLapTime(seconds, options), SLOT_WIDTH.lapTime);
+}
+
+/** Sector time `ss.SSS` (`m:ss.SSS` from 60 s), 6ch. 0 and negatives render as NO_VALUE. */
+export function formatSector(seconds: MaybeNumber): string {
+  if (!isFiniteNumber(seconds) || seconds <= 0) return padSlot(NO_VALUE, SLOT_WIDTH.sector);
+  const ms = roundedMagnitude(seconds, 3);
+  if (ms >= 60_000) return padSlot(formatLapTime(seconds), SLOT_WIDTH.sector);
+  return padSlot(fixedFromUnits(ms, 3), SLOT_WIDTH.sector);
+}
+
+/** Lap-time delta, signed 3 dp, 7ch: "-0.421", "+0.180", "±0.000". */
+export function formatDeltaSlot(seconds: MaybeNumber): string {
+  if (!isFiniteNumber(seconds)) return padSlot(NO_VALUE, SLOT_WIDTH.delta);
+  return padSlot(signedFixed(seconds, 3), SLOT_WIDTH.delta);
+}
+
+/** Input of a tower gap or interval cell. */
+export interface GapInput {
+  /** Time gap in seconds (null when unknown). */
+  readonly seconds: MaybeNumber;
+  /** Whole laps behind (≥ 1 wins over `seconds`); 0 / null / non-integer = not lapped. */
+  readonly laps?: MaybeNumber;
+  /** The car is the reference (leader / class leader): the cell reads `LDR`. */
+  readonly isLeader?: boolean;
+}
+
+/** `+s.sss` below 60 s, `+m:ss.s` from 60 s (tenths, rounded half away from zero). */
+function gapSecondsText(seconds: number): string {
+  const sign = seconds < 0 ? '-' : '+';
+  const ms = roundedMagnitude(seconds, 3);
+  if (ms < 60_000) return `${sign}${fixedFromUnits(ms, 3)}`;
+  const tenths = roundedMagnitude(seconds, 1);
+  const minutes = Math.floor(tenths / 600);
+  const rest = tenths - minutes * 600;
+  return `${sign}${minutes}:${fixedFromUnits(rest, 1).padStart(4, '0')}`;
+}
+
+function gapText(input: GapInput): string {
+  if (input.isLeader === true) return 'LDR';
+  const laps = input.laps;
+  if (isFiniteNumber(laps) && Number.isInteger(laps) && laps >= 1) {
+    return `+${laps} ${laps === 1 ? 'LAP' : 'LAPS'}`;
+  }
+  if (!isFiniteNumber(input.seconds)) return NO_VALUE;
+  return gapSecondsText(input.seconds);
+}
+
+/** Tower gap to the (class) leader, 8ch: `LDR`, `+21.491`, `+1:02.3`, `+1 LAP`, `+3 LAPS`, `—`. */
+export function formatTowerGap(input: GapInput): string {
+  return padSlot(gapText(input), SLOT_WIDTH.gap);
+}
+
+/** Tower interval to the car ahead (same format as `formatTowerGap`; the leader reads `LDR`). */
+export function formatInterval(input: GapInput): string {
+  return padSlot(gapText(input), SLOT_WIDTH.gap);
+}
+
+function unsignedSlot(value: MaybeNumber, decimals: number, width: number): string {
+  if (!isFiniteNumber(value)) return padSlot(NO_VALUE, width);
+  return padSlot(formatFixed(value, decimals, 'negative-only'), width);
+}
+
+/** Fuel in litres, 1 dp, 5ch: "49.8". */
+export function formatLitres(litres: MaybeNumber): string {
+  return unsignedSlot(litres, 1, SLOT_WIDTH.fuel);
+}
+
+/** Consumption in L/lap, 2 dp, 4ch: "3.62". */
+export function formatConsumption(litresPerLap: MaybeNumber): string {
+  return unsignedSlot(litresPerLap, 2, SLOT_WIDTH.consumption);
+}
+
+/** Laps remaining (1 dp) or, with `signed`, a margin that always carries its sign ("+1.2", "±0.0"); 5ch. */
+export function formatLaps(laps: MaybeNumber, options?: { readonly signed?: boolean }): string {
+  if (!isFiniteNumber(laps)) return padSlot(NO_VALUE, SLOT_WIDTH.laps);
+  const text = options?.signed === true ? signedFixed(laps, 1) : formatFixed(laps, 1, 'negative-only');
+  return padSlot(text, SLOT_WIDTH.laps);
+}
+
+/** Virtual energy from a fraction (0..1), 1 dp percent, 5ch: 0.688 → "68.8". */
+export function formatVe(fraction: MaybeNumber): string {
+  return unsignedSlot(isFiniteNumber(fraction) ? fraction * PERCENT : fraction, 1, SLOT_WIDTH.ve);
+}
+
+/** Percent from a fraction (0..1), integer, 3ch: 1 → "100". */
+export function formatPercent(fraction: MaybeNumber): string {
+  return unsignedSlot(isFiniteNumber(fraction) ? fraction * PERCENT : fraction, 0, SLOT_WIDTH.percent);
+}
+
+/** Temperature in °C, integer, 3ch: "242". */
+export function formatTempC(celsius: MaybeNumber): string {
+  return unsignedSlot(celsius, 0, SLOT_WIDTH.temperature);
+}
+
+/** Temperature difference in °C (kelvin), signed, 1 dp, 6ch: "+3.8", "-0.4", "±0.0". */
+export function formatTempDiff(celsius: MaybeNumber): string {
+  if (!isFiniteNumber(celsius)) return padSlot(NO_VALUE, SLOT_WIDTH.temperatureDiff);
+  return padSlot(signedFixed(celsius, 1), SLOT_WIDTH.temperatureDiff);
+}
+
+/** Pressure from Pa to bar, 2 dp, 4ch: 188_000 → "1.88". */
+export function formatPressureBar(pa: MaybeNumber): string {
+  return unsignedSlot(isFiniteNumber(pa) ? paToBar(pa) : pa, 2, SLOT_WIDTH.pressure);
+}
+
+/** Speed from m/s to km/h, integer, 3ch: 68.06 → "245". */
+export function formatSpeedKmh(mps: MaybeNumber): string {
+  return unsignedSlot(isFiniteNumber(mps) ? mpsToKmh(mps) : mps, 0, SLOT_WIDTH.speed);
+}
+
+/** Integer text with grouped thousands ("241 506"); negatives keep their sign. */
+function groupedInteger(value: number): string {
+  const units = roundedMagnitude(value, 0);
+  const text = groupThousands(String(units));
+  return value < 0 && units > 0 ? `-${text}` : text;
+}
+
+/** Engine speed, integer, narrow-space thousands, 5ch: 7426 → "7 426". */
+export function formatRpm(rpm: MaybeNumber): string {
+  if (!isFiniteNumber(rpm)) return padSlot(NO_VALUE, SLOT_WIDTH.rpm);
+  return padSlot(groupedInteger(rpm), SLOT_WIDTH.rpm);
+}
+
+/**
+ * Steering wheel angle from radians (`STEERING_ANGLE`, never the raw −1..1 `STEERING` input) to whole degrees,
+ * 5ch: 0.5 → "29°", −0.21 → "-12°". Only negatives carry a sign.
+ */
+export function formatSteeringDeg(radians: MaybeNumber): string {
+  if (!isFiniteNumber(radians)) return padSlot(NO_VALUE, SLOT_WIDTH.steering);
+  return padSlot(`${formatFixed(radians * DEG_PER_RAD, 0, 'negative-only')}°`, SLOT_WIDTH.steering);
+}
+
+/** A measured count with grouped thousands ("241 506"); 0 only when 0 was measured; missing → "—". */
+export function formatCount(count: number | bigint | null | undefined): string {
+  if (count === null || count === undefined) return NO_VALUE;
+  if (typeof count === 'bigint') {
+    const negative = count < 0n;
+    const text = groupThousands((negative ? -count : count).toString());
+    return negative ? `-${text}` : text;
+  }
+  if (!Number.isFinite(count)) return NO_VALUE;
+  return groupedInteger(count);
+}
+
+/** Bytes, IEC with 1 dp and unit: "117.9 MiB"; missing → "—". */
+export function formatByteSize(bytes: number | bigint | null | undefined): string {
+  const f = formatBytes(bytes);
+  return f.text === NO_VALUE ? NO_VALUE : joinUnit(f.text, f.unitLabel);
+}
+
+/**
+ * A data age in seconds for tags ("STALE 6.2 s"): `0.1 s` … `9.9 s` (tenths), `12 s` (whole seconds),
+ * `3 m 05 s`, `1 h 02 m`. Truncated like a clock, so a counting age never jumps back. Negative/missing → "—".
+ */
+export function formatAgeShort(seconds: MaybeNumber): string {
+  if (!isFiniteNumber(seconds) || seconds < 0) return NO_VALUE;
+  if (seconds < 10) {
+    const tenths = Math.floor(Number((seconds * AGE_TENTHS_PER_S).toPrecision(AGE_TRUNCATION_DIGITS)));
+    return `${fixedFromUnits(tenths, AGE_SECONDS_DECIMALS)}${UNIT_SPACE}s`;
+  }
+  const whole = Math.floor(seconds);
+  if (whole < SECONDS_PER_MINUTE) return `${whole}${UNIT_SPACE}s`;
+  if (whole < SECONDS_PER_HOUR) {
+    const m = Math.floor(whole / SECONDS_PER_MINUTE);
+    return `${m}${UNIT_SPACE}m ${pad2(whole % SECONDS_PER_MINUTE)}${UNIT_SPACE}s`;
+  }
+  const h = Math.floor(whole / SECONDS_PER_HOUR);
+  return `${h}${UNIT_SPACE}h ${pad2(Math.floor((whole % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE))}${UNIT_SPACE}m`;
+}
+
+/** Session clock `h:mm:ss` (hours always shown, truncated), 7ch: 9667 → "2:41:07". Negative/missing → "—". */
+export function formatSessionClock(seconds: MaybeNumber): string {
+  if (!isFiniteNumber(seconds) || seconds < 0) return padSlot(NO_VALUE, SLOT_WIDTH.sessionClock);
+  const total = Math.floor(seconds);
+  const h = Math.floor(total / SECONDS_PER_HOUR);
+  const m = Math.floor((total % SECONDS_PER_HOUR) / SECONDS_PER_MINUTE);
+  return padSlot(`${h}:${pad2(m)}:${pad2(total % SECONDS_PER_MINUTE)}`, SLOT_WIDTH.sessionClock);
+}
+
+/** Lap counter: "L109 / 312", or "L109" without a total; a missing or invalid lap → "—". */
+export function formatLapCounter(lap: MaybeNumber, total?: MaybeNumber): string {
+  if (!isFiniteNumber(lap) || lap < 0 || !Number.isInteger(lap)) return NO_VALUE;
+  if (isFiniteNumber(total) && Number.isInteger(total) && total > 0) return `L${lap} / ${total}`;
+  return `L${lap}`;
+}
+
+/** Round-trip time in ms, integer, 4ch: 38.4 → "38". Negative/missing → "—". */
+export function formatRtt(ms: MaybeNumber): string {
+  if (isFiniteNumber(ms) && ms < 0) return padSlot(NO_VALUE, SLOT_WIDTH.rtt);
+  return unsignedSlot(ms, 0, SLOT_WIDTH.rtt);
+}
+
+/**
+ * Countdown `m:ss`, 4ch, rounded UP to whole seconds (so it reads 0:01 until it really expires); at or below 0
+ * it reads "0:00" (expired). Missing → "—".
+ */
+export function formatCountdown(secondsLeft: MaybeNumber): string {
+  if (!isFiniteNumber(secondsLeft)) return padSlot(NO_VALUE, SLOT_WIDTH.countdown);
+  const total = secondsLeft <= 0 ? 0 : Math.ceil(Number(secondsLeft.toPrecision(AGE_TRUNCATION_DIGITS)));
+  const m = Math.floor(total / SECONDS_PER_MINUTE);
+  return padSlot(`${m}:${pad2(total % SECONDS_PER_MINUTE)}`, SLOT_WIDTH.countdown);
+}

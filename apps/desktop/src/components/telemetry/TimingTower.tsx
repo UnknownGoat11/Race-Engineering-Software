@@ -1,6 +1,8 @@
 import { useState, useMemo, type JSX } from 'react';
 import type { CompetitorEntryDto, ScoringStateDto } from '../../hooks/useScoring';
 import { formatGap, formatLapGap, formatLapTime, NO_VALUE } from '../../lib/units';
+import '../../styles/common.css';
+import './tower.css';
 
 export interface TimingTowerProps {
   readonly scoring: ScoringStateDto | null;
