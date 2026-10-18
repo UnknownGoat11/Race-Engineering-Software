@@ -6,9 +6,10 @@ import { logout, type AppInfo, type ConfigSnapshot, type LoginStateDto, type Mod
 import { COPY, environmentLabel, modeLabel } from '../lib/labels';
 import { DriverScreen } from './DriverScreen';
 import { EngineerScreen } from './EngineerScreen';
+import { HomeScreen } from './HomeScreen';
 import { SettingsPage } from './SettingsPage';
 
-export type ShellPage = 'status' | 'pitwall' | 'settings';
+export type ShellPage = 'lobby' | 'status' | 'pitwall' | 'settings';
 
 interface ShellScreenProps {
   readonly info: AppInfo;
@@ -30,20 +31,18 @@ export function ShellScreen({
   onLogout,
   onRequireLogin,
 }: ShellScreenProps): JSX.Element {
-  const defaultPage: ShellPage = mode === 'driver' ? 'status' : 'pitwall';
+  const defaultPage: ShellPage = 'lobby';
   const [page, setPage] = useState<ShellPage>(defaultPage);
   const [loggingOut, setLoggingOut] = useState(false);
 
-  const pages: readonly { readonly id: ShellPage; readonly label: string }[] =
-    mode === 'driver'
-      ? [
-          { id: 'status', label: COPY.status },
-          { id: 'settings', label: COPY.settings },
-        ]
-      : [
-          { id: 'pitwall', label: COPY.pitwall },
-          { id: 'settings', label: COPY.settings },
-        ];
+  const pages: readonly { readonly id: ShellPage; readonly label: string }[] = [
+    { id: 'lobby', label: 'Lobby' },
+    {
+      id: mode === 'driver' ? 'status' : 'pitwall',
+      label: mode === 'driver' ? COPY.status : COPY.pitwall,
+    },
+    { id: 'settings', label: COPY.settings },
+  ];
 
   const handleLogout = async (): Promise<void> => {
     setLoggingOut(true);
@@ -70,7 +69,7 @@ export function ShellScreen({
     <div className="shell">
       {!hideShellHeader && (
         <header className="shell-header">
-          <span className="shell-title">LMU RACE ENGINEERING</span>
+          <span className="shell-title">Race Engineering Tool</span>
           <span className="badge badge-mode" data-testid="header-mode">
             {modeLabel(mode)}
           </span>
@@ -124,6 +123,17 @@ export function ShellScreen({
         {page === 'settings' ? (
           <PanelErrorBoundary name="Settings">
             <SettingsPage info={info} snapshot={snapshot} mode={mode} onChangeMode={onChangeMode} />
+          </PanelErrorBoundary>
+        ) : page === 'lobby' ? (
+          <PanelErrorBoundary name="Lobby">
+            <HomeScreen
+              currentMode={mode}
+              onChangeMode={onChangeMode}
+              displayName={accountDisplayName}
+              onEnterSession={(target) => {
+                setPage(target ?? (mode === 'driver' ? 'status' : 'pitwall'));
+              }}
+            />
           </PanelErrorBoundary>
         ) : mode === 'driver' ? (
           <PanelErrorBoundary name="Driver Screen">

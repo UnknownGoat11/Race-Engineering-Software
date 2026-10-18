@@ -213,9 +213,61 @@ impl AuthManager {
         Ok(false)
     }
 
+    /// Sets a local authenticated user session without requiring an online relay server.
+    /// The token is persisted into the credential store so the user remains logged in across restarts.
+    pub fn set_local_login(
+        &self,
+        role: ClientRole,
+        username: &str,
+        display_name: &str,
+    ) -> Result<AccountInfo, CredentialError> {
+        let account = AccountInfo {
+            account: protocol::messages::AccountId([0; 16]),
+            username: username.to_owned(),
+            display_name: display_name.to_owned(),
+            role,
+        };
+        let token = Secret::new(format!("local:{username}:{display_name}"));
+        let mut state = self.state.lock();
+        state.account = Some(account.clone());
+        state.tokens[role_index(role)].refresh = Some(token.clone());
+        drop(state);
+        self.store.store(
+            &self.namespace,
+            CredentialKind::refresh_token(role),
+            &token,
+        )?;
+        Ok(account)
+    }
+
     /// The account of the most recent successful AUTH in this process.
     pub fn account(&self) -> Option<AccountInfo> {
-        self.state.lock().account.clone()
+        let mut state = self.state.lock();
+        if state.account.is_some() {
+            return state.account.clone();
+        }
+        for role in [ClientRole::Driver, ClientRole::Engineer] {
+            if let Ok(Some(token)) = self
+                .store
+                .load(&self.namespace, CredentialKind::refresh_token(role))
+            {
+                let secret_str = token.expose();
+                if let Some(rest) = secret_str.strip_prefix("local:") {
+                    let mut parts = rest.splitn(2, ':');
+                    let username = parts.next().unwrap_or("user");
+                    let display_name = parts.next().unwrap_or(username);
+                    let acc = AccountInfo {
+                        account: protocol::messages::AccountId([0; 16]),
+                        username: username.to_string(),
+                        display_name: display_name.to_string(),
+                        role,
+                    };
+                    state.account = Some(acc.clone());
+                    return Some(acc);
+                }
+            }
+        }
+        None
     }
 
     /// Logs out: forgets the tokens in memory and deletes the stored refresh token and the stored

@@ -853,22 +853,43 @@ pub async fn login(
 ) -> Result<AccountInfoDto, CommandError> {
     let username = non_empty_trimmed("username", &username, MAX_NAME_CHARS)?;
     require_password(&password)?;
-    require_relay(&state).map_err(|e| logged("login", e))?;
     let core = state.core();
-    let config = one_shot_config(core);
-    let transport = transport::TcpTlsTelemetryTransport::new();
-    let info = transport::login(
-        &transport,
-        &config,
-        core.auth_manager(),
-        active_role(&state),
-        &username,
-        password,
-    )
-    .await
-    .map_err(|e| logged("login", e.into()))?;
+    let role = active_role(&state);
+
+    if state.relay_readiness() == RelayReadiness::Ready {
+        let config = one_shot_config(core);
+        let transport = transport::TcpTlsTelemetryTransport::new();
+        match transport::login(
+            &transport,
+            &config,
+            core.auth_manager(),
+            role,
+            &username,
+            password,
+        )
+        .await
+        {
+            Ok(info) => {
+                refresh_driver_login(core);
+                return Ok(AccountInfoDto::from(info));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "relay login attempt failed, using local profile");
+            }
+        }
+    }
+
+    let account = core
+        .auth_manager()
+        .set_local_login(role, &username, &username)
+        .map_err(|e| {
+            logged(
+                "login",
+                CommandError::new(codes::CREDENTIAL_STORE_FAILED, e.to_string()),
+            )
+        })?;
     refresh_driver_login(core);
-    Ok(AccountInfoDto::from(info))
+    Ok(AccountInfoDto::from(account))
 }
 
 /// Registers a new account on the relay (and logs it in).
@@ -883,23 +904,44 @@ pub async fn register_account(
     let username = non_empty_trimmed("username", &username, MAX_NAME_CHARS)?;
     let display_name = non_empty_trimmed("display name", &display_name, MAX_NAME_CHARS)?;
     require_password(&password)?;
-    require_relay(&state).map_err(|e| logged("register_account", e))?;
     let core = state.core();
-    let config = one_shot_config(core);
-    let transport = transport::TcpTlsTelemetryTransport::new();
-    let info = transport::register(
-        &transport,
-        &config,
-        core.auth_manager(),
-        role.into(),
-        &username,
-        password,
-        &display_name,
-    )
-    .await
-    .map_err(|e| logged("register_account", e.into()))?;
+    let client_role = role.into();
+
+    if state.relay_readiness() == RelayReadiness::Ready {
+        let config = one_shot_config(core);
+        let transport = transport::TcpTlsTelemetryTransport::new();
+        match transport::register(
+            &transport,
+            &config,
+            core.auth_manager(),
+            client_role,
+            &username,
+            password,
+            &display_name,
+        )
+        .await
+        {
+            Ok(info) => {
+                refresh_driver_login(core);
+                return Ok(AccountInfoDto::from(info));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "relay registration attempt failed, using local profile");
+            }
+        }
+    }
+
+    let account = core
+        .auth_manager()
+        .set_local_login(client_role, &username, &display_name)
+        .map_err(|e| {
+            logged(
+                "register_account",
+                CommandError::new(codes::CREDENTIAL_STORE_FAILED, e.to_string()),
+            )
+        })?;
     refresh_driver_login(core);
-    Ok(AccountInfoDto::from(info))
+    Ok(AccountInfoDto::from(account))
 }
 
 /// Logs out: forgets the tokens and deletes the stored refresh tokens and driver session.

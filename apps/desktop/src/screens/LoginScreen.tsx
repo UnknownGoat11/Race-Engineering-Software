@@ -82,7 +82,11 @@ export function LoginScreen({
     <main className="login-screen" data-testid="login-screen">
       <div className="login-card">
         <header className="login-header">
-          <h1 className="login-title">LMU RACE ENGINEERING</h1>
+          <div className="login-brand-tag">
+            <span className="login-pulse-dot" />
+            <span>Motorsport Telemetry & Pitwall</span>
+          </div>
+          <h1 className="login-title">Race Engineering Tool</h1>
           <div className="login-role-badge">
             <span className="login-role-text">
               Active mode: <strong data-testid="login-mode-text">{modeLabel(mode)}</strong>

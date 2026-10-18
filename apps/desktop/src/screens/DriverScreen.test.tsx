@@ -192,7 +192,9 @@ describe('DriverScreen', () => {
     });
 
     fireEvent.click(screen.getByTestId('new-code-btn'));
-    expect(ipc.driverNewCode).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(ipc.driverNewCode).toHaveBeenCalled();
+    });
   });
 
   it('allows pausing/resuming recording', async () => {

@@ -43,7 +43,7 @@ export function ModeSelectScreen({ onSelect }: ModeSelectScreenProps): JSX.Eleme
   return (
     <main className="mode-select-screen">
       <div className="mode-select-card">
-        <h1 className="mode-select-title">LMU RACE ENGINEERING</h1>
+        <h1 className="mode-select-title">Race Engineering Tool</h1>
         <p className="mode-select-prompt" id="mode-select-prompt">
           Select operating mode:
         </p>

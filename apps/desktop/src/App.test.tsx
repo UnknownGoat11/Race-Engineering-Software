@@ -104,7 +104,7 @@ describe('App', () => {
 
     render(<App />);
 
-    expect(await screen.findByText('LMU RACE ENGINEERING')).toBeInTheDocument();
+    expect(await screen.findByText('Race Engineering Tool')).toBeInTheDocument();
     expect(screen.getByText('Select operating mode:')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'ENGINEER MODE' })).toBeInTheDocument();
 
