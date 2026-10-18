@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState, type JSX } from 'react';
+import { useLoginState } from './hooks/useLoginState';
 import { getAppInfo, getConfig, setMode, type AppInfo, type ConfigSnapshot, type Mode } from './lib/ipc';
+import { LoginScreen } from './screens/LoginScreen';
 import { ModeSelectScreen } from './screens/ModeSelectScreen';
 import { ShellScreen } from './screens/ShellScreen';
 
@@ -16,6 +18,8 @@ export function App(): JSX.Element {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
   // Incremented to re-run the initial load after a failure.
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const [requireLogin, setRequireLogin] = useState(false);
+  const login = useLoginState();
 
   useEffect(() => {
     let cancelled = false;
@@ -32,11 +36,16 @@ export function App(): JSX.Element {
     };
   }, [loadAttempt]);
 
-  const changeMode = useCallback(async (mode: Mode): Promise<void> => {
-    // Errors propagate to the calling screen, which shows them next to the control that failed.
-    const snapshot = await setMode(mode);
-    setState((previous) => (previous.kind === 'ready' ? { ...previous, snapshot } : previous));
-  }, []);
+  const changeMode = useCallback(
+    async (mode: Mode): Promise<void> => {
+      // Errors propagate to the calling screen, which shows them next to the control that failed.
+      const snapshot = await setMode(mode);
+      setState((previous) => (previous.kind === 'ready' ? { ...previous, snapshot } : previous));
+      setRequireLogin(false);
+      await login.refresh();
+    },
+    [login],
+  );
 
   switch (state.kind) {
     case 'loading':
@@ -67,7 +76,39 @@ export function App(): JSX.Element {
       if (mode === null) {
         return <ModeSelectScreen onSelect={changeMode} />;
       }
-      return <ShellScreen info={state.info} snapshot={state.snapshot} mode={mode} onChangeMode={changeMode} />;
+      if (login.loading && login.state === null) {
+        return (
+          <main className="fullscreen-state" aria-busy="true">
+            <p>Loading…</p>
+          </main>
+        );
+      }
+      if (!login.authenticated || requireLogin) {
+        return (
+          <LoginScreen
+            mode={mode}
+            info={state.info}
+            onLoginSuccess={() => {
+              setRequireLogin(false);
+              void login.refresh();
+            }}
+            onChangeMode={changeMode}
+          />
+        );
+      }
+      return (
+        <ShellScreen
+          info={state.info}
+          snapshot={state.snapshot}
+          mode={mode}
+          onChangeMode={changeMode}
+          loginState={login.state}
+          onLogout={login.refresh}
+          onRequireLogin={() => {
+            setRequireLogin(true);
+          }}
+        />
+      );
     }
   }
 }

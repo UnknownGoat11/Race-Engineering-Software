@@ -1,4 +1,6 @@
 import { useState, type JSX } from 'react';
+import { ConfirmAction } from '../components/ui/ConfirmAction';
+import { useCoreStatus } from '../hooks/useCoreStatus';
 import type { AppInfo, ConfigSnapshot, Mode } from '../lib/ipc';
 import { buildProfileLabel, environmentLabel, modeLabel } from '../lib/labels';
 import { NO_VALUE } from '../lib/units';
@@ -22,18 +24,26 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
   const [selected, setSelected] = useState<Mode>(mode);
   const [save, setSave] = useState<SaveState>({ kind: 'idle' });
   const { config } = snapshot;
+  const { status } = useCoreStatus();
   const extraCaHonoured = info.environment === 'development';
 
-  const apply = (): void => {
+  const isStreaming = status?.network.streaming === true;
+  const isRecording = status?.recording.state === 'active';
+  const hasEngineers = (status?.network.engineers_connected ?? 0) > 0;
+  const isEngineerConnected =
+    status?.engineer?.phase === 'monitoring' ||
+    status?.engineer?.phase === 'awaiting_confirmation';
+
+  const isBusy = isStreaming || isRecording || hasEngineers || isEngineerConnected;
+
+  const apply = async (): Promise<void> => {
     setSave({ kind: 'saving' });
-    onChangeMode(selected).then(
-      () => {
-        setSave({ kind: 'idle' });
-      },
-      (reason: unknown) => {
-        setSave({ kind: 'error', message: reason instanceof Error ? reason.message : String(reason) });
-      },
-    );
+    try {
+      await onChangeMode(selected);
+      setSave({ kind: 'idle' });
+    } catch (reason: unknown) {
+      setSave({ kind: 'error', message: reason instanceof Error ? reason.message : String(reason) });
+    }
   };
 
   return (
@@ -61,14 +71,30 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
                 {modeLabel(option)} MODE
               </button>
             ))}
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={selected === mode || save.kind === 'saving'}
-              onClick={apply}
-            >
-              Apply mode change
-            </button>
+            {isBusy ? (
+              <ConfirmAction
+                label="Apply mode change"
+                prompt="Change operating mode?"
+                consequence="Changing operating mode will stop active streaming, recording, and disconnect all connected sessions."
+                confirmLabel="Confirm change"
+                onConfirm={apply}
+                disabled={selected === mode || save.kind === 'saving'}
+                variant="danger"
+                testId="settings-apply-mode"
+              />
+            ) : (
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={selected === mode || save.kind === 'saving'}
+                onClick={() => {
+                  void apply();
+                }}
+                data-testid="settings-apply-mode"
+              >
+                Apply mode change
+              </button>
+            )}
             {save.kind === 'saving' && <span className="form-status">Saving…</span>}
           </div>
           {save.kind === 'error' && (
