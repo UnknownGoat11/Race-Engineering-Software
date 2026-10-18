@@ -87,3 +87,25 @@ export interface DriverPosition {
   readonly lapDistM?: number | null;
   readonly state?: 'live' | 'stale' | 'unavailable';
 }
+
+/**
+ * Data-quality scope of the whole map (REDESIGN §2.2): stale keeps the last positions with hollow markers and a
+ * STALE tag; ended and untrusted dim the map and say so. Other states render normally (the SYNTHETIC pill lives
+ * in the pitwall bar, not on the map).
+ */
+export type TrackMapDq = 'live' | 'stale' | 'unavailable' | 'synthetic' | 'degraded' | 'untrusted' | 'ended';
+
+/** One car on the lap-distance bar (the fallback when no circuit outline is available). */
+export interface LapPositionMarker {
+  readonly id: string | number;
+  /** Car number without '#', or '' when unknown. */
+  readonly carNumber: string;
+  readonly vehicleClass: VehicleClass;
+  /** Distance from the start/finish line (m). */
+  readonly lapDistM: number;
+  readonly isDriver?: boolean;
+  readonly inPits?: boolean;
+}
+
+/** Where the track length came from: reported by LMU (TRACK_LENGTH / verified map) or inferred from lap wraps. */
+export type TrackLengthSource = 'reported' | 'observed';

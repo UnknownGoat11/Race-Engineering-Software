@@ -141,30 +141,52 @@ describe('trackmap geometry', () => {
     expect(path.endsWith(' Z')).toBe(true);
   });
 
-  it('maps vehicle class to designated color', () => {
-    expect(classToColor('hypercar')).toBe('#ef4444');
-    expect(classToColor('lmp2')).toBe('#3b82f6');
-    expect(classToColor('gt3')).toBe('#f97316');
-    expect(classToColor('gte')).toBe('#10b981');
-    expect(classToColor('unknown')).toBe('#9ca3af');
+  it('maps vehicle class to designated color token (C1)', () => {
+    expect(classToColor('hypercar')).toBe('var(--class-hypercar)');
+    expect(classToColor('lmp2')).toBe('var(--class-lmp2)');
+    expect(classToColor('gt3')).toBe('var(--class-gt3)');
+    expect(classToColor('gte')).toBe('var(--class-gte)');
+    expect(classToColor('unknown')).toBe('var(--class-unknown)');
   });
 });
 
 describe('TrackMap Component', () => {
-  it('renders fallback HUD when no map geometry is provided', () => {
+  it('renders LapDistanceBar fallback HUD when no map geometry is provided', () => {
     render(
       <TrackMap
         map={null}
         trackName="Circuit de Spa-Francorchamps"
         trackLengthM={7004}
         driverPosition={{ x: null, z: null, lapDistM: 3502 }}
+        competitors={[
+          {
+            id: 'car-46',
+            carNumber: '46',
+            driverName: 'Driver 46',
+            vehicleClass: 'gt3',
+            lapDistM: 3000,
+          },
+        ]}
       />,
     );
 
     expect(screen.getByTestId('trackmap-title')).toHaveTextContent('Circuit de Spa-Francorchamps');
     expect(screen.getByTestId('trackmap-length')).toHaveTextContent('7.004 km');
-    expect(screen.getByTestId('trackmap-fallback')).toBeInTheDocument();
-    expect(screen.getByText(/Lap Progress: 3502 m \/ 7004 m/i)).toBeInTheDocument();
+    expect(screen.getByTestId('lap-distance-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('lap-dist-caption')).toHaveTextContent('2 cars (positions only)');
+    expect(screen.getByTestId('competitor-chip-46')).toBeInTheDocument();
+  });
+
+  it('hides empty track name chip when unknown (EN15)', () => {
+    render(
+      <TrackMap
+        map={null}
+        trackName=""
+        trackLengthM={null}
+      />,
+    );
+    expect(screen.queryByTestId('trackmap-title')).not.toBeInTheDocument();
+    expect(screen.getByTestId('lap-distance-bar')).toBeInTheDocument();
   });
 
   it('renders vector circuit, sectors, start/finish and pit markers when map is provided', () => {
@@ -193,6 +215,42 @@ describe('TrackMap Component', () => {
     expect(screen.getByTestId('pit-exit')).toBeInTheDocument();
     expect(screen.getByTestId('driver-marker')).toBeInTheDocument();
     expect(screen.getByTestId('competitor-51')).toBeInTheDocument();
+  });
+
+  it('renders stale tag and hollow competitor markers when dq is stale', () => {
+    render(
+      <TrackMap
+        map={TEST_MAP}
+        dq="stale"
+        driverPosition={{ x: 100, z: 0, headingRad: 0 }}
+        competitors={[
+          {
+            id: 'car-51',
+            carNumber: '51',
+            driverName: 'Driver 51',
+            vehicleClass: 'hypercar',
+            x: 250,
+            z: 125,
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByTestId('trackmap-stale-tag')).toHaveTextContent('STALE');
+    const group = screen.getByTestId('competitor-51');
+    expect(group).toHaveClass('stale');
+  });
+
+  it('renders ended styling when dq is ended', () => {
+    render(
+      <TrackMap
+        map={TEST_MAP}
+        dq="ended"
+        driverPosition={{ x: 100, z: 0, headingRad: 0 }}
+      />,
+    );
+
+    expect(screen.getByTestId('trackmap-container')).toHaveClass('trackmap-ended');
   });
 
   it('triggers onRotationChange when rotation buttons are clicked', () => {

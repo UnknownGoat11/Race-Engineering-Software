@@ -10,10 +10,15 @@
   min-height: 240px;
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius-1, 2px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.trackmap-container.trackmap-ended {
+  opacity: 0.55;
+  filter: grayscale(0.5);
 }
 
 .trackmap-header {
@@ -32,11 +37,10 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  background: rgba(18, 21, 26, 0.85);
+  background: rgba(18, 21, 26, 0.9);
   padding: 4px 8px;
-  border-radius: 3px;
+  border-radius: var(--radius-1, 2px);
   border: 1px solid var(--color-border);
-  backdrop-filter: blur(4px);
   pointer-events: auto;
 }
 
@@ -52,6 +56,19 @@
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   color: var(--color-text-dim);
+}
+
+.trackmap-stale-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--dq-stale, #b49cff);
+  background: rgba(180, 156, 255, 0.15);
+  border: 1px solid var(--dq-stale, #b49cff);
+  border-radius: var(--radius-1, 2px);
+  padding: 1px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .trackmap-controls {
@@ -77,15 +94,15 @@
 /* Track Geometry */
 .trackmap-path-base {
   fill: none;
-  stroke: var(--color-border-strong);
-  stroke-width: 5px;
+  stroke: var(--track-line, #6a7380);
+  stroke-width: 4px;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .trackmap-path-inner {
   fill: none;
-  stroke: #1f242c;
+  stroke: #2a313a;
   stroke-width: 2px;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -105,7 +122,7 @@
 }
 
 .trackmap-sector-line {
-  stroke: var(--graph-marker-sector);
+  stroke: var(--graph-marker-sector, #ffd34d);
   stroke-width: 2px;
   stroke-dasharray: 2 2;
 }
@@ -122,33 +139,35 @@
 
 /* Vehicle Markers */
 .trackmap-car-halo {
-  fill: rgba(76, 157, 255, 0.25);
-  animation: trackmap-pulse 2s infinite ease-in-out;
-}
-
-@keyframes trackmap-pulse {
-  0% { r: 8px; opacity: 0.6; }
-  50% { r: 12px; opacity: 0.2; }
-  100% { r: 8px; opacity: 0.6; }
+  fill: rgba(255, 255, 255, 0.15);
+  stroke: rgba(255, 255, 255, 0.5);
+  stroke-width: 1.5px;
 }
 
 .trackmap-car-driver {
-  fill: var(--color-accent);
-  stroke: #ffffff;
+  fill: #ffffff;
+  stroke: var(--color-surface, #0b0d10);
   stroke-width: 2px;
 }
 
 .trackmap-car-driver.stale {
-  fill: var(--color-quality-stale);
+  fill: transparent;
+  stroke: var(--dq-stale-value, #8b95a3);
+  stroke-width: 2px;
 }
 
 .trackmap-car-competitor {
-  stroke: var(--color-surface);
+  stroke: var(--color-surface, #0b0d10);
   stroke-width: 1.5px;
 }
 
+.trackmap-competitor-group.stale .trackmap-car-competitor {
+  fill: transparent !important;
+  stroke-width: 2px;
+}
+
 .trackmap-car-competitor.in-pits {
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .trackmap-car-label {
@@ -162,49 +181,148 @@
   pointer-events: none;
 }
 
-/* Fallback HUD */
-.trackmap-fallback {
+.trackmap-competitor-group.stale .trackmap-car-label {
+  fill: var(--dq-stale-value, #8b95a3);
+}
+
+/* Lap Distance Bar Fallback Component */
+.lap-distance-bar-wrapper {
   display: flex;
   flex-direction: column;
-  align-items: center;
   justify-content: center;
   width: 100%;
   height: 100%;
   padding: 24px;
-  gap: 16px;
+  gap: 12px;
+  box-sizing: border-box;
 }
 
-.trackmap-fallback-message {
+.lap-distance-bar-wrapper.lap-dist-ended {
+  opacity: 0.55;
+  filter: grayscale(0.5);
+}
+
+.lap-distance-bar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
   font-family: var(--font-ui);
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
+  font-size: var(--type-label, 12px);
+  color: var(--text-secondary, #a9b2be);
 }
 
-.trackmap-progress-bar-container {
-  width: 100%;
-  max-width: 480px;
-  height: 24px;
-  background-color: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
-  border-radius: 3px;
+.lap-dist-caption {
+  font-weight: 500;
+}
+
+.lap-dist-builder-progress {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-tertiary, #8b95a3);
+}
+
+.lap-distance-bar-track {
   position: relative;
-  overflow: hidden;
+  width: 100%;
+  height: 36px;
+  background-color: var(--surface-panel, #12151a);
+  border: 1px solid var(--border-control, #5a6372);
+  border-radius: var(--radius-1, 2px);
+  overflow: visible;
+  display: flex;
+  align-items: center;
 }
 
-.trackmap-progress-fill {
-  height: 100%;
-  background-color: var(--color-accent);
-  transition: width 0.1s linear;
-}
-
-.trackmap-progress-label {
+.lap-dist-line-sf {
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background-color: #ffffff;
+  z-index: 2;
+}
+
+.lap-dist-sector-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background-color: var(--border-control, #5a6372);
+  display: flex;
+  align-items: flex-end;
+  padding-bottom: 2px;
+  padding-left: 3px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.lap-dist-sector-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary, #8b95a3);
+  font-weight: 600;
+}
+
+.lap-dist-car-chip {
+  position: absolute;
+  top: 7px;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-1, 2px);
+  border: 1.5px solid transparent;
+  transform: translateX(-50%);
   display: flex;
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  color: var(--color-text);
-  font-weight: 600;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text-inverse, #0b0d10);
+  box-sizing: border-box;
+  z-index: 3;
+}
+
+.lap-dist-car-chip.hollow {
+  background-color: transparent !important;
+  color: var(--text-primary, #eef1f4) !important;
+}
+
+.lap-dist-car-chip.in-pits {
+  opacity: 0.5;
+}
+
+.lap-dist-car-driver {
+  position: absolute;
+  top: 4px;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lap-dist-driver-halo {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.lap-dist-driver-core {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 1px solid #000000;
+  z-index: 6;
+}
+
+.lap-distance-bar-footer {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: var(--type-caption, 11px);
+  color: var(--text-tertiary, #8b95a3);
 }
