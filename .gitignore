@@ -16,3 +16,5 @@ dist/
 tools/layout-probe/*.exe
 tools/layout-probe/*.obj
 /target-wt
+.claude/
+.playwright-mcp/

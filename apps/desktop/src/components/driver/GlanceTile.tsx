@@ -31,6 +31,25 @@ function levelGlyph(level: Level): string {
   }
 }
 
+function getWordSizeModifier(word: string): string {
+  const trimmed = word.trim();
+  const len = trimmed.length;
+  // Short words e.g. 'LIVE', 'OFF', 'REC', 'DEMO', '0 / 2', '100%'
+  if (len <= 5) {
+    return 'glance-word--lg';
+  }
+  // Single medium word without spaces e.g. 'PAUSED', 'FAILED', 'STALE', 'ERROR', 'STALLED'
+  if (len <= 7 && !trimmed.includes(' ')) {
+    return 'glance-word--md';
+  }
+  // Longer words or phrases e.g. 'NOT RUNNING', 'NOT SET UP', 'SUSPENDED', 'DEGRADED', 'CHECKING'
+  if (len <= 11) {
+    return 'glance-word--sm';
+  }
+  // Extra long phrases e.g. 'NOT AVAILABLE', 'RECONNECTING', 'OFF IN SETTINGS', 'AUTHENTICATING'
+  return 'glance-word--xs';
+}
+
 export function GlanceTile({
   id,
   label,
@@ -87,6 +106,9 @@ export function GlanceTile({
     wordContent = word;
   }
 
+  const wordModifier = typeof word === 'string' && !isCode ? getWordSizeModifier(word) : '';
+  const wordClasses = ['glance-word', wordModifier].filter(Boolean).join(' ');
+
   return (
     <div
       className={tileClasses}
@@ -105,7 +127,7 @@ export function GlanceTile({
       </div>
 
       <div className="glance-body">
-        <div className="glance-word" data-testid={id === 'engineers' ? 'engineers-count' : undefined}>
+        <div className={wordClasses} data-testid={id === 'engineers' ? 'engineers-count' : undefined}>
           {wordContent}
         </div>
       </div>

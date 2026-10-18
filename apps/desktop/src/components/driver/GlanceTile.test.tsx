@@ -136,4 +136,32 @@ describe('GlanceTile', () => {
     expect(onChildClick).toHaveBeenCalledTimes(1);
     expect(onTileClick).not.toHaveBeenCalled();
   });
+
+  it('applies adaptive word size modifiers based on word length and word count to avoid collisions', () => {
+    const { container, rerender } = render(
+      <GlanceTile id="lmu" label="LMU" level="ok" word="LIVE" />,
+    );
+    expect(container.querySelector('.glance-word')).toHaveClass('glance-word--lg');
+
+    rerender(
+      <GlanceTile id="recording" label="RECORDING" level="warning" word="FAILED" />,
+    );
+    expect(container.querySelector('.glance-word')).toHaveClass('glance-word--md');
+
+    rerender(
+      <GlanceTile id="lmu" label="LMU" level="off" word="NOT RUNNING" />,
+    );
+    expect(container.querySelector('.glance-word')).toHaveClass('glance-word--sm');
+
+    rerender(
+      <GlanceTile id="streaming" label="STREAMING" level="off" word="NOT SET UP" />,
+    );
+    expect(container.querySelector('.glance-word')).toHaveClass('glance-word--sm');
+
+    rerender(
+      <GlanceTile id="recording" label="RECORDING" level="off" word="OFF IN SETTINGS" />,
+    );
+    expect(container.querySelector('.glance-word')).toHaveClass('glance-word--xs');
+  });
 });
+
