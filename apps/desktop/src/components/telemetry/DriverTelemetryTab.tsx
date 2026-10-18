@@ -1,12 +1,12 @@
 /**
  * Driver Telemetry Dashboard Tab (spec §88, §1814–1875).
  * High-visibility pit board display optimized for drivers on a secondary screen:
- * - Prominent Lap Delta to PB (large green/red indicator)
+ * - Prominent Lap Delta to PB (large green/red indicator with ±0.050 s deadband)
  * - Lap Timing (current, last, best)
  * - Fuel Calculator (remaining, fuel/lap, laps remaining, fuel to add)
- * - 4-Wheel Tyre Board (Inner/Middle/Outer temps, pressure, wear %)
+ * - 4-Wheel Tyre Board (Inner/Middle/Outer temps, pressure, raw wear per C17)
  * - Brake Temperatures (FL, FR, RL, RR)
- * - Active Flags & Limiter indicator
+ * - Active Flags (via flags.summary 0x0B0C per EN08) & Limiter indicator
  */
 import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
@@ -20,6 +20,8 @@ import {
   NO_VALUE,
 } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
+
+const DELTA_DEADBAND_S = 0.050;
 
 const DRIVER_CHANNELS = [
   ch.DELTA_PERSONAL_BEST,
@@ -59,6 +61,7 @@ const DRIVER_CHANNELS = [
   ch.YELLOW_FLAG_STATE,
   ch.BLUE_FLAG,
   ch.SPEED_LIMITER,
+  ch.FLAG_SUMMARY,
 ] as const;
 
 export function DriverTelemetryTab(): JSX.Element {
@@ -139,22 +142,42 @@ function DriverTelemetryContent(): JSX.Element {
   const brakeRR = num(ch.BRAKE_TEMP_RR);
 
   // Flags & limiter
+  const flagSummary = num(ch.FLAG_SUMMARY);
   const yellowState = num(ch.YELLOW_FLAG_STATE);
   const blueFlag = num(ch.BLUE_FLAG);
   const pitLimiter = num(ch.SPEED_LIMITER);
 
   const deltaClass =
-    deltaPb === null ? 'delta-zero' : deltaPb < 0 ? 'delta-negative' : deltaPb > 0 ? 'delta-positive' : 'delta-zero';
+    deltaPb === null || Math.abs(deltaPb) <= DELTA_DEADBAND_S
+      ? 'delta-zero'
+      : deltaPb < -DELTA_DEADBAND_S
+        ? 'delta-negative'
+        : 'delta-positive';
+
+  const hasFlagsOrLimiter =
+    (flagSummary !== null && flagSummary > 0) ||
+    (yellowState !== null && yellowState > 0) ||
+    (blueFlag !== null && blueFlag > 0) ||
+    (pitLimiter !== null && pitLimiter > 0);
 
   return (
     <div className="telemetry-board" data-testid="driver-telemetry-board">
       {/* Flags / Alerts Banner */}
-      {(yellowState !== null && yellowState > 0) || (blueFlag !== null && blueFlag > 0) || (pitLimiter !== null && pitLimiter > 0) ? (
+      {hasFlagsOrLimiter ? (
         <div className="screen-header-banner" style={{ backgroundColor: 'var(--color-warn-bg)', borderColor: 'var(--color-warn)' }}>
-          {yellowState !== null && yellowState > 0 && (
+          {flagSummary === 1 && <span className="status-badge status-badge-warn">⚠️ LOCAL YELLOW</span>}
+          {flagSummary === 2 && <span className="status-badge status-badge-warn">⚠️ FULL COURSE YELLOW / SAFETY CAR</span>}
+          {flagSummary === 3 && (
+            <span className="status-badge" style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6' }}>
+              🔵 BLUE FLAG
+            </span>
+          )}
+          {flagSummary === 4 && <span className="status-badge status-badge-error">🛑 RED FLAG</span>}
+          {flagSummary === 5 && <span className="status-badge status-badge-neutral">🏁 CHEQUERED FLAG</span>}
+          {flagSummary === null && yellowState !== null && yellowState > 0 && (
             <span className="status-badge status-badge-warn">⚠️ YELLOW FLAG</span>
           )}
-          {blueFlag !== null && blueFlag > 0 && (
+          {flagSummary === null && blueFlag !== null && blueFlag > 0 && (
             <span className="status-badge" style={{ backgroundColor: 'rgba(59, 130, 246, 0.2)', color: '#3b82f6' }}>
               🔵 BLUE FLAG
             </span>
@@ -244,7 +267,7 @@ function DriverTelemetryContent(): JSX.Element {
                 <span>{formatTemperature(tyreOutFL)}</span>
               </div>
               <div className="wheel-metric-row">
-                <span>Wear: {tyreWearFL !== null ? `${(tyreWearFL * 100).toFixed(0)}%` : NO_VALUE}</span>
+                <span>Wear (raw): {tyreWearFL !== null ? tyreWearFL.toFixed(2) : NO_VALUE}</span>
                 <span>Brake: {formatTemperature(brakeFL, { withUnit: true })}</span>
               </div>
             </div>
@@ -261,7 +284,7 @@ function DriverTelemetryContent(): JSX.Element {
                 <span>{formatTemperature(tyreInFR)}</span>
               </div>
               <div className="wheel-metric-row">
-                <span>Wear: {tyreWearFR !== null ? `${(tyreWearFR * 100).toFixed(0)}%` : NO_VALUE}</span>
+                <span>Wear (raw): {tyreWearFR !== null ? tyreWearFR.toFixed(2) : NO_VALUE}</span>
                 <span>Brake: {formatTemperature(brakeFR, { withUnit: true })}</span>
               </div>
             </div>
@@ -278,7 +301,7 @@ function DriverTelemetryContent(): JSX.Element {
                 <span>{formatTemperature(tyreOutRL)}</span>
               </div>
               <div className="wheel-metric-row">
-                <span>Wear: {tyreWearRL !== null ? `${(tyreWearRL * 100).toFixed(0)}%` : NO_VALUE}</span>
+                <span>Wear (raw): {tyreWearRL !== null ? tyreWearRL.toFixed(2) : NO_VALUE}</span>
                 <span>Brake: {formatTemperature(brakeRL, { withUnit: true })}</span>
               </div>
             </div>
@@ -295,7 +318,7 @@ function DriverTelemetryContent(): JSX.Element {
                 <span>{formatTemperature(tyreInRR)}</span>
               </div>
               <div className="wheel-metric-row">
-                <span>Wear: {tyreWearRR !== null ? `${(tyreWearRR * 100).toFixed(0)}%` : NO_VALUE}</span>
+                <span>Wear (raw): {tyreWearRR !== null ? tyreWearRR.toFixed(2) : NO_VALUE}</span>
                 <span>Brake: {formatTemperature(brakeRR, { withUnit: true })}</span>
               </div>
             </div>

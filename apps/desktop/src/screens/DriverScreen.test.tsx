@@ -1,7 +1,12 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as ipc from '../lib/ipc';
 import { DriverScreen } from './DriverScreen';
+import { ch } from '../generated/channels';
+import { TelemetryStore } from '../telemetry/store';
+import { TelemetryStoreContext } from '../telemetry/hooks';
+import { DriverTelemetryTab } from '../components/telemetry/DriverTelemetryTab';
+import { encodeTlvBlock, encodeUiBatch, rec } from '../test/tlvEncoder';
 
 // Mock clipboard
 const writeTextMock = vi.fn().mockResolvedValue(undefined);
@@ -10,6 +15,13 @@ Object.assign(navigator, {
     writeText: writeTextMock,
   },
 });
+
+vi.mock('../telemetry/bridge', () => ({
+  connectTauriTelemetry: vi.fn(() => ({
+    disconnect: vi.fn(),
+    origin: 'lmu',
+  })),
+}));
 
 vi.mock('../lib/ipc', async () => {
   const actual = await vi.importActual<typeof ipc>('../lib/ipc');
@@ -28,77 +40,79 @@ vi.mock('../lib/ipc', async () => {
   };
 });
 
-const MOCK_DRIVER_STATUS: ipc.CoreStatus = {
-  mode: 'driver',
-  origin: 'lmu',
-  lmu: {
-    state: 'LIVE',
-    detail: null,
-    game_version: 1041,
-  },
-  session: {
-    session_id: 42,
-    session_type: 'RACE',
-    track: 'Spa-Francorchamps',
-    car: 'BMW M Hybrid V8',
-    vehicle_class: 'HYPERCAR',
-    started_at_unix_s: 1700000000,
-  },
-  network: {
-    state: 'CONNECTED',
-    streaming: true,
-    rtt_ms: 38,
-    connect_code: '8F3A2C',
-    code_expires_at_unix_s: 1700003600,
-    engineers_connected: 1,
-    engineers_max: 2,
-    degraded_reason: null,
-    driver_away: false,
-    last_error: null,
-    security_issue: false,
-    failure: null,
-    relogin_required: false,
-    engineers: [
-      {
-        connection_id: 101,
-        username: 'engineer_one',
-        display_name: 'Chief Engineer',
-        link: 'healthy',
-        connected_since_unix_s: 1700000100,
-      },
-    ],
-  },
-  recording: {
-    state: 'active',
-    recording_id: 'rec_42',
-    bytes_written: 1024 * 1024 * 50,
-    frames_written: 30000,
-    frames_lost: 0,
-    disk_free_bytes: 1024 * 1024 * 1024 * 200,
-    error: null,
-  },
-  rates: {
-    telemetry_read_hz: 100,
-    scoring_read_hz: 5,
-    frames_sent_hz: 100,
-    bytes_sent_per_s: 120000,
-    frames_dropped_total: 0,
-  },
-  drops: {
-    reader_overrun: 0,
-    pipeline_overrun: 0,
-    recorder_overrun: 0,
-    net_dropped_obsolete: 0,
-    net_events_dropped: 0,
-    ui_dropped: 0,
-  },
-  engineer: null,
-};
+function createMockStatus(): ipc.CoreStatus {
+  return {
+    mode: 'driver',
+    origin: 'lmu',
+    lmu: {
+      state: 'LIVE',
+      detail: null,
+      game_version: 1041,
+    },
+    session: {
+      session_id: 42,
+      session_type: 'RACE',
+      track: 'Spa-Francorchamps',
+      car: 'BMW M Hybrid V8',
+      vehicle_class: 'HYPERCAR',
+      started_at_unix_s: 1700000000,
+    },
+    network: {
+      state: 'CONNECTED',
+      streaming: true,
+      rtt_ms: 38,
+      connect_code: '8F3A2C',
+      code_expires_at_unix_s: Math.floor(Date.now() / 1000) + 3600,
+      engineers_connected: 1,
+      engineers_max: 2,
+      degraded_reason: null,
+      driver_away: false,
+      last_error: null,
+      security_issue: false,
+      failure: null,
+      relogin_required: false,
+      engineers: [
+        {
+          connection_id: 101,
+          username: 'engineer_one',
+          display_name: 'Chief Engineer',
+          link: 'healthy',
+          connected_since_unix_s: 1700000100,
+        },
+      ],
+    },
+    recording: {
+      state: 'active',
+      recording_id: 'rec_42',
+      bytes_written: 1024 * 1024 * 50,
+      frames_written: 30000,
+      frames_lost: 0,
+      disk_free_bytes: 1024 * 1024 * 1024 * 200,
+      error: null,
+    },
+    rates: {
+      telemetry_read_hz: 100,
+      scoring_read_hz: 5,
+      frames_sent_hz: 100,
+      bytes_sent_per_s: 120000,
+      frames_dropped_total: 0,
+    },
+    drops: {
+      reader_overrun: 0,
+      pipeline_overrun: 0,
+      recorder_overrun: 0,
+      net_dropped_obsolete: 0,
+      net_events_dropped: 0,
+      ui_dropped: 0,
+    },
+    engineer: null,
+  };
+}
 
 describe('DriverScreen', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(ipc.getCoreStatus).mockResolvedValue(MOCK_DRIVER_STATUS);
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue(createMockStatus());
   });
 
   it('renders driver status banner, car, track, and session type', async () => {
@@ -119,6 +133,7 @@ describe('DriverScreen', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('driver-connect-code')).toHaveTextContent('8F3A2C');
+      expect(screen.getByTestId('copy-code-btn')).toBeInTheDocument();
     });
 
     const copyBtn = screen.getByTestId('copy-code-btn');
@@ -130,14 +145,23 @@ describe('DriverScreen', () => {
     });
   });
 
-  it('allows kicking a connected engineer', async () => {
+  it('allows removing a connected engineer with confirmation', async () => {
     render(<DriverScreen />);
 
     await waitFor(() => {
       expect(screen.getByTestId('kick-engineer-101')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId('kick-engineer-101'));
+    // Initial click on Remove trigger
+    const trigger = screen.getByTestId('kick-engineer-101-trigger');
+    fireEvent.click(trigger);
+
+    // Confirmation step is displayed
+    const confirmBtn = await screen.findByTestId('kick-engineer-101-confirm');
+    expect(confirmBtn).toBeInTheDocument();
+
+    // Confirm removal
+    fireEvent.click(confirmBtn);
     expect(ipc.driverKickEngineer).toHaveBeenCalledWith(101);
   });
 
@@ -194,20 +218,19 @@ describe('DriverScreen', () => {
     render(<DriverScreen />);
 
     await waitFor(() => {
-      expect(screen.getByText('Telemetry Dashboard')).toBeInTheDocument();
+      expect(screen.getByTestId('tab-telemetry')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText('Telemetry Dashboard'));
+    fireEvent.click(screen.getByTestId('tab-telemetry'));
 
-    // Without an active store context in this unit test, it shows the empty state cleanly
     await waitFor(() => {
-      expect(screen.getByTestId('driver-telemetry-empty')).toBeInTheDocument();
+      expect(screen.getByTestId('driver-telemetry-board')).toBeInTheDocument();
     });
   });
 
-  it('displays synthetic banner when origin is synthetic', async () => {
+  it('displays synthetic banner and demo state when origin is synthetic', async () => {
     vi.mocked(ipc.getCoreStatus).mockResolvedValue({
-      ...MOCK_DRIVER_STATUS,
+      ...createMockStatus(),
       origin: 'synthetic',
     });
 
@@ -215,6 +238,101 @@ describe('DriverScreen', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('synthetic-badge')).toHaveTextContent('SYNTHETIC DATA');
+      expect(screen.getByTestId('driver-demo-band')).toBeInTheDocument();
+    });
+
+    // Start streaming is disabled in demo mode
+    const streamBtn = screen.getByTestId('toggle-streaming-btn');
+    expect(streamBtn).toBeDisabled();
+  });
+
+  it('never renders 0 when status is null', async () => {
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue(null as unknown as ipc.CoreStatus);
+
+    render(<DriverScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tile-lmu')).toBeInTheDocument();
+    });
+
+    // All primary tiles must show "—" when status is unavailable, never 0
+    expect(within(screen.getByTestId('tile-lmu')).getByText('—')).toBeInTheDocument();
+    expect(within(screen.getByTestId('tile-recording')).getByText('—')).toBeInTheDocument();
+    expect(within(screen.getByTestId('tile-streaming')).getByText('—')).toBeInTheDocument();
+    expect(within(screen.getByTestId('tile-engineers')).getByText('—')).toBeInTheDocument();
+    expect(within(screen.getByTestId('tile-code')).getByText('——————')).toBeInTheDocument();
+  });
+
+  it('End session requires confirm', async () => {
+    render(<DriverScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('end-session-btn-trigger')).toBeInTheDocument();
+    });
+
+    // Clicking trigger enters confirmation step without ending session immediately
+    fireEvent.click(screen.getByTestId('end-session-btn-trigger'));
+    expect(ipc.driverEndSession).not.toHaveBeenCalled();
+
+    // Confirm button must be present with stated consequence
+    const confirmBtn = await screen.findByTestId('end-session-btn-confirm');
+    expect(confirmBtn).toBeInTheDocument();
+    expect(screen.getByText('Ends the session for you and all connected engineers.')).toBeInTheDocument();
+
+    // Clicking confirm invokes driverEndSession
+    fireEvent.click(confirmBtn);
+    expect(ipc.driverEndSession).toHaveBeenCalled();
+  });
+
+  it('shows attention items for pipeline degraded and recording failed', async () => {
+    const mock = createMockStatus();
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue({
+      ...mock,
+      recording: {
+        ...mock.recording,
+        state: 'failed',
+        error: 'Disk full: 212 MiB free on D:\\. Recording stopped.',
+      },
+      drops: {
+        ...mock.drops,
+        reader_overrun: 45,
+        pipeline_overrun: 12,
+      },
+    });
+
+    render(<DriverScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('driver-attention-strip')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('attention-recording')).toBeInTheDocument();
+    expect(screen.getByTestId('attention-pipeline')).toBeInTheDocument();
+  });
+
+  it('dashboard renders values when the store has samples', async () => {
+    const testStore = new TelemetryStore();
+    testStore.applyBatch(
+      encodeUiBatch(0, 0, [
+        encodeTlvBlock({ sourceEtS: 100 }, [
+          rec.f64(ch.LAP_TIME, 94.215),
+          rec.f64(ch.DELTA_PERSONAL_BEST, -0.342),
+          rec.f32(ch.FUEL, 45.2),
+          rec.f32(ch.TYRE_WEAR_FL, 0.88),
+        ]),
+      ]),
+    );
+
+    render(
+      <TelemetryStoreContext value={testStore}>
+        <DriverTelemetryTab />
+      </TelemetryStoreContext>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('driver-delta-value')).toHaveTextContent('-0.342');
+      expect(screen.getByText('Wear (raw): 0.88')).toBeInTheDocument();
+      expect(screen.getByText('45.2 L')).toBeInTheDocument();
     });
   });
 });
