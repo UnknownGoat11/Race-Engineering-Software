@@ -333,3 +333,92 @@ describe('LiveRingSource x channel (silent-failure M3)', () => {
   });
 });
 
+describe('LiveRingSource reference lap buffer (REDESIGN.md §4 W5.1, G01, G02)', () => {
+  it('captures completed lap on lap wrap and exposes referenceSource (lap wrap handling)', () => {
+    const h = harness();
+    const source = lapSource(h);
+    expect(source.referenceSource()).toBeNull();
+
+    // Lap 1: 0 … 5000 m (101 points)
+    h.send(lapRows(100, ramp(51, 100))); // 0 … 5000
+    // Lap wrap: drops from 5000 to 0 (new lap)
+    h.send(lapRows(100.6, ramp(20, 100))); // 0 … 1900
+    source.extent(); // Trigger lap scan
+
+    const ref = source.referenceSource();
+    expect(ref).not.toBeNull();
+    expect(ref?.origin).toBe('live');
+    expect(ref?.extent()).toEqual({ min: 0, max: 5000 });
+  });
+
+  it('aligns reference lap by distance allowing direct distance comparison (reference alignment by distance)', () => {
+    const h = harness();
+    const source = lapSource(h);
+
+    // Lap 1: 0 … 5000 m, speed = 50 m/s everywhere
+    const lap1 = ramp(51, 100).map((x, i) => [
+      100 + i * ROW_DT,
+      [rec.f64(ch.LAP_DISTANCE, x), rec.f32(ch.SPEED, 50)],
+    ] as [number, FixtureRecord[]]);
+    h.send(lap1);
+
+    // Lap 2 starts: 0 … 3000 m, speed = 60 m/s everywhere
+    const lap2 = ramp(31, 100).map((x, i) => [
+      101 + i * ROW_DT,
+      [rec.f64(ch.LAP_DISTANCE, x), rec.f32(ch.SPEED, 60)],
+    ] as [number, FixtureRecord[]]);
+    h.send(lap2);
+
+    source.extent(); // Trigger scan
+    const ref = source.referenceSource();
+    expect(ref).not.toBeNull();
+
+    // Query distance interval 1000m … 2000m from both live source and reference lap
+    const currentWindow = source.read({ min: 1000, max: 2000 }, [ch.SPEED]);
+    if (!ref) throw new Error('Expected reference source to be present');
+    const refWindow = ref.read({ min: 1000, max: 2000 }, [ch.SPEED]);
+
+    // Both traces have xs representing distance in metres
+    expect(currentWindow.xs[0]).toBeLessThanOrEqual(1000);
+    expect(currentWindow.xs[currentWindow.count - 1]).toBeGreaterThanOrEqual(2000);
+    expect(refWindow.xs[0]).toBeLessThanOrEqual(1000);
+    expect(refWindow.xs[refWindow.count - 1]).toBeGreaterThanOrEqual(2000);
+
+    // Speed traces reflect their respective laps at the same distance
+    expect(currentWindow.column(ch.SPEED)?.[5]).toBeCloseTo(60, 1);
+    expect(refWindow.column(ch.SPEED)?.[5]).toBeCloseTo(50, 1);
+
+    // Reference series helper
+    const refSeries = source.referenceSeries(ch.SPEED);
+    expect(refSeries).toMatchObject({
+      key: `ref-${ch.SPEED}`,
+      channelId: ch.SPEED,
+      source: ref,
+    });
+  });
+
+  it('supports dynamic setXMode without losing reference lap buffer', () => {
+    const h = harness();
+    const source = lapSource(h);
+
+    // Complete a lap
+    h.send(lapRows(100, ramp(51, 100)));
+    h.send(lapRows(100.6, ramp(10, 100)));
+    source.extent();
+
+    expect(source.referenceSource()).not.toBeNull();
+    const ref = source.referenceSource();
+
+    // Switch to time axis
+    source.setXMode('time');
+    expect(source.extent()).not.toBeNull();
+    // Reference lap remains intact
+    expect(source.referenceSource()).toBe(ref);
+
+    // Switch back to lapDistance
+    source.setXMode('lapDistance', ch.LAP_DISTANCE);
+    expect(source.referenceSource()).toBe(ref);
+  });
+});
+
+

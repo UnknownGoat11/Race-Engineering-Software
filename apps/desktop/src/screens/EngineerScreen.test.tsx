@@ -347,19 +347,33 @@ describe('EngineerScreen', () => {
       expect(screen.getByTestId('screen-announcer-polite')).toHaveTextContent('Refresh requested');
     });
 
-    // Test graph presets role="group" and aria-pressed states (A04)
+    // Test graph worksheets role="group" and aria-pressed states (A04, W5.1)
     const presetGroup = screen.getByRole('group', { name: 'Graph presets' });
     expect(presetGroup).toBeInTheDocument();
 
-    const inputsBtn = screen.getByRole('button', { name: 'Inputs' });
-    expect(inputsBtn).toHaveAttribute('aria-pressed', 'true');
+    const driverBtn = screen.getByRole('button', { name: 'Driver' });
+    expect(driverBtn).toHaveAttribute('aria-pressed', 'true');
 
     const powertrainBtn = screen.getByRole('button', { name: 'Powertrain' });
     expect(powertrainBtn).toHaveAttribute('aria-pressed', 'false');
 
-    // Switch preset and verify aria-pressed updates
+    // Switch worksheet and verify aria-pressed updates
     fireEvent.click(powertrainBtn);
     expect(powertrainBtn).toHaveAttribute('aria-pressed', 'true');
-    expect(inputsBtn).toHaveAttribute('aria-pressed', 'false');
+    expect(driverBtn).toHaveAttribute('aria-pressed', 'false');
+
+    // Test X-axis mode selector (W5.1, G01)
+    const xModeGroup = screen.getByRole('group', { name: 'X-axis mode' });
+    expect(xModeGroup).toBeInTheDocument();
+
+    const distanceBtn = screen.getByRole('button', { name: 'Distance' });
+    expect(distanceBtn).toHaveAttribute('aria-pressed', 'true');
+
+    const lapTimeBtn = screen.getByRole('button', { name: 'Lap Time' });
+    expect(lapTimeBtn).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(lapTimeBtn);
+    expect(lapTimeBtn).toHaveAttribute('aria-pressed', 'true');
+    expect(distanceBtn).toHaveAttribute('aria-pressed', 'false');
   });
 });

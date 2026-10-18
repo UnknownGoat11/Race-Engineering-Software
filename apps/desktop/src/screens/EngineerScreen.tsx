@@ -38,9 +38,15 @@ import { TrackMap } from '../components/trackmap/TrackMap';
 import type { CompetitorMarker, DriverPosition } from '../components/trackmap/types';
 import { useTrackGeometry } from '../components/trackmap/useTrackGeometry';
 import { ch, FrequencyClass } from '../generated/channels';
-import { LiveRingSource } from '../graph/liveSource';
+import { LiveRingSource, type LiveRingSourceOptions } from '../graph/liveSource';
 import { TelemetryGraph } from '../graph/TelemetryGraph';
-import type { GraphSeries } from '../graph/types';
+import type { GraphSeries, XAxisMode } from '../graph/types';
+import {
+  getWorksheet,
+  DEFAULT_WORKSHEET_ID,
+  type Worksheet,
+  type WorksheetId,
+} from '../graph/worksheets';
 import { useAlerts } from '../hooks/useAlerts';
 import { useCoreStatus } from '../hooks/useCoreStatus';
 import { useScoring } from '../hooks/useScoring';
@@ -56,36 +62,6 @@ import { JoinSessionModal } from './JoinSessionModal';
 import '../styles/common.css';
 import '../styles/engineer.css';
 import '../styles/modal.css';
-
-type StandardGraphPreset = 'inputs' | 'powertrain' | 'tyres' | 'brakes';
-type GraphPreset = StandardGraphPreset | 'custom';
-
-const GRAPH_SERIES_PRESETS: Record<StandardGraphPreset, readonly GraphSeries[]> = {
-  inputs: [
-    { channelId: ch.SPEED, color: 1 },
-    { channelId: ch.THROTTLE, color: 2 },
-    { channelId: ch.BRAKE, color: 3 },
-    { channelId: ch.STEERING, color: 4 },
-  ],
-  powertrain: [
-    { channelId: ch.RPM, color: 1 },
-    { channelId: ch.SPEED, color: 2 },
-    { channelId: ch.GEAR, color: 3 },
-    { channelId: ch.THROTTLE, color: 4 },
-  ],
-  tyres: [
-    { channelId: ch.TYRE_TEMP_MIDDLE_FL, color: 1 },
-    { channelId: ch.TYRE_TEMP_MIDDLE_FR, color: 2 },
-    { channelId: ch.TYRE_TEMP_MIDDLE_RL, color: 3 },
-    { channelId: ch.TYRE_TEMP_MIDDLE_RR, color: 4 },
-  ],
-  brakes: [
-    { channelId: ch.BRAKE_TEMP_FL, color: 1 },
-    { channelId: ch.BRAKE_TEMP_FR, color: 2 },
-    { channelId: ch.BRAKE_TEMP_RL, color: 3 },
-    { channelId: ch.BRAKE_TEMP_RR, color: 4 },
-  ],
-};
 
 function useIsWide(breakpoint = 1440): boolean {
   return useSyncExternalStore(
@@ -112,7 +88,8 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
 
   // Selection & presets
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
-  const [graphPreset, setGraphPreset] = useState<GraphPreset>('inputs');
+  const [worksheetId, setWorksheetId] = useState<WorksheetId>(DEFAULT_WORKSHEET_ID);
+  const [xMode, setXMode] = useState<XAxisMode>('lapDistance');
   const [customSeries, setCustomSeries] = useState<readonly GraphSeries[]>([
     { channelId: ch.SPEED, color: 1 },
   ]);
@@ -146,12 +123,31 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
     });
   }, [isDriverAway]);
 
-  const activeSeries = useMemo(() => {
-    if (graphPreset === 'custom') {
-      return customSeries;
+  const currentWorksheet: Worksheet = useMemo(() => {
+    if (worksheetId === 'custom') {
+      return {
+        id: 'custom',
+        label: 'Custom',
+        panes: [
+          {
+            id: 'custom-main',
+            title: 'Custom Channels',
+            proportion: 100,
+            series: customSeries,
+          },
+        ],
+      };
     }
-    return GRAPH_SERIES_PRESETS[graphPreset];
-  }, [graphPreset, customSeries]);
+    return getWorksheet(worksheetId);
+  }, [worksheetId, customSeries]);
+
+  const activeSeries = useMemo(() => {
+    const list: GraphSeries[] = [];
+    for (const p of currentWorksheet.panes) {
+      list.push(...p.series);
+    }
+    return list;
+  }, [currentWorksheet]);
 
   const handleApplyCustomChannels = (selectedIds: readonly number[]) => {
     const newSeries: GraphSeries[] = selectedIds.map((channelId, index) => ({
@@ -160,7 +156,7 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
       enabled: true,
     }));
     setCustomSeries(newSeries);
-    setGraphPreset('custom');
+    setWorksheetId('custom');
   };
 
   // Live TelemetryStore & Bridge connection
@@ -174,7 +170,38 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
   }, [store]);
 
   const dataKind = status?.origin === 'synthetic' ? 'synthetic' : 'lmu';
-  const liveSource = useMemo(() => new LiveRingSource(store, { xMode: 'time', dataKind }), [store, dataKind]);
+
+  const liveSource = useMemo(() => {
+    const opts: LiveRingSourceOptions =
+      xMode === 'time'
+        ? { xMode: 'time', dataKind }
+        : {
+            xMode,
+            xChannel:
+              xMode === 'lapDistance'
+                ? ch.LAP_DISTANCE
+                : xMode === 'lapTime'
+                  ? ch.LAP_TIME
+                  : ch.LAP_PROGRESS,
+            dataKind,
+          };
+    return new LiveRingSource(store, opts);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [store, dataKind]);
+
+  useEffect(() => {
+    if (xMode === 'time') {
+      liveSource.setXMode('time');
+    } else {
+      const channel =
+        xMode === 'lapDistance'
+          ? ch.LAP_DISTANCE
+          : xMode === 'lapTime'
+            ? ch.LAP_TIME
+            : ch.LAP_PROGRESS;
+      liveSource.setXMode(xMode, channel);
+    }
+  }, [liveSource, xMode]);
 
   // Derived Engineer View (statusModel)
   const storeStatus = store.getStatus();
@@ -516,89 +543,155 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                   <div className="card-header pitwall-card-header">
                     <div className="pitwall-graph-header-left">
                       <span className="card-header-title">SYNCHRONIZED TELEMETRY GRAPH</span>
-                      {graphPreset === 'custom' && (
+                      {worksheetId === 'custom' && (
                         <span
                           className="status-badge status-badge-live pitwall-custom-badge"
                           data-testid="preset-custom-badge"
                         >
-                          CUSTOM ({activeSeries.length} CH)
+                          CUSTOM ({customSeries.length} CH)
                         </span>
                       )}
                     </div>
-                    <div className="pitwall-graph-header-actions" role="group" aria-label="Graph presets">
-                      <button
-                        type="button"
-                        aria-pressed={graphPreset === 'inputs'}
-                        className={`btn btn-xs ${graphPreset === 'inputs' ? 'btn-primary' : ''}`}
-                        onClick={() => {
-                          setGraphPreset('inputs');
-                        }}
-                      >
-                        Inputs
-                      </button>
-                      <button
-                        type="button"
-                        aria-pressed={graphPreset === 'powertrain'}
-                        className={`btn btn-xs ${graphPreset === 'powertrain' ? 'btn-primary' : ''}`}
-                        onClick={() => {
-                          setGraphPreset('powertrain');
-                        }}
-                      >
-                        Powertrain
-                      </button>
-                      <button
-                        type="button"
-                        aria-pressed={graphPreset === 'tyres'}
-                        className={`btn btn-xs ${graphPreset === 'tyres' ? 'btn-primary' : ''}`}
-                        onClick={() => {
-                          setGraphPreset('tyres');
-                        }}
-                      >
-                        Tyres
-                      </button>
-                      <button
-                        type="button"
-                        aria-pressed={graphPreset === 'brakes'}
-                        className={`btn btn-xs ${graphPreset === 'brakes' ? 'btn-primary' : ''}`}
-                        onClick={() => {
-                          setGraphPreset('brakes');
-                        }}
-                      >
-                        Brakes
-                      </button>
-                      {graphPreset === 'custom' && (
+                    <div className="pitwall-graph-header-actions">
+                      <div className="pitwall-graph-mode-actions" role="group" aria-label="X-axis mode">
                         <button
                           type="button"
-                          aria-pressed={true}
-                          className="btn btn-xs btn-primary"
+                          aria-pressed={xMode === 'lapDistance'}
+                          className={`btn btn-xs ${xMode === 'lapDistance' ? 'btn-primary' : ''}`}
                           onClick={() => {
-                            setGraphPreset('custom');
+                            setXMode('lapDistance');
                           }}
-                          data-testid="preset-custom-btn"
+                          data-testid="xaxis-mode-lapDistance"
                         >
-                          Custom
+                          Distance
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        className="btn btn-xs pitwall-channel-select-btn"
-                        onClick={() => {
-                          setShowChannelModal(true);
-                        }}
-                        title="Configure / select channels to plot (MoTeC i2 Pro style)"
-                        data-testid="open-channel-selector-btn"
-                      >
-                        <span aria-hidden="true">⚙</span>
-                        <span>Channels...</span>
-                      </button>
+                        <button
+                          type="button"
+                          aria-pressed={xMode === 'lapTime'}
+                          className={`btn btn-xs ${xMode === 'lapTime' ? 'btn-primary' : ''}`}
+                          onClick={() => {
+                            setXMode('lapTime');
+                          }}
+                          data-testid="xaxis-mode-lapTime"
+                        >
+                          Lap Time
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={xMode === 'lapFraction'}
+                          className={`btn btn-xs ${xMode === 'lapFraction' ? 'btn-primary' : ''}`}
+                          onClick={() => {
+                            setXMode('lapFraction');
+                          }}
+                          data-testid="xaxis-mode-lapFraction"
+                        >
+                          Lap %
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={xMode === 'time'}
+                          className={`btn btn-xs ${xMode === 'time' ? 'btn-primary' : ''}`}
+                          onClick={() => {
+                            setXMode('time');
+                          }}
+                          data-testid="xaxis-mode-time"
+                        >
+                          Time
+                        </button>
+                      </div>
+
+                      <span className="pitwall-graph-separator" aria-hidden="true" />
+
+                      <div className="pitwall-graph-worksheet-actions" role="group" aria-label="Graph presets">
+                        <button
+                          type="button"
+                          aria-pressed={worksheetId === 'driver'}
+                          className={`btn btn-xs ${worksheetId === 'driver' ? 'btn-primary' : ''}`}
+                          onClick={() => {
+                            setWorksheetId('driver');
+                          }}
+                          data-testid="worksheet-driver-btn"
+                        >
+                          Driver
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={worksheetId === 'tyres'}
+                          className={`btn btn-xs ${worksheetId === 'tyres' ? 'btn-primary' : ''}`}
+                          onClick={() => {
+                            setWorksheetId('tyres');
+                          }}
+                          data-testid="worksheet-tyres-btn"
+                        >
+                          Tyres
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={worksheetId === 'brakes'}
+                          className={`btn btn-xs ${worksheetId === 'brakes' ? 'btn-primary' : ''}`}
+                          onClick={() => {
+                            setWorksheetId('brakes');
+                          }}
+                          data-testid="worksheet-brakes-btn"
+                        >
+                          Brakes
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={worksheetId === 'energy'}
+                          className={`btn btn-xs ${worksheetId === 'energy' ? 'btn-primary' : ''}`}
+                          onClick={() => {
+                            setWorksheetId('energy');
+                          }}
+                          data-testid="worksheet-energy-btn"
+                        >
+                          Energy
+                        </button>
+                        <button
+                          type="button"
+                          aria-pressed={worksheetId === 'powertrain'}
+                          className={`btn btn-xs ${worksheetId === 'powertrain' ? 'btn-primary' : ''}`}
+                          onClick={() => {
+                            setWorksheetId('powertrain');
+                          }}
+                          data-testid="worksheet-powertrain-btn"
+                        >
+                          Powertrain
+                        </button>
+                        {worksheetId === 'custom' && (
+                          <button
+                            type="button"
+                            aria-pressed={true}
+                            className="btn btn-xs btn-primary"
+                            onClick={() => {
+                              setWorksheetId('custom');
+                            }}
+                            data-testid="preset-custom-btn"
+                          >
+                            Custom
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn btn-xs pitwall-channel-select-btn"
+                          onClick={() => {
+                            setShowChannelModal(true);
+                          }}
+                          title="Configure / select channels to plot"
+                          data-testid="open-channel-selector-btn"
+                        >
+                          <span aria-hidden="true">⚙</span>
+                          <span>Channels...</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                   <div className="pitwall-graph-body">
                     <PanelErrorBoundary name="Telemetry Graph">
                       <TelemetryGraph
                         source={liveSource}
-                        xMode="time"
-                        series={activeSeries}
+                        xMode={xMode}
+                        worksheet={currentWorksheet}
                       />
                     </PanelErrorBoundary>
                   </div>

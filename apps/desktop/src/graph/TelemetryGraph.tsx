@@ -6,7 +6,7 @@ import type { ScheduleFrame } from '../telemetry/store';
 import { GraphEngine, referenceKey, seriesColorSlot, seriesKey, type AxisSummary, type GraphReadout } from './engine';
 import { GRAPH_SOURCE_LABELS, graphSourceText, seriesSourceLabel, type GraphSourceLabel } from './provenance';
 import type { SeriesRenderer } from './renderer';
-import type { GraphSyncGroup } from './syncBus';
+import { GraphSyncGroup } from './syncBus';
 import type {
   GraphDataSource,
   GraphMarker,
@@ -17,6 +17,7 @@ import type {
   XRange,
   YScaleSetting,
 } from './types';
+import type { Worksheet, WorksheetPane } from './worksheets';
 import { X_AXIS_SPECS } from './xAxis';
 import './graph.css';
 
@@ -26,7 +27,11 @@ export interface TelemetryGraphProps {
   readonly source: GraphDataSource;
   readonly xMode: XAxisMode;
   /** Channels to plot; `enabled: false` starts a channel hidden (the legend toggles it). */
-  readonly series: readonly GraphSeries[];
+  readonly series?: readonly GraphSeries[];
+  /** Optional stacked panes (e.g. from a Worksheet). When provided with length > 1, renders a stacked graph. */
+  readonly panes?: readonly WorksheetPane[];
+  /** Optional full worksheet definition. */
+  readonly worksheet?: Worksheet;
   /** Dashed overlays, e.g. a reference lap. */
   readonly references?: readonly ReferenceSeries[];
   /** Sector / lap / event markers. */
@@ -117,18 +122,41 @@ function channelLabel(id: number): string {
   return channelDef(id)?.label ?? `Channel ${id}`;
 }
 
+/** Helper to derive reference series automatically on lap axes from live source PB buffer. */
+function deriveReferences(
+  source: GraphDataSource,
+  xMode: XAxisMode,
+  series: readonly GraphSeries[],
+  explicitReferences?: readonly ReferenceSeries[],
+): readonly ReferenceSeries[] {
+  if (explicitReferences !== undefined && explicitReferences.length > 0) {
+    return explicitReferences;
+  }
+  if (xMode === 'time') return NO_REFERENCES;
+  if ('referenceSource' in source && typeof (source as { referenceSource?: () => unknown }).referenceSource === 'function') {
+    const refSource = (source as { referenceSource: () => GraphDataSource | null }).referenceSource();
+    if (refSource !== null) {
+      return series.map((s) => ({
+        key: `ref-${s.channelId}`,
+        label: `Ref PB ${channelLabel(s.channelId)}`,
+        channelId: s.channelId,
+        source: refSource,
+      }));
+    }
+  }
+  return NO_REFERENCES;
+}
+
 /**
- * A telemetry graph (spec §61–63, §81–82, §317): canvas plot driven by a `GraphEngine` (no per-point DOM, repaint
- * on animation frames only when something changed) with a legend of channel toggles, provenance badges and
- * readouts at the cursor, the data source line, the LIVE / PAUSED indicator and per-axis AUTO / FIXED scale.
- * High-rate data never passes through React state: the legend re-renders only when its snapshot changes.
+ * A single-pane telemetry graph: canvas plot driven by a `GraphEngine` with a legend of channel toggles,
+ * provenance badges and readouts at the cursor.
  */
-export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
+function SingleTelemetryGraph(props: TelemetryGraphProps & { readonly series: readonly GraphSeries[] }): JSX.Element {
   const {
     source,
     xMode,
     series,
-    references = NO_REFERENCES,
+    references: explicitReferences,
     markers = NO_MARKERS,
     syncGroup,
     maxGapS,
@@ -137,6 +165,12 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
     className,
     onEngine,
   } = props;
+
+  const references = useMemo(
+    () => deriveReferences(source, xMode, series, explicitReferences),
+    [source, xMode, series, explicitReferences],
+  );
+
   const plotRef = useRef<HTMLDivElement>(null);
   const [engine] = useState(
     () =>
@@ -210,7 +244,6 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
     modeText = MODE_TEXT.error;
     modeKind = 'error';
   } else if (live && feedText !== null && feed !== null) {
-    // The feed is not current: never LIVE, whatever the view does.
     modeText = snapshot.follow ? feedText : `${scrolling ? MODE_TEXT.paused : MODE_TEXT.zoomed} · ${feedText}`;
     modeKind = feed;
   } else if (snapshot.follow) {
@@ -227,7 +260,6 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
     ...references.map((r) => labelOf(r.source, r.channelId)),
   ];
 
-  // DS04: Render one provenance pill per graph; per-series chips only when a series differs.
   const firstSourceLabel = sourceLabels[0];
   const isUniformSource = firstSourceLabel !== undefined && sourceLabels.every((l) => l === firstSourceLabel);
   const commonSourceLabel = isUniformSource ? firstSourceLabel : null;
@@ -408,4 +440,348 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
       <div ref={plotRef} className="telemetry-graph__plot" />
     </section>
   );
+}
+
+/** One pane inside a stacked multi-pane graph layout. */
+function PaneGraph({
+  pane,
+  source,
+  xMode,
+  syncGroup,
+  references: explicitReferences,
+  markers,
+  yScales,
+  maxGapS,
+  xDomain,
+  renderer,
+  initialSpan,
+  scheduleFrame,
+  onEngine,
+  onToggleSeries,
+}: {
+  readonly pane: WorksheetPane;
+  readonly source: GraphDataSource;
+  readonly xMode: XAxisMode;
+  readonly syncGroup: GraphSyncGroup;
+  readonly references?: readonly ReferenceSeries[] | undefined;
+  readonly markers?: readonly GraphMarker[] | undefined;
+  readonly yScales?: Readonly<Record<string, YScaleSetting>> | undefined;
+  readonly maxGapS?: number | undefined;
+  readonly xDomain?: XRange | undefined;
+  readonly renderer?: RendererKind | (() => SeriesRenderer) | undefined;
+  readonly initialSpan?: number | undefined;
+  readonly scheduleFrame?: ScheduleFrame | undefined;
+  readonly onEngine?: ((engine: GraphEngine | null) => void) | undefined;
+  readonly onToggleSeries?: ((channelId: number, enabled: boolean) => void) | undefined;
+}): JSX.Element {
+  const plotRef = useRef<HTMLDivElement>(null);
+  const paneSeries = pane.series;
+  const [disabled, setDisabled] = useState<ReadonlySet<number>>(
+    () => new Set(paneSeries.filter((s) => s.enabled === false).map((s) => s.channelId)),
+  );
+  const seriesIdsKey = useMemo(() => paneSeries.map((s) => `${s.channelId}:${s.enabled ?? true}`).join(','), [paneSeries]);
+  const prevSeriesIdsKey = useRef(seriesIdsKey);
+  useEffect(() => {
+    if (prevSeriesIdsKey.current !== seriesIdsKey) {
+      prevSeriesIdsKey.current = seriesIdsKey;
+      setDisabled(new Set(paneSeries.filter((s) => s.enabled === false).map((s) => s.channelId)));
+    }
+  }, [paneSeries, seriesIdsKey]);
+
+  const effectiveSeries = useMemo(
+    () => paneSeries.map((s) => ({ ...s, enabled: !disabled.has(s.channelId) })),
+    [paneSeries, disabled],
+  );
+
+  const effectiveReferences = useMemo(
+    () => deriveReferences(source, xMode, effectiveSeries, explicitReferences),
+    [source, xMode, effectiveSeries, explicitReferences],
+  );
+
+  const [engine] = useState(
+    () =>
+      new GraphEngine({
+        source,
+        xMode,
+        series: effectiveSeries,
+        references: effectiveReferences,
+        markers: markers ?? NO_MARKERS,
+        syncGroup,
+        ...(renderer === undefined ? {} : { renderer }),
+        ...(initialSpan === undefined ? {} : { initialSpan }),
+        ...(scheduleFrame === undefined ? {} : { scheduleFrame }),
+      }),
+  );
+
+  useEffect(() => {
+    const el = plotRef.current;
+    if (el === null) return undefined;
+    return engine.attach(el);
+  }, [engine]);
+
+  useEffect(() => {
+    engine.update({
+      source,
+      xMode,
+      series: effectiveSeries,
+      references: effectiveReferences,
+      markers: markers ?? NO_MARKERS,
+      syncGroup,
+      yScales: yScales ?? NO_SCALES,
+      xDomain: xDomain ?? null,
+      ...(maxGapS === undefined ? {} : { maxGapS }),
+    });
+  }, [engine, source, xMode, effectiveSeries, effectiveReferences, markers, syncGroup, yScales, xDomain, maxGapS]);
+
+  useEffect(() => {
+    if (onEngine === undefined) return undefined;
+    onEngine(engine);
+    return () => {
+      onEngine(null);
+    };
+  }, [engine, onEngine]);
+
+  const snapshot = useSyncExternalStore(engine.subscribe, engine.getSnapshot);
+
+  const toggle = (id: number): void => {
+    setDisabled((prev) => {
+      const next = new Set(prev);
+      const willBeEnabled = next.has(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      onToggleSeries?.(id, willBeEnabled);
+      return next;
+    });
+  };
+
+  const labelOf = (from: GraphDataSource, id: number): GraphSourceLabel =>
+    seriesSourceLabel(from.origin, channelDef(id), from.dataKind);
+
+  return (
+    <div
+      className="telemetry-graph__pane"
+      style={{ '--dyn-flex': `${pane.proportion} 1 0px` }}
+      data-pane-id={pane.id}
+    >
+      <div className="telemetry-graph__pane-header">
+        <div className="telemetry-graph__pane-title-group">
+          <span className="telemetry-graph__pane-title">{pane.title}</span>
+          <span className="telemetry-graph__pane-proportion">({pane.proportion}%)</span>
+        </div>
+        <ul className="telemetry-graph__legend" aria-label={`${pane.title} channels`}>
+          {paneSeries.map((s, i) => {
+            const enabled = !disabled.has(s.channelId);
+            const label = channelLabel(s.channelId);
+            const sample = snapshot.readouts[seriesKey(s.channelId)] ?? null;
+            const sLabel = labelOf(source, s.channelId);
+            return (
+              <li
+                key={s.channelId}
+                className="telemetry-graph__legend-item"
+                data-enabled={enabled}
+                title={`Source: ${sLabel} · Click to ${enabled ? 'hide' : 'show'}`}
+              >
+                <label className="telemetry-graph__toggle" title={enabled ? `Hide ${label}` : `Show ${label}`}>
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={() => {
+                      toggle(s.channelId);
+                    }}
+                    aria-label={`Show ${label}`}
+                  />
+                  <span className="telemetry-graph__swatch" data-slot={seriesColorSlot(s, i)} aria-hidden="true" />
+                </label>
+                {enabled && sample !== null ? (
+                  <span
+                    className="telemetry-graph__readout-click"
+                    onClick={() => {
+                      toggle(s.channelId);
+                    }}
+                    title={`Click to hide ${label}`}
+                  >
+                    <LegendReadout readout={sample} label={label} at={snapshot.cursorLabel} />
+                  </span>
+                ) : (
+                  <span
+                    className="telemetry-graph__series-name"
+                    onClick={() => {
+                      toggle(s.channelId);
+                    }}
+                    title={`Click to show ${label}`}
+                  >
+                    {label}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+          {effectiveReferences.map((r) => {
+            const sample = snapshot.readouts[referenceKey(r.key)] ?? null;
+            const rLabel = labelOf(r.source, r.channelId);
+            return (
+              <li
+                key={`ref-${r.key}`}
+                className="telemetry-graph__legend-item"
+                data-reference="true"
+                title={`Source: ${rLabel}`}
+              >
+                <span
+                  className="telemetry-graph__swatch telemetry-graph__swatch--reference"
+                  {...(r.color === undefined ? {} : { 'data-slot': r.color })}
+                  aria-hidden="true"
+                />
+                {sample !== null ? (
+                  <LegendReadout readout={sample} label={r.label} at={snapshot.cursorLabel} />
+                ) : (
+                  <span className="telemetry-graph__series-name">{r.label}</span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+      <div ref={plotRef} className="telemetry-graph__plot" />
+    </div>
+  );
+}
+
+/** Stacked multi-pane telemetry graph synchronized across panes. */
+function StackedTelemetryGraph(props: TelemetryGraphProps & { readonly panes: readonly WorksheetPane[] }): JSX.Element {
+  const {
+    source,
+    xMode,
+    panes,
+    references,
+    markers = NO_MARKERS,
+    syncGroup: externalSyncGroup,
+    maxGapS,
+    xDomain,
+    title,
+    className,
+    onEngine,
+    onToggleSeries,
+    renderer,
+    initialSpan,
+    scheduleFrame,
+    yScales,
+  } = props;
+
+  // Recreate syncGroup when xMode changes so panes re-subscribe with the updated axis mode
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const internalSyncGroup = useMemo(() => new GraphSyncGroup(), [xMode]);
+  const syncGroup = externalSyncGroup ?? internalSyncGroup;
+
+  const [primaryEngine, setPrimaryEngine] = useState<GraphEngine | null>(null);
+
+  useEffect(() => {
+    onEngine?.(primaryEngine);
+  }, [primaryEngine, onEngine]);
+
+  const primarySnapshot = useSyncExternalStore(
+    primaryEngine ? primaryEngine.subscribe : (cb) => () => { cb(); },
+    () => primaryEngine?.getSnapshot() ?? null,
+  );
+
+  const scrolling = X_AXIS_SPECS[xMode].viewKind === 'scroll';
+  const live = primarySnapshot?.origin === 'live';
+  const labelOf = (from: GraphDataSource, id: number): GraphSourceLabel =>
+    seriesSourceLabel(from.origin, channelDef(id), from.dataKind);
+  const failed = primarySnapshot?.health === 'error';
+  const feed = primarySnapshot?.feed ?? null;
+  const feedText = feed === null || feed === 'live' ? null : FEED_TEXT[feed];
+  let modeText: string | null;
+  let modeKind: string;
+  if (failed) {
+    modeText = MODE_TEXT.error;
+    modeKind = 'error';
+  } else if (live && feedText !== null && feed !== null) {
+    modeText = primarySnapshot.follow ? feedText : `${scrolling ? MODE_TEXT.paused : MODE_TEXT.zoomed} · ${feedText}`;
+    modeKind = feed;
+  } else if (primarySnapshot?.follow) {
+    modeText = live ? MODE_TEXT.live : null;
+    modeKind = 'live';
+  } else {
+    modeText = live && scrolling ? MODE_TEXT.paused : MODE_TEXT.zoomed;
+    modeKind = live && scrolling ? 'paused' : 'zoomed';
+  }
+
+  const allChannels = useMemo(() => {
+    const ids: number[] = [];
+    for (const p of panes) {
+      for (const s of p.series) ids.push(s.channelId);
+    }
+    return ids;
+  }, [panes]);
+
+  const sourceLabels = useMemo(
+    () => allChannels.map((id) => labelOf(source, id)),
+    [allChannels, source],
+  );
+
+  return (
+    <section
+      className={className === undefined ? 'telemetry-graph telemetry-graph--stacked' : `telemetry-graph telemetry-graph--stacked ${className}`}
+      aria-label={title ?? 'Telemetry graph'}
+    >
+      <header className="telemetry-graph__header">
+        {title !== undefined && <h3 className="telemetry-graph__title">{title}</h3>}
+        <span className="telemetry-graph__source">{graphSourceText(sourceLabels)}</span>
+        {primarySnapshot?.cursorLabel && (
+          <span className="telemetry-graph__cursor" aria-live="off">
+            Cursor {primarySnapshot.cursorLabel}
+          </span>
+        )}
+        {modeText !== null && (
+          <span className="telemetry-graph__mode" data-mode={modeKind} role="status">
+            {modeText}
+          </span>
+        )}
+        {primarySnapshot && !primarySnapshot.follow && (
+          <button
+            type="button"
+            className="telemetry-graph__button"
+            onClick={() => {
+              primaryEngine?.goLive();
+            }}
+          >
+            {live ? 'Back to live' : 'Reset zoom'}
+          </button>
+        )}
+      </header>
+      <div className="telemetry-graph__panes">
+        {panes.map((pane, index) => (
+          <PaneGraph
+            key={pane.id}
+            pane={pane}
+            source={source}
+            xMode={xMode}
+            syncGroup={syncGroup}
+            references={references}
+            markers={markers}
+            yScales={yScales}
+            maxGapS={maxGapS}
+            xDomain={xDomain}
+            renderer={renderer}
+            initialSpan={initialSpan}
+            scheduleFrame={scheduleFrame}
+            onEngine={index === 0 ? setPrimaryEngine : undefined}
+            onToggleSeries={onToggleSeries}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * A telemetry graph component supporting single-pane or stacked multi-pane worksheets (REDESIGN.md §4 W5.1).
+ */
+export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
+  const effectivePanes = props.panes ?? props.worksheet?.panes;
+  if (effectivePanes && effectivePanes.length > 1) {
+    return <StackedTelemetryGraph {...props} panes={effectivePanes} />;
+  }
+  const effectiveSeries = props.series ?? effectivePanes?.[0]?.series ?? [];
+  return <SingleTelemetryGraph {...props} series={effectiveSeries} />;
 }

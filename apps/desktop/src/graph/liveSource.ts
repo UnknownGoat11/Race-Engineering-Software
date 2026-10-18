@@ -16,7 +16,8 @@ import { FrequencyClass, Unit } from '../generated/channels';
 import { channelDef } from '../telemetry/registry';
 import type { ChannelSample, TelemetryStore } from '../telemetry/store';
 import { checkDataKind } from './provenance';
-import type { CurrentPosition, DataKind, GraphDataSource, GraphWindow, XAxisMode, XRange } from './types';
+import { StaticSource } from './staticSource';
+import type { CurrentPosition, DataKind, GraphDataSource, GraphWindow, ReferenceSeries, XAxisMode, XRange } from './types';
 
 /** Options shared by every live source. */
 interface LiveRingSourceCommon {
@@ -28,6 +29,8 @@ interface LiveRingSourceCommon {
    * or 'synthetic'.
    */
   readonly dataKind?: DataKind;
+  /** Retained reference lap (e.g. PB lap from a previous session or mode). */
+  readonly initialReference?: StaticSource | null;
 }
 
 /**
@@ -106,9 +109,10 @@ export function newLapScan(): LapScanState {
 /**
  * Adds the row `(t, x)` to `state`. Rows with a non-finite x or t are ignored (gaps do not end a lap). An x drop
  * larger than `LAP_RESET_FRACTION` × the largest |x| seen starts a new lap at this row.
+ * Returns true if a lap reset occurred.
  */
-export function advanceLapScan(state: LapScanState, x: number, t: number): void {
-  if (!Number.isFinite(x) || !Number.isFinite(t)) return;
+export function advanceLapScan(state: LapScanState, x: number, t: number): boolean {
+  if (!Number.isFinite(x) || !Number.isFinite(t)) return false;
   const abs = Math.abs(x);
   if (abs > state.maxAbs) state.maxAbs = abs;
   const prev = state.lastX;
@@ -120,7 +124,7 @@ export function advanceLapScan(state: LapScanState, x: number, t: number): void 
       state.min = x;
       state.max = x;
       state.monotonic = true;
-      return;
+      return true;
     }
     if (drop > state.maxAbs * LAP_JITTER_FRACTION) state.monotonic = false;
   } else if (!Number.isFinite(state.firstT)) {
@@ -128,6 +132,7 @@ export function advanceLapScan(state: LapScanState, x: number, t: number): void 
   }
   if (x < state.min) state.min = x;
   if (x > state.max) state.max = x;
+  return false;
 }
 
 function copyLapScan(target: LapScanState, source: LapScanState): void {
@@ -209,10 +214,12 @@ export class LiveRingSource implements GraphDataSource {
   readonly origin = 'live' as const;
   readonly #configuredDataKind: DataKind | null;
   readonly #store: TelemetryStore;
-  readonly #timeAxis: boolean;
-  readonly #xChannel: number | null;
+  #timeAxis: boolean;
+  #xChannel: number | null;
   readonly #freshnessClass: FrequencyClass;
   readonly #window = new WindowBuffers();
+  #referenceLap: StaticSource | null = null;
+  #bestLapDuration: number | null = null;
   /** Ring state the lap scan last saw: [length, oldest, newest, newest row's x]; unchanged → nothing to do. */
   #lapKey: readonly [number, number | null, number | null, number | null] | null = null;
   /** Scan of every row with time < `#lapBoundT` (final rows; the store only rewrites the newest row). */
@@ -231,6 +238,9 @@ export class LiveRingSource implements GraphDataSource {
     this.#timeAxis = options.xMode === 'time';
     this.#xChannel = checkXChannel(options.xMode, options.xChannel);
     this.#freshnessClass = options.freshnessClass ?? FrequencyClass.Physics;
+    if (options.initialReference !== undefined && options.initialReference !== null) {
+      this.#referenceLap = options.initialReference;
+    }
     const kind = options.dataKind ?? store.origin;
     if (kind === null) {
       throw new TypeError(`graph source dataKind must be 'lmu' or 'synthetic', got ${String(options.dataKind)}`);
@@ -244,6 +254,59 @@ export class LiveRingSource implements GraphDataSource {
    */
   get dataKind(): DataKind {
     return this.#store.origin ?? this.#configuredDataKind ?? 'synthetic';
+  }
+
+  /** The retained reference lap (PB lap), or null if none completed yet. */
+  referenceSource(): StaticSource | null {
+    return this.#referenceLap;
+  }
+
+  /** Explicitly sets or updates the reference lap buffer. */
+  setReferenceLap(source: StaticSource | null, duration?: number): void {
+    this.#referenceLap = source;
+    if (duration !== undefined) {
+      this.#bestLapDuration = duration;
+    }
+  }
+
+  /** Clears the retained reference lap buffer. */
+  clearReferenceLap(): void {
+    this.#referenceLap = null;
+    this.#bestLapDuration = null;
+  }
+
+  /**
+   * Helper to construct a ReferenceSeries for a channel from the retained reference lap.
+   * Returns null if no reference lap is available.
+   */
+  referenceSeries(channelId: number, label?: string): ReferenceSeries | null {
+    const ref = this.referenceSource();
+    if (ref === null) return null;
+    return {
+      key: `ref-${channelId}`,
+      label: label ?? `Ref ${channelDef(channelId)?.label ?? channelId}`,
+      channelId,
+      source: ref,
+    };
+  }
+
+  /** Switches the x-axis mode and corresponding x channel dynamically. */
+  setXMode(xMode: XAxisMode, xChannel?: number): void {
+    const timeAxis = xMode === 'time';
+    const checkedChannel = checkXChannel(xMode, xChannel);
+    if (this.#timeAxis === timeAxis && this.#xChannel === checkedChannel) {
+      return;
+    }
+    this.#timeAxis = timeAxis;
+    this.#xChannel = checkedChannel;
+    this.#lapKey = null;
+    copyLapScan(this.#lapCommitted, newLapScan());
+    copyLapScan(this.#lap, newLapScan());
+    this.#lapBoundT = Number.NaN;
+    this.#lapCheckT = Number.NaN;
+    this.#lapCheckX = Number.NaN;
+    this.#lapStart = 0;
+    this.#lapExtent = null;
   }
 
   subscribe(listener: () => void): () => void {
@@ -419,7 +482,11 @@ export class LiveRingSource implements GraphDataSource {
       const x = ring.valueAt(xChannel, i);
       const t = ring.timeAt(i);
       if (x === null || t === null) continue;
-      advanceLapScan(committed, x, t);
+      const prevFirstT = committed.firstT;
+      const reset = advanceLapScan(committed, x, t);
+      if (reset && Number.isFinite(prevFirstT) && Number.isFinite(this.#lapCheckT)) {
+        this.#onLapCompleted(xChannel, prevFirstT, this.#lapCheckT);
+      }
       this.#lapCheckT = t;
       this.#lapCheckX = x;
     }
@@ -429,7 +496,14 @@ export class LiveRingSource implements GraphDataSource {
     for (let i = Math.max(from, firstNewest); i < length; i++) {
       const x = ring.valueAt(xChannel, i);
       const t = ring.timeAt(i);
-      if (x !== null && t !== null) advanceLapScan(lap, x, t);
+      if (x !== null && t !== null) {
+        const prevFirstT = lap.firstT;
+        const reset = advanceLapScan(lap, x, t);
+        const prevT = i > 0 ? (ring.timeAt(i - 1) ?? this.#lapCheckT) : this.#lapCheckT;
+        if (reset && Number.isFinite(prevFirstT) && Number.isFinite(prevT)) {
+          this.#onLapCompleted(xChannel, prevFirstT, prevT);
+        }
+      }
     }
     if (!Number.isFinite(lap.firstT) || lap.firstT < oldest) {
       // The lap began before the oldest row still in the ring (laps are often longer than the live window).
@@ -439,6 +513,42 @@ export class LiveRingSource implements GraphDataSource {
       this.#lapStart = ring.rangeIndices(lap.firstT, newest).start;
       this.#lapExtent = lap.min <= lap.max ? { min: lap.min, max: lap.max } : null;
     }
+  }
+
+  /**
+   * Captures a completed lap as the reference lap (retaining the personal best).
+   */
+  #onLapCompleted(xChannel: number, lapStartT: number, lapEndT: number): void {
+    const ring = this.#store.ring;
+    const duration = lapEndT - lapStartT;
+    if (duration <= 0) return;
+    if (this.#bestLapDuration !== null && duration >= this.#bestLapDuration) {
+      return;
+    }
+    const { start, end } = ring.rangeIndices(lapStartT, lapEndT);
+    const rows = end - start;
+    if (rows <= 0) return;
+
+    const xs = new Float64Array(rows);
+    const ts = new Float64Array(rows);
+    ring.copyRange(xChannel, lapStartT, lapEndT, ts, xs);
+
+    const columns = new Map<number, Float64Array>();
+    const channels = ring.channels();
+    for (const id of channels) {
+      const col = new Float64Array(rows);
+      if (ring.copyRange(id, lapStartT, lapEndT, ts, col) > 0) {
+        columns.set(id, col);
+      }
+    }
+    this.#referenceLap = new StaticSource({
+      xs,
+      ts,
+      columns,
+      origin: 'live',
+      dataKind: this.dataKind,
+    });
+    this.#bestLapDuration = duration;
   }
 
   /**

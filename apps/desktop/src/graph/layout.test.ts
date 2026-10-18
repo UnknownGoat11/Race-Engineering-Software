@@ -11,6 +11,8 @@ import {
   axisRange,
   buildYAxes,
   computeLayout,
+  computePaneHeights,
+  computeStackedPaneLayouts,
   tickTarget,
   type AxisMember,
   offScaleOf,
@@ -132,4 +134,63 @@ describe('off-scale detection (silent-failure M7)', () => {
     expect(fixed?.offScale).toBe('above');
   });
 });
+
+describe('computePaneHeights (REDESIGN.md §4 W5.1)', () => {
+  it('distributes total height according to Driver worksheet proportions (35, 15, 20, 15, 15)', () => {
+    const proportions = [35, 15, 20, 15, 15];
+    const heights500 = computePaneHeights(500, proportions);
+    expect(heights500).toEqual([175, 75, 100, 75, 75]);
+    expect(heights500.reduce((a, b) => a + b, 0)).toBe(500);
+
+    const heights480 = computePaneHeights(480, proportions);
+    expect(heights480).toEqual([168, 72, 96, 72, 72]);
+    expect(heights480.reduce((a, b) => a + b, 0)).toBe(480);
+  });
+
+  it('guarantees integer pixel heights whose sum matches totalHeight exactly', () => {
+    const proportions = [35, 15, 20, 15, 15];
+    for (const h of [100, 101, 102, 103, 333, 768, 1080]) {
+      const heights = computePaneHeights(h, proportions);
+      expect(heights.reduce((a, b) => a + b, 0)).toBe(h);
+      for (const val of heights) {
+        expect(Number.isInteger(val)).toBe(true);
+      }
+    }
+  });
+
+  it('handles empty proportions and non-positive total height gracefully', () => {
+    expect(computePaneHeights(500, [])).toEqual([]);
+    expect(computePaneHeights(0, [50, 50])).toEqual([0, 0]);
+    expect(computePaneHeights(-10, [50, 50])).toEqual([0, 0]);
+  });
+});
+
+describe('computeStackedPaneLayouts (REDESIGN.md §4 W5.1)', () => {
+  it('computes stacked layouts reserving x-axis margin on the bottom pane only', () => {
+    const panes = [
+      { id: 'speed', proportion: 60, leftAxes: 1, rightAxes: 0 },
+      { id: 'inputs', proportion: 40, leftAxes: 1, rightAxes: 1 },
+    ];
+    const layouts = computeStackedPaneLayouts(800, 500, panes, true);
+    expect(layouts).toHaveLength(2);
+
+    expect(layouts[0]?.id).toBe('speed');
+    expect(layouts[0]?.height).toBe(300);
+    expect(layouts[0]?.plot.top).toBe(TOP_MARGIN_CSS);
+    // Non-bottom pane does not reserve X_AXIS_HEIGHT_CSS
+    expect(layouts[0]?.plot.height).toBe(300 - TOP_MARGIN_CSS);
+    expect(layouts[0]?.plot.left).toBe(Y_AXIS_WIDTH_CSS);
+    expect(layouts[0]?.plot.width).toBe(800 - Y_AXIS_WIDTH_CSS - EDGE_MARGIN_CSS);
+
+    expect(layouts[1]?.id).toBe('inputs');
+    expect(layouts[1]?.height).toBe(200);
+    expect(layouts[1]?.top).toBe(300);
+    expect(layouts[1]?.plot.top).toBe(300 + TOP_MARGIN_CSS);
+    // Bottom pane reserves X_AXIS_HEIGHT_CSS
+    expect(layouts[1]?.plot.height).toBe(200 - TOP_MARGIN_CSS - X_AXIS_HEIGHT_CSS);
+    expect(layouts[1]?.plot.left).toBe(Y_AXIS_WIDTH_CSS);
+    expect(layouts[1]?.plot.width).toBe(800 - 2 * Y_AXIS_WIDTH_CSS);
+  });
+});
+
 

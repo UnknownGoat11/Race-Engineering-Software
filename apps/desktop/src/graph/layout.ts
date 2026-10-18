@@ -163,3 +163,83 @@ export function axisColumnLeft(axis: Pick<YAxisModel, 'side' | 'slot'>, layout: 
     ? plot.left - (axis.slot + 1) * Y_AXIS_WIDTH_CSS
     : plot.left + plot.width + axis.slot * Y_AXIS_WIDTH_CSS;
 }
+
+/**
+ * Distributes `totalHeight` CSS pixels among stacked panes proportionally to `proportions`.
+ * Guarantees that the sum of returned heights equals `totalHeight` (allocating remainders to largest fractional parts).
+ */
+export function computePaneHeights(totalHeight: number, proportions: readonly number[]): number[] {
+  const n = proportions.length;
+  if (n === 0) return [];
+  if (totalHeight <= 0) return Array.from({ length: n }, () => 0);
+  const totalProp = proportions.reduce((sum, p) => sum + p, 0);
+  if (totalProp <= 0) {
+    const base = Math.floor(totalHeight / n);
+    const rem = totalHeight - base * n;
+    return Array.from({ length: n }, (_, i) => base + (i < rem ? 1 : 0));
+  }
+  const floats = proportions.map((p) => (p / totalProp) * totalHeight);
+  const heights = floats.map((f) => Math.floor(f));
+  const remaining = totalHeight - heights.reduce((sum, h) => sum + h, 0);
+  const remainders = floats.map((f, i) => {
+    const h = heights[i] ?? 0;
+    return { index: i, rem: f - h };
+  });
+  remainders.sort((a, b) => b.rem - a.rem);
+  for (let i = 0; i < remaining && i < remainders.length; i++) {
+    const entry = remainders[i];
+    if (entry !== undefined) {
+      const idx = entry.index;
+      heights[idx] = (heights[idx] ?? 0) + 1;
+    }
+  }
+  return heights;
+}
+
+/** Layout specification of one pane in a stacked multi-pane graph. */
+export interface StackedPaneLayout {
+  readonly id: string;
+  readonly proportion: number;
+  readonly top: number;
+  readonly height: number;
+  readonly plot: PlotRect;
+}
+
+/**
+ * Computes stacked pane layouts within `width x height` CSS pixels.
+ * Height is distributed according to pane proportions, with margins reserved appropriately.
+ */
+export function computeStackedPaneLayouts(
+  width: number,
+  height: number,
+  panes: readonly { readonly id: string; readonly proportion: number; readonly leftAxes: number; readonly rightAxes: number }[],
+  isLastPaneWithXAxis = true,
+): StackedPaneLayout[] {
+  if (panes.length === 0) return [];
+  const heights = computePaneHeights(height, panes.map((p) => p.proportion));
+  let currentTop = 0;
+  return panes.map((pane, i) => {
+    const paneHeight = heights[i] ?? 0;
+    const isBottom = i === panes.length - 1;
+    const left = pane.leftAxes > 0 ? pane.leftAxes * Y_AXIS_WIDTH_CSS : EDGE_MARGIN_CSS;
+    const right = pane.rightAxes > 0 ? pane.rightAxes * Y_AXIS_WIDTH_CSS : EDGE_MARGIN_CSS;
+    const plotWidth = Math.max(0, Math.floor(width - left - right));
+    const xAxisHeight = isBottom && isLastPaneWithXAxis ? X_AXIS_HEIGHT_CSS : 0;
+    const plotHeight = Math.max(0, Math.floor(paneHeight - TOP_MARGIN_CSS - xAxisHeight));
+    const layout: StackedPaneLayout = {
+      id: pane.id,
+      proportion: pane.proportion,
+      top: currentTop,
+      height: paneHeight,
+      plot: {
+        left,
+        top: currentTop + TOP_MARGIN_CSS,
+        width: plotWidth,
+        height: plotHeight,
+      },
+    };
+    currentTop += paneHeight;
+    return layout;
+  });
+}
+

@@ -6,6 +6,13 @@
  */
 import type { ChannelSample } from '../telemetry/store';
 
+declare module 'react' {
+  // eslint-disable-next-line @typescript-eslint/consistent-indexed-object-style
+  interface CSSProperties {
+    [key: `--dyn-${string}`]: string | number | undefined;
+  }
+}
+
 /** X axis modes (spec §62). The x value of every row comes from the caller's data source. */
 export type XAxisMode = 'time' | 'lapTime' | 'lapDistance' | 'lapFraction';
 

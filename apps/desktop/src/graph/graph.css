@@ -367,6 +367,76 @@
   font-size: var(--font-size-2xs);
 }
 
+/* Stacked telemetry graph (worksheets, multi-pane layouts) */
+.telemetry-graph--stacked {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.telemetry-graph__panes {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: var(--space-1);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.telemetry-graph__pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 48px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 4px 6px;
+  overflow: hidden;
+  flex: var(--dyn-flex, 1 1 0px);
+}
+
+.telemetry-graph__pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 18px;
+  font-size: var(--type-caption-size);
+}
+
+.telemetry-graph__pane-title-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.telemetry-graph__pane-title {
+  font-family: var(--font-mono);
+  font-weight: var(--font-weight-semibold);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.telemetry-graph__pane-proportion {
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+
+.telemetry-graph__pane .telemetry-graph__legend {
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.telemetry-graph__pane .telemetry-graph__plot {
+  flex: 1 1 auto;
+  min-height: 28px;
+}
+
 /* ------------------------------------------------------------- Channel Selector Modal (DS07) */
 .channel-selector-modal {
   max-width: 880px;

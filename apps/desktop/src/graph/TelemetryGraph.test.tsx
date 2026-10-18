@@ -12,6 +12,7 @@ import type { RenderFrame, SeriesRenderer } from './renderer';
 import { StaticSource } from './staticSource';
 import { TelemetryGraph } from './TelemetryGraph';
 import type { GraphDataSource } from './types';
+import { WORKSHEETS } from './worksheets';
 
 class FakeRenderer implements SeriesRenderer {
   readonly kind = 'canvas2d' as const;
@@ -315,4 +316,64 @@ describe('TelemetryGraph', () => {
     });
     expect(screen.queryByText(/HISTORY/)).toBeNull();
   });
+
+  it('renders stacked worksheets with multiple panes, titles, and proportions (G02, G03, G04)', () => {
+    const s = setup();
+    const source = new LiveRingSource(s.store, { xMode: 'time', dataKind: 'lmu' });
+    const frames = new FakeFrames();
+
+    const { container } = render(
+      <TelemetryGraph
+        title="Driver Telemetry"
+        source={source}
+        xMode="time"
+        panes={WORKSHEETS.driver.panes}
+        renderer={() => new FakeRenderer()}
+        scheduleFrame={frames.schedule}
+      />,
+    );
+
+    expect(container.querySelector('.telemetry-graph--stacked')).toBeInTheDocument();
+    const panes = container.querySelectorAll('.telemetry-graph__pane');
+    expect(panes).toHaveLength(5);
+
+    const paneTitles = Array.from(container.querySelectorAll('.telemetry-graph__pane-title')).map((el) => el.textContent);
+    expect(paneTitles).toEqual(['Speed', 'Delta', 'Throttle & Brake', 'Gear & RPM', 'Steering']);
+
+    const proportions = Array.from(container.querySelectorAll('.telemetry-graph__pane-proportion')).map((el) => el.textContent);
+    expect(proportions).toEqual(['(35%)', '(15%)', '(20%)', '(15%)', '(15%)']);
+  });
+
+  it('automatically derives dashed reference overlays from live source reference lap on lap axes (G01, G02)', () => {
+    const s = setup();
+    const source = new LiveRingSource(s.store, {
+      xMode: 'lapDistance',
+      xChannel: ch.LAP_DISTANCE,
+      dataKind: 'lmu',
+    });
+
+    // Provide a reference lap to the source
+    const refData = new StaticSource({
+      dataKind: 'lmu',
+      xs: [0, 100, 200],
+      columns: new Map([[ch.SPEED, [30, 40, 50]]]),
+    });
+    source.setReferenceLap(refData);
+
+    const frames = new FakeFrames();
+    const { container } = render(
+      <TelemetryGraph
+        source={source}
+        xMode="lapDistance"
+        series={[{ channelId: ch.SPEED }]}
+        renderer={() => new FakeRenderer()}
+        scheduleFrame={frames.schedule}
+      />,
+    );
+
+    expect(screen.getByText('Ref PB Speed')).toBeInTheDocument();
+    const refSwatch = container.querySelector('.telemetry-graph__swatch--reference');
+    expect(refSwatch).toBeInTheDocument();
+  });
 });
+

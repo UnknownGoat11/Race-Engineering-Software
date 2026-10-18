@@ -13,6 +13,7 @@ import {
   MIN_BREAK_WIDTH_CSS,
   OFF_SCALE_MARK_CSS,
   OFF_SCALE_SUFFIX,
+  STALE_SERIES_PREFIX,
   drawOverlay,
   drawUnderlay,
   type GraphColors,
@@ -175,6 +176,14 @@ describe('drawOverlay', () => {
     const box = ctx.ops('fillRect').find((c) => c.style === 'zoomFill');
     expect(box?.args[0]).toBe(300);
     expect(box?.args[2]).toBe(100);
+  });
+
+  it('names each stale series at the plot right edge in the stale colour', () => {
+    const ctx = new RecordingContext();
+    drawOverlay(ctx, scene({ staleSeries: [{ label: 'Speed', color: 'speedColor' }] }));
+    expect(ctx.texts()).toContain(`${STALE_SERIES_PREFIX}Speed`);
+    const fill = ctx.ops('fillText').find((c) => c.args[0] === `${STALE_SERIES_PREFIX}Speed`);
+    expect(fill?.style).toBe('carStale');
   });
 });
 

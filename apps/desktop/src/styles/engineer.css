@@ -718,6 +718,21 @@
   align-items: center;
 }
 
+.pitwall-graph-mode-actions,
+.pitwall-graph-worksheet-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.pitwall-graph-separator {
+  display: inline-block;
+  width: 1px;
+  height: 16px;
+  background-color: var(--border-subtle);
+  margin: 0 4px;
+}
+
 .pitwall-custom-badge {
   font-size: 9px;
   padding: 1px 5px;
