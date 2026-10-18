@@ -1,7 +1,8 @@
 /**
  * PREVIEW HARNESS ONLY (dev-only, never imported by the app). Builders for the backend DTOs the fake backend
  * returns, typed against src/lib/ipc.ts so they always have exactly the real shapes. Every CoreStatus built here
- * carries `origin: 'synthetic'`: preview data is never presented as LMU data.
+ * carries `origin: 'synthetic'`; the fake backend replaces it with the scenario's `origin` (an `'lmu'` scenario
+ * simulates the LMU-origin look, still with synthetic data and the PREVIEW corner tag on the page).
  */
 import type {
   AppConfig,
@@ -18,6 +19,9 @@ import type {
   RecordingStatusDto,
   SessionStatusDto,
 } from '../lib/ipc';
+
+/** Wall clock (Unix s) of the preview world at page load; `Date.now()` is anchored here (src/preview/clock.ts). */
+export const PREVIEW_NOW_UNIX_S = 1_792_312_000;
 
 export const PREVIEW_APP_INFO: AppInfo = {
   name: 'LMU Race Engineering',

@@ -5,11 +5,11 @@
   bottom: 4px;
   z-index: 2147483647;
   padding: 1px 6px;
-  border: 1px solid var(--color-warn);
+  border: 1px solid var(--color-warn, #f5b83d);
   border-radius: 3px;
-  background: var(--color-warn-bg);
-  color: var(--color-warn);
-  font-family: var(--font-mono);
+  background: var(--color-warn-bg, #2a2110);
+  color: var(--color-warn, #f5b83d);
+  font-family: var(--font-mono, monospace);
   font-size: 10px;
   letter-spacing: 0.04em;
   opacity: 0.85;
@@ -51,4 +51,20 @@
 
 .preview-index-table a {
   color: var(--color-accent);
+}
+
+/* An origin 'lmu' scenario looks like live LMU data on purpose: its tag is louder so the shot is never taken for
+   real data. */
+.preview-tag-lmu {
+  border-color: var(--color-error, #ff5f5f);
+  background: var(--color-error-bg, #2b1414);
+  color: var(--color-error, #ff5f5f);
+  font-weight: 700;
+  opacity: 1;
+}
+
+.preview-origin-lmu {
+  margin-left: 6px;
+  color: var(--color-error, #ff5f5f);
+  font-weight: 700;
 }

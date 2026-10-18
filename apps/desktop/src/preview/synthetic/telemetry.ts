@@ -13,8 +13,8 @@ import { CHANNELS, Quality, ValueType, ch } from '../../generated/channels';
 import { channelDef, defaultQuality } from '../../telemetry/registry';
 import { UI_BATCH_FLAG_BACKFILL, UI_BATCH_FLAG_RESET } from '../../telemetry/uiBatch';
 import { encodeTlvBlock, encodeUiBatch, rec, type FixtureRecord } from '../../test/tlvEncoder';
-import { TRACK_LENGTH_M } from './track';
-import { CarSimulator, ROW_DT_S, type CarRow, type CarVariant } from './car';
+import { TRACK_LENGTH_M, trackPosition } from './track';
+import { CarSimulator, ROW_DT_S, noise, type CarRow, type CarVariant } from './car';
 
 const WHEEL_SUFFIXES = ['FL', 'FR', 'RL', 'RR'] as const;
 
@@ -62,10 +62,24 @@ export interface StreamOptions {
   /** Race length in laps (for fuel to finish). */
   readonly raceLaps: number;
   /** Player's personal best lap (s). */
+  /** Player's personal best lap (s); NaN when no lap has been completed yet (race start). */
   readonly bestLapS: number;
   /** Overall and class position of the player. */
   readonly position: number;
   readonly classPosition: number;
+  /** Seconds already driven into the current lap at the first row (default 0: the row is on the line). */
+  readonly lapOffsetS?: number;
+  /** Non-hybrid car that reports virtual energy (LMGT3). */
+  readonly virtualEnergy?: boolean;
+  /** Session kind: race (default) or qualifying (no fuel-to-finish: the session is not run to a lap count). */
+  readonly session?: 'race' | 'qualifying';
+  /** Full-course yellow just declared (game phase FCY, yellow state Pending): flags only, pace unchanged. */
+  readonly fcy?: boolean;
+}
+
+/** Deterministic value in [0, 1) (the preview must render the same pixels on every capture run). */
+function unit(seed: number, i: number): number {
+  return noise(seed, i) + 0.5;
 }
 
 /** Stateful generator of UiBatch messages for one subscription. */
@@ -80,9 +94,13 @@ export class SyntheticTelemetryStream {
 
   constructor(opts: StreamOptions) {
     this.#opts = opts;
-    this.sim = new CarSimulator(opts.variant, opts.startSessionTimeS, opts.startLap, opts.startFuelL);
+    this.sim = new CarSimulator(opts.variant, opts.startSessionTimeS, opts.startLap, opts.startFuelL, {
+      lapOffsetS: opts.lapOffsetS ?? 0,
+      virtualEnergy: opts.virtualEnergy === true,
+    });
     this.#bestLapS = opts.bestLapS;
-    this.#lastLapS = this.sim.profile.lapTimeS + 0.387;
+    // No completed lap yet (race start): last lap, best lap and every lap-based estimate are unavailable.
+    this.#lastLapS = Number.isFinite(opts.bestLapS) ? this.sim.profile.lapTimeS + 0.387 : Number.NaN;
   }
 
   /** Session time (s) of the next row. */
@@ -105,22 +123,32 @@ export class SyntheticTelemetryStream {
       numberRecord(ch.LAP_NUMBER, r.lap),
       numberRecord(ch.LAP_TIME, r.lapTimeS),
       numberRecord(ch.SECTOR, r.sector),
-      numberRecord(ch.DELTA_BEST, r.deltaBestS),
-      numberRecord(ch.DELTA_PERSONAL_BEST, r.deltaBestS + 0.041),
+      numberRecord(ch.DELTA_BEST, Number.isFinite(this.#bestLapS) ? r.deltaBestS : Number.NaN),
+      numberRecord(ch.DELTA_PERSONAL_BEST, Number.isFinite(this.#bestLapS) ? r.deltaBestS + 0.041 : Number.NaN),
       numberRecord(ch.PREDICTED_LAP_TIME, this.#bestLapS + r.deltaBestS + 0.041),
       numberRecord(ch.FUEL, r.fuelL),
       numberRecord(ch.BRAKE_BIAS_FRONT, p.brakeBiasFront),
       numberRecord(ch.BRAKE_BIAS_REAR, 1 - p.brakeBiasFront),
-      numberRecord(ch.SRC_TELEMETRY_AGE, 0.008 + 0.004 * Math.random()),
+      numberRecord(ch.SRC_TELEMETRY_AGE, 0.008 + 0.004 * unit(17, this.#rowsEmitted)),
+      numberRecord(ch.LAP_DISTANCE, r.lapDistM),
     ];
-    const fuelPerLap = p.fuelPerLapL;
-    const lapsLeftInRace = Math.max(0, this.#opts.raceLaps - r.lap + 1 - r.lapDistM / TRACK_LENGTH_M);
+    const pos = trackPosition(r.lapDistM);
+    out.push(numberRecord(ch.POS_X, pos.x), numberRecord(ch.POS_Y, 12), numberRecord(ch.POS_Z, pos.z));
+    // The fuel-per-lap estimate needs one completed lap.
+    const fuelPerLap = Number.isFinite(this.#lastLapS) ? p.fuelPerLapL : Number.NaN;
+    const race = this.#opts.session !== 'qualifying';
+    const lapsLeftInRace = race
+      ? Math.max(0, this.#opts.raceLaps - r.lap + 1 - r.lapDistM / TRACK_LENGTH_M)
+      : Number.NaN;
     const fuelLaps = r.fuelL / fuelPerLap;
     const toFinish = lapsLeftInRace * fuelPerLap;
     out.push(
       numberRecord(ch.FUEL_LAPS_REMAINING, fuelLaps),
       numberRecord(ch.FUEL_TO_FINISH, toFinish),
-      numberRecord(ch.FUEL_TO_ADD, Math.min(p.fuelCapacityL, Math.max(0, toFinish + fuelPerLap - r.fuelL))),
+      numberRecord(
+        ch.FUEL_TO_ADD,
+        race ? Math.min(p.fuelCapacityL, Math.max(0, toFinish + fuelPerLap - r.fuelL)) : Number.NaN,
+      ),
       numberRecord(ch.FUEL_MARGIN_LAPS, fuelLaps - lapsLeftInRace),
     );
     let front = 0;
@@ -155,9 +183,9 @@ export class SyntheticTelemetryStream {
       numberRecord(ch.TYRE_TEMP_BALANCE_LEFT_RIGHT, left - right),
       numberRecord(ch.BRAKE_TEMP_FRONT_REAR, brakeFront - brakeRear),
     );
+    if (this.sim.hasVirtualEnergy) out.push(numberRecord(ch.VIRTUAL_ENERGY, r.virtualEnergy ?? Number.NaN));
     if (p.hybrid) {
       out.push(
-        numberRecord(ch.VIRTUAL_ENERGY, r.virtualEnergy ?? Number.NaN),
         numberRecord(ch.BATTERY_SOC, r.batterySoc ?? Number.NaN),
         numberRecord(ch.BATTERY_CHARGE, r.batterySoc ?? Number.NaN),
         numberRecord(ch.REGEN_POWER, r.regenPowerW ?? Number.NaN),
@@ -171,20 +199,26 @@ export class SyntheticTelemetryStream {
   #scoringRecords(r: CarRow): FixtureRecord[] {
     const best = this.#bestLapS;
     const s = this.sim.profile.sectorTimes;
+    // Sector times exist only after a completed lap (NaN encodes as UNAVAILABLE).
+    const lapped = Number.isFinite(this.#lastLapS) ? 0 : Number.NaN;
     return [
       numberRecord(ch.LAST_LAP_TIME, this.#lastLapS),
       numberRecord(ch.BEST_LAP_TIME, best),
-      numberRecord(ch.BEST_SECTOR1, s[0] - 0.08),
-      numberRecord(ch.BEST_SECTOR2, s[1] - 0.15),
-      numberRecord(ch.LAST_SECTOR1, s[0] + 0.12),
-      numberRecord(ch.LAST_SECTOR2, s[1] - s[0] + 0.19),
+      numberRecord(ch.BEST_SECTOR1, s[0] - 0.08 + lapped),
+      numberRecord(ch.BEST_SECTOR2, s[1] - 0.15 + lapped),
+      numberRecord(ch.LAST_SECTOR1, s[0] + 0.12 + lapped),
+      numberRecord(ch.LAST_SECTOR2, s[1] - s[0] + 0.19 + lapped),
       numberRecord(ch.LAST_SECTOR3, this.#lastLapS - s[1] - 0.31),
       r.sector >= 1 ? numberRecord(ch.CUR_SECTOR1, s[0] + 0.05) : rec.quality(ch.CUR_SECTOR1, Quality.Unavailable),
       numberRecord(ch.POSITION, this.#opts.position),
       numberRecord(ch.CLASS_POSITION, this.#opts.classPosition),
-      numberRecord(ch.YELLOW_FLAG_STATE, 0),
+      // FCY just declared: game phase 6 (full-course yellow), yellow state 1 (Pending), flag summary 2.
+      numberRecord(ch.YELLOW_FLAG_STATE, this.#opts.fcy === true ? 1 : 0),
+      numberRecord(ch.GAME_PHASE, this.#opts.fcy === true ? 6 : 5),
+      numberRecord(ch.FULL_COURSE_YELLOW, this.#opts.fcy === true ? 1 : 0),
+      numberRecord(ch.FLAG_SUMMARY, this.#opts.fcy === true ? 2 : 0),
       numberRecord(ch.BLUE_FLAG, 0),
-      numberRecord(ch.SRC_SCORING_AGE, 0.05 + 0.1 * Math.random()),
+      numberRecord(ch.SRC_SCORING_AGE, 0.05 + 0.1 * unit(19, this.#rowsEmitted)),
     ];
   }
 
@@ -201,8 +235,8 @@ export class SyntheticTelemetryStream {
       numberRecord(ch.FUEL_CAPACITY, p.fuelCapacityL),
       numberRecord(ch.RPM_MAX, p.rpmMax),
       rec.str(ch.VEHICLE_NAME, p.name),
-      numberRecord(ch.FUEL_PER_LAP, p.fuelPerLapL),
-      numberRecord(ch.FUEL_USED_LAST_LAP, p.fuelPerLapL + 0.04),
+      numberRecord(ch.FUEL_PER_LAP, Number.isFinite(this.#lastLapS) ? p.fuelPerLapL : Number.NaN),
+      numberRecord(ch.FUEL_USED_LAST_LAP, Number.isFinite(this.#lastLapS) ? p.fuelPerLapL + 0.04 : Number.NaN),
     ]);
     return CHANNELS.map((def) => provided.get(def.id) ?? rec.quality(def.id, defaultQuality(def)));
   }
@@ -217,10 +251,11 @@ export class SyntheticTelemetryStream {
       // Scoring-class channels at 5 Hz.
       if (this.#rowsEmitted % 20 === 0) records.push(...this.#scoringRecords(r));
       if (r.lap !== this.#lastLap && this.#lastLap >= 0) {
-        this.#lastLapS = this.sim.profile.lapTimeS + 0.1 + 0.4 * Math.random();
+        this.#lastLapS = this.sim.profile.lapTimeS + 0.1 + 0.4 * unit(23, r.lap);
+        if (!(this.#bestLapS <= this.#lastLapS)) this.#bestLapS = this.#lastLapS;
         records.push(
           numberRecord(ch.FUEL_PER_LAP, this.sim.params.fuelPerLapL),
-          numberRecord(ch.FUEL_USED_LAST_LAP, this.sim.params.fuelPerLapL + 0.06 * (Math.random() - 0.5)),
+          numberRecord(ch.FUEL_USED_LAST_LAP, this.sim.params.fuelPerLapL + 0.06 * noise(29, r.lap)),
           ...this.#scoringRecords(r),
         );
       }

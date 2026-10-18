@@ -21,6 +21,8 @@ interface FieldCar {
   readonly pitstops: number;
   readonly inPits: boolean;
   readonly isPlayer: boolean;
+  /** Qualifying best lap (s): strictly increasing with the qualifying place. */
+  readonly qualiBestS: number;
 }
 
 /** Invented names (deliberately generic; not taken from any recording). */
@@ -44,6 +46,9 @@ const LMP2_MODELS = ['Oreca 07 Gibson'];
 
 export type FieldKind = 'gt3' | 'mixed';
 
+/** Lap time offsets (s) of each class against the Hypercar class (mixed fields). */
+const CLASS_PACE_OFFSET_S: Readonly<Record<string, number>> = { Hypercar: 0, LMP2: 6.5, GT3: 13 };
+
 export interface FieldOptions {
   readonly kind: FieldKind;
   readonly playerVehicle: string;
@@ -58,6 +63,17 @@ export interface FieldOptions {
   readonly raceLengthS: number;
   /** Session time (s) at the reference time (`snapshot(0)`). */
   readonly referenceSessionTimeS: number;
+  /** Seconds the player is into the current lap at the reference time (default 0: on the line). */
+  readonly playerLapOffsetS?: number;
+  /**
+   * `final-stint` (default): the field is spread out, some cars lapped, pit stops done.
+   * `start`: just after a rolling start: the field is still nose to tail (~0.45 s apart), nobody has stopped.
+   */
+  readonly phase?: 'final-stint' | 'start';
+  /** Qualifying: the order is by best lap and gaps are best-lap gaps (no race gaps). */
+  readonly qualifying?: boolean;
+  /** Full-course yellow just declared (scoring yellow state `PENDING`, every sector yellow). */
+  readonly fcy?: boolean;
 }
 
 function carNumber(i: number): number {
@@ -72,6 +88,12 @@ export class SyntheticField {
     this.#opts = opts;
     const total = 25;
     const playerLapS = opts.playerProfile.lapTimeS;
+    const start = opts.phase === 'start';
+    const playerProgress = opts.playerLapsDone + (opts.playerLapOffsetS ?? 0) / playerLapS;
+    // Class pace offsets (s per lap) relative to the player's own class, so a GT3 player in a mixed field is
+    // lapped by the prototypes and a Hypercar player laps the GT3s.
+    const classOffset = (name: string): number => CLASS_PACE_OFFSET_S[name] ?? 0;
+    const relative = (name: string): number => classOffset(name) - classOffset(opts.playerClass);
     for (let i = 0; i < total; i++) {
       const place = i + 1;
       const isPlayer = place === opts.playerPlace;
@@ -85,28 +107,36 @@ export class SyntheticField {
         } else if (i < 13) {
           className = 'LMP2';
           models = LMP2_MODELS;
-          paceBase = playerLapS + 6.5;
+          paceBase = playerLapS + relative('LMP2');
         } else {
           className = 'GT3';
           models = GT3_MODELS;
-          paceBase = playerLapS + 13;
+          paceBase = playerLapS + relative('GT3');
         }
+        if (className === 'Hypercar') paceBase = playerLapS + relative('Hypercar');
       }
       const model = isPlayer ? opts.playerVehicle : (models[i % models.length] ?? 'Unknown');
-      const gapS = (place - opts.playerPlace) * 3.4 + (place > 20 ? 50 : 0);
-      const lapped = place >= 22 ? 1 : 0;
+      const gapS = start ? (place - opts.playerPlace) * 0.45 : (place - opts.playerPlace) * 3.4 + (place > 20 ? 50 : 0);
+      const lapped = !start && place >= 22 ? 1 : 0;
       this.#cars.push({
         slot: i + 3,
         driver: isPlayer ? opts.playerDriver : `${FIRST[(i * 7) % FIRST.length] ?? 'A.'} ${LAST[(i * 5) % LAST.length] ?? 'Driver'}`,
         vehicle: `#${carNumber(i)} ${model}`,
         className: isPlayer ? opts.playerClass : className,
         paceS: isPlayer ? playerLapS : paceBase + (place - opts.playerPlace) * 0.11 + ((i * 37) % 7) * 0.05,
-        startProgressLaps: opts.playerLapsDone - gapS / playerLapS - lapped,
-        pitstops: place % 5 === 0 ? 2 : 1,
-        inPits: place === 17,
+        startProgressLaps: playerProgress - gapS / playerLapS - lapped,
+        pitstops: start || opts.qualifying === true ? 0 : place % 5 === 0 ? 2 : 1,
+        // One car in the pits, always behind the player (it would otherwise be passed and break POSITION).
+        inPits: !start && place === Math.min(total, opts.playerPlace + 10),
         isPlayer,
+        qualiBestS: paceBase - 0.214 + (place - opts.playerPlace) * 0.173,
       });
     }
+  }
+
+  #bestLap(car: FieldCar): number {
+    if (this.#opts.qualifying === true) return car.qualiBestS;
+    return car.paceS - 0.35 - ((car.slot * 13) % 5) * 0.07;
   }
 
   /** Scoring state `elapsedS` seconds after the reference time. */
@@ -122,18 +152,25 @@ export class SyntheticField {
       const dist = laps * L + distanceAtTime(prof, (progress - laps) * prof.lapTimeS);
       return { car, dist };
     });
-    positions.sort((a, b) => b.dist - a.dist);
+    // Race: running order by distance covered. Qualifying: order by best lap (the car index is the
+    // qualifying place by construction: `qualiBestS` rises with the place).
+    if (this.#opts.qualifying === true) positions.sort((a, b) => a.car.qualiBestS - b.car.qualiBestS);
+    else positions.sort((a, b) => b.dist - a.dist);
     const leader = positions[0]?.dist ?? 0;
+    const leaderBest = positions[0] === undefined ? 0 : this.#bestLap(positions[0].car);
+    const quali = this.#opts.qualifying === true;
     const classCount = new Map<string, number>();
     const vehicles: CompetitorEntryDto[] = positions.map(({ car, dist }, idx) => {
       const classPlace = (classCount.get(car.className) ?? 0) + 1;
       classCount.set(car.className, classPlace);
       const ahead = idx > 0 ? (positions[idx - 1]?.dist ?? dist) : dist;
       const lapDist = ((dist % L) + L) % L;
-      const laps = Math.floor(dist / L);
+      const laps = Math.max(0, Math.floor(dist / L));
       const lapsBehindLeader = Math.floor(leader / L) - laps > 0 && leader - dist > L ? Math.floor((leader - dist) / L) : 0;
       const pos = trackPosition(lapDist);
-      const best = car.paceS - 0.35 - ((car.slot * 13) % 5) * 0.07;
+      const best = this.#bestLap(car);
+      const prevCar = idx > 0 ? positions[idx - 1]?.car : undefined;
+      const aheadBest = prevCar === undefined ? best : this.#bestLap(prevCar);
       return {
         slot_id: car.slot,
         driver: car.driver,
@@ -152,10 +189,10 @@ export class SyntheticField {
         best_sector12_s: best * 0.68,
         last_sector1_s: car.paceS * 0.331,
         last_sector12_s: car.paceS * 0.684,
-        time_behind_next_s: idx === 0 ? 0 : ((ahead - dist) / L) * car.paceS,
-        laps_behind_next: idx === 0 ? 0 : Math.floor((ahead - dist) / L),
-        time_behind_leader_s: idx === 0 ? 0 : ((leader - dist) / L) * car.paceS,
-        laps_behind_leader: lapsBehindLeader,
+        time_behind_next_s: idx === 0 ? 0 : quali ? best - aheadBest : ((ahead - dist) / L) * car.paceS,
+        laps_behind_next: idx === 0 || quali ? 0 : Math.floor((ahead - dist) / L),
+        time_behind_leader_s: idx === 0 ? 0 : quali ? best - leaderBest : ((leader - dist) / L) * car.paceS,
+        laps_behind_leader: quali ? 0 : lapsBehindLeader,
         in_pits: car.inPits,
         in_garage_stall: false,
         pit_state: car.inPits ? 'STOPPED' : 'NONE',
@@ -167,14 +204,15 @@ export class SyntheticField {
     });
     return {
       session: {
+        // (session_type is the core's SessionType display string, e.g. "Race 1" / "Qualifying 1".)
         track_name: TRACK_NAME,
         session_type: this.#opts.sessionType,
         session_time_remaining_s: Math.max(0, this.#opts.raceLengthS - this.#opts.referenceSessionTimeS - elapsedS),
         end_time_s: this.#opts.raceLengthS,
         lap_limit: null,
         time_limit_s: this.#opts.raceLengthS,
-        yellow_flag_state: 'NONE',
-        sector_flag: ['GREEN', 'GREEN', 'GREEN'],
+        yellow_flag_state: this.#opts.fcy === true ? 'PENDING' : 'NONE',
+        sector_flag: this.#opts.fcy === true ? ['YELLOW', 'YELLOW', 'YELLOW'] : ['GREEN', 'GREEN', 'GREEN'],
         dark_cloud: 0.1,
         raining: 0,
         ambient_temp_c: 29,

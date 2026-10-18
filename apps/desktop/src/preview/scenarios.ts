@@ -2,21 +2,25 @@
  * PREVIEW HARNESS ONLY (dev-only, never imported by the app). The scenario catalogue: every screen and state the
  * preview can show, selected by `?screen=<group>&state=<state>` (or `?scenario=<id>`). Each scenario defines the
  * fake backend's answers (config, CoreStatus over time, telemetry plan, alerts, join behaviour) and optional UI
- * steps (clicks / typing) that bring the real screens into the wanted state. All data is SYNTHETIC.
+ * steps (clicks / typing) that bring the real screens into the wanted state. All data is SYNTHETIC; a scenario
+ * with `origin: 'lmu'` only simulates the provenance the app sees for real LMU data (the page still carries the
+ * PREVIEW tag, see main.tsx).
  */
-import type { AlertDto, ConfigSnapshot, CoreStatus, IdentityCardDto, LoginStateDto, Mode } from '../lib/ipc';
-import { CAR_PARAMS, type CarVariant } from './synthetic/car';
+import type { AlertDto, ConfigSnapshot, CoreStatus, IdentityCardDto, LoginStateDto, Mode, Origin } from '../lib/ipc';
+import { CAR_PARAMS, noise, type CarVariant } from './synthetic/car';
 import type { FieldKind } from './synthetic/field';
-import { SESSION_TIME_AT_LOAD_S, STREAM_START_S, formatLap, raceTimeline } from './synthetic/race';
+import { formatLap, raceTimeline, streamTimeline, type StreamTimeline, type TimelineKind } from './synthetic/race';
 import { TRACK_NAME } from './synthetic/track';
 import {
   ENGINEER_SLOTS,
   NO_DROPS,
+  PREVIEW_NOW_UNIX_S,
   driverStatus,
   engineerBlock,
   engineerStatus,
   lmu,
   network,
+  previewConfig,
 } from './status';
 
 export type ScenarioGroup = 'driver' | 'engineer' | 'mode' | 'settings' | 'app';
@@ -35,6 +39,14 @@ export interface TelemetryPlan {
   readonly classPlace?: number;
   /** 'live': keep streaming at 100 Hz. 'stop': history + one live batch, then nothing (the stream goes stale). */
   readonly flow: 'live' | 'stop';
+  /** Part of the session the stream shows (default `final-stint` of the 4 h race). */
+  readonly timeline?: TimelineKind;
+  /** Seconds of history the subscription backfills (default: the timeline's). */
+  readonly backfillS?: number;
+  /** Non-hybrid car that reports virtual energy (LMGT3 runs VE without ERS). */
+  readonly virtualEnergy?: boolean;
+  /** Full-course yellow just declared. */
+  readonly fcy?: boolean;
 }
 
 /** Backend facts a status builder may depend on. */
@@ -43,6 +55,8 @@ export interface StatusContext {
   readonly elapsedS: number;
   /** Engineer join phase held by the fake backend (`idle` | `awaiting_confirmation` | `monitoring` | ...). */
   readonly phase: string;
+  /** `engineer_join` calls so far. */
+  readonly joinAttempts: number;
 }
 
 export interface Scenario {
@@ -52,6 +66,11 @@ export interface Scenario {
   readonly title: string;
   readonly description: string;
   readonly mode: Mode | null;
+  /**
+   * Provenance the fake backend reports in every CoreStatus and subscription (default `'synthetic'`). `'lmu'`
+   * simulates the LMU-origin (live-looking) path with synthetic data; the index and the page tag say so.
+   */
+  readonly origin?: Origin;
   readonly snapshot?: Partial<ConfigSnapshot>;
   /** `get_app_info` / `get_config` fail (the app's "Backend unavailable" screen). */
   readonly backendDown?: boolean;
@@ -64,12 +83,46 @@ export interface Scenario {
   readonly login?: LoginStateDto;
   /** `engineer_join` rejects with this error instead of returning the identity card. */
   readonly joinError?: { readonly code: string; readonly message: string };
+  /** Only the first N `engineer_join` calls fail with `joinError` (default: every call). */
+  readonly joinErrorAttempts?: number;
   readonly steps?: readonly Step[];
   /** Extra wait after the steps before the page reports ready (ms). */
   readonly settleMs?: number;
+  /**
+   * Scenario time (s, virtual) at which the backend freezes for the screenshot. Default: settle + 1 s per step
+   * + 2 s, which is always later than the real time the steps take, so every run captures the same frame.
+   */
+  readonly captureAtS?: number;
 }
 
-const NOW_UNIX_S = 1_792_312_000;
+/** Scenario time (s) of the screenshot frame. */
+export function captureTimeS(scenario: Scenario): number {
+  if (scenario.captureAtS !== undefined) return scenario.captureAtS;
+  return 2 + (scenario.settleMs ?? 800) / 1000 + (scenario.steps?.length ?? 0);
+}
+
+/** Text of the fixed corner tag: always PREVIEW, never mistakable for real LMU data. */
+export function previewTagText(scenario: Scenario): string {
+  return scenario.origin === 'lmu'
+    ? `PREVIEW HARNESS · SIMULATED LMU ORIGIN · NOT REAL DATA · ${scenario.id}`
+    : `PREVIEW HARNESS · SYNTHETIC DATA · ${scenario.id}`;
+}
+
+const timelines = new Map<string, StreamTimeline>();
+
+/** Stream timeline of a scenario (the shared final stint unless its telemetry plan says otherwise). */
+export function scenarioTimeline(scenario: Scenario): StreamTimeline {
+  const plan = scenario.telemetry;
+  const key = `${plan?.variant ?? 'gt3'}|${plan?.timeline ?? 'final-stint'}|${String(plan?.backfillS)}`;
+  let t = timelines.get(key);
+  if (t === undefined) {
+    t = streamTimeline(plan?.variant ?? 'gt3', plan?.timeline ?? 'final-stint', plan?.backfillS);
+    timelines.set(key, t);
+  }
+  return t;
+}
+
+const NOW_UNIX_S = PREVIEW_NOW_UNIX_S;
 const SESSION_ID = 7_340_219;
 const CODE = 'K7Q2XM';
 const DRIVER_NAME = 'Sam Driver';
@@ -78,15 +131,15 @@ const DRIVER_USERNAME = 'sam_driver';
 const GT3 = CAR_PARAMS.gt3;
 const HYPER = CAR_PARAMS.hypercar;
 
-function liveSession(variant: CarVariant): CoreStatus['session'] {
+function liveSession(variant: CarVariant, timeline: StreamTimeline = streamTimeline(variant)): CoreStatus['session'] {
   const car = CAR_PARAMS[variant];
   return {
     session_id: SESSION_ID,
-    session_type: 'RACE',
+    session_type: timeline.sessionType,
     track: TRACK_NAME,
     car: car.name,
     vehicle_class: car.vehicleClass,
-    started_at_unix_s: NOW_UNIX_S - SESSION_TIME_AT_LOAD_S,
+    started_at_unix_s: NOW_UNIX_S - timeline.sessionTimeAtLoadS,
   };
 }
 
@@ -98,10 +151,12 @@ function recordingActive(elapsedS: number): CoreStatus['recording'] {
     bytes_written: frames * 512,
     frames_written: frames,
     frames_lost: 0,
-    disk_free_bytes: 482 * 1024 ** 3,
+    disk_free_bytes: DISK_FREE_OK_BYTES,
     error: null,
   };
 }
+
+const DISK_FREE_OK_BYTES = 482 * 1024 ** 3;
 
 const LIVE_RATES: CoreStatus['rates'] = {
   telemetry_read_hz: 100,
@@ -315,7 +370,7 @@ const driverScenarios: Scenario[] = [
     status: () =>
       driverStatus({
         lmu: lmu('LIVE', 'Synthetic demo scenario: demo', null),
-        session: { ...liveSession('gt3'), session_type: 'PRACTICE' },
+        session: { ...liveSession('gt3'), session_type: 'Practice 1' },
         recording: { ...driverStatus().recording, state: 'disabled' },
         network: network({ state: 'NOT_CONFIGURED' }),
         rates: { ...IDLE_RATES, telemetry_read_hz: 100 },
@@ -338,6 +393,7 @@ const driverScenarios: Scenario[] = [
 
 function engineerAlerts(variant: CarVariant): readonly AlertDto[] {
   const race = raceTimeline(variant);
+  const timeline = streamTimeline(variant);
   const pbLap = race.startLap - 3;
   return [
     {
@@ -346,7 +402,7 @@ function engineerAlerts(variant: CarVariant): readonly AlertDto[] {
       level: 'warning',
       raised: true,
       message: 'Front-left brake peak above 650 °C for 3 consecutive braking zones.',
-      timestamp_ns: (SESSION_TIME_AT_LOAD_S - 5) * 1e9,
+      timestamp_ns: (timeline.sessionTimeAtLoadS - 5) * 1e9,
     },
     {
       id: 'personal_best',
@@ -354,7 +410,7 @@ function engineerAlerts(variant: CarVariant): readonly AlertDto[] {
       level: 'info',
       raised: true,
       message: `Lap ${pbLap}: new personal best ${formatLap(race.bestLapS)}.`,
-      timestamp_ns: Math.round(STREAM_START_S - 3 * race.lapTimeS) * 1e9,
+      timestamp_ns: Math.round(timeline.streamStartS - 3 * race.lapTimeS) * 1e9,
     },
   ];
 }
@@ -364,11 +420,12 @@ function engineerLive(
   ctx: StatusContext,
   block: Partial<CoreStatus['engineer'] & object> = {},
   overrides: Partial<CoreStatus> = {},
+  timeline: StreamTimeline = streamTimeline(variant),
 ): CoreStatus {
   const monitoring = ctx.phase === 'monitoring';
   return engineerStatus({
     lmu: monitoring ? lmu('LIVE') : lmu('UNKNOWN', null, null),
-    session: monitoring ? liveSession(variant) : engineerStatus().session,
+    session: monitoring ? liveSession(variant, timeline) : engineerStatus().session,
     recording: monitoring ? { ...recordingActive(ctx.elapsedS), state: 'active' } : engineerStatus().recording,
     network: network({ state: monitoring ? 'CONNECTED' : 'DISCONNECTED', rtt_ms: monitoring ? 34 : null, engineers_max: 2 }),
     rates: monitoring ? { ...LIVE_RATES, telemetry_read_hz: null, scoring_read_hz: null } : engineerStatus().rates,
@@ -376,7 +433,8 @@ function engineerLive(
       phase: ctx.phase,
       driver_name: ctx.phase === 'idle' ? null : DRIVER_NAME,
       stream_health: monitoring ? 'healthy' : 'no_data',
-      stream_age_s: monitoring ? 0.04 + 0.03 * Math.random() : null,
+      // Deterministic jitter (the capture diff needs identical frames).
+      stream_age_s: monitoring ? 0.04 + 0.03 * (noise(31, Math.round(ctx.elapsedS * 4)) + 0.5) : null,
       ...block,
     }),
     ...overrides,
@@ -575,7 +633,8 @@ const engineerScenarios: Scenario[] = [
     status: (ctx) =>
       engineerLive('gt3', ctx, {
         driver_name: DRIVER_NAME,
-        ended_reason: 'driver_ended_session',
+        // The core reports EngineerEndReason::message() (crates/transport/src/state.rs).
+        ended_reason: 'The driver ended the session.',
         stream_health: 'no_data',
       }),
   }),
@@ -654,7 +713,292 @@ const appScenarios: Scenario[] = [
   },
 ];
 
-export const SCENARIOS: readonly Scenario[] = [...driverScenarios, ...engineerScenarios, ...appScenarios];
+// --- W0.1 scenarios (REDESIGN H02): states later waves render and test ------------------------------------
+
+const NOT_LOGGED_IN_DRIVER: LoginStateDto = { authenticated: false, role: 'driver', account: null };
+const NOT_LOGGED_IN_ENGINEER: LoginStateDto = { authenticated: false, role: 'engineer', account: null };
+/** Disk free below the 20 GB warning level (but above the 1 GiB recording stop). */
+const DISK_FREE_LOW_BYTES = Math.round(14.2 * 1024 ** 3);
+
+const driverW0Scenarios: Scenario[] = [
+  {
+    id: 'driver-not-logged-in',
+    group: 'driver',
+    state: 'not-logged-in',
+    title: 'Driver: not logged in',
+    description: 'No stored login: LMU live and recording locally; streaming needs a login first.',
+    mode: 'driver',
+    login: NOT_LOGGED_IN_DRIVER,
+    status: ({ elapsedS }) => liveDriver({ network: network({ state: 'DISCONNECTED' }) }, elapsedS),
+  },
+  {
+    id: 'driver-live-lmu-origin',
+    group: 'driver',
+    state: 'live-lmu-origin',
+    title: 'Driver: live LMU origin, streaming 1/2',
+    description: 'Simulated LMU origin (origin = lmu): the live look the app shows for real LMU data.',
+    mode: 'driver',
+    origin: 'lmu',
+    login: LOGGED_IN_DRIVER,
+    status: ({ elapsedS }) => liveDriver({ network: streamingNetwork(1), rates: LIVE_RATES }, elapsedS),
+  },
+  {
+    id: 'driver-streaming-full',
+    group: 'driver',
+    state: 'streaming-full',
+    title: 'Driver: streaming, 2/2, no code left',
+    description: 'Both slots taken and the last single-use code consumed: no new code can be issued (OR-4).',
+    mode: 'driver',
+    login: LOGGED_IN_DRIVER,
+    status: ({ elapsedS }) =>
+      liveDriver(
+        { network: streamingNetwork(2, { connect_code: null, code_expires_at_unix_s: null }), rates: LIVE_RATES },
+        elapsedS,
+      ),
+  },
+  {
+    id: 'driver-code-expiring',
+    group: 'driver',
+    state: 'code-expiring',
+    title: 'Driver: connect code expiring (< 60 s)',
+    description: 'Streaming, no engineer yet; the code expires in under a minute.',
+    mode: 'driver',
+    login: LOGGED_IN_DRIVER,
+    status: ({ elapsedS }) =>
+      liveDriver(
+        {
+          network: streamingNetwork(0, { code_expires_at_unix_s: NOW_UNIX_S + 50 }),
+          rates: LIVE_RATES,
+        },
+        elapsedS,
+      ),
+  },
+  {
+    id: 'driver-reconnecting-long',
+    group: 'driver',
+    state: 'reconnecting-long',
+    title: 'Driver: relay reconnecting for over 30 s',
+    description: 'Long outage: reconnecting for more than 30 s; recording unaffected, engineers held.',
+    mode: 'driver',
+    login: LOGGED_IN_DRIVER,
+    status: ({ elapsedS }) =>
+      liveDriver(
+        {
+          network: streamingNetwork(1, {
+            state: 'RECONNECTING',
+            rtt_ms: null,
+            degraded_reason: `relay connection lost ${(34 + elapsedS).toFixed(0)} s ago; reconnecting (attempt 9)`,
+            last_error: 'connection timed out',
+            engineers: ENGINEER_SLOTS.slice(0, 1).map((e) => ({ ...e, link: 'reconnecting' })),
+          }),
+          rates: { ...LIVE_RATES, frames_sent_hz: 0, bytes_sent_per_s: 0 },
+          drops: { ...NO_DROPS, net_dropped_obsolete: 3_412 },
+        },
+        elapsedS,
+      ),
+  },
+  {
+    id: 'driver-disk-low',
+    group: 'driver',
+    state: 'disk-low',
+    title: 'Driver: disk space low (< 20 GB)',
+    description: 'Recording active with 14.2 GiB free on the recording drive.',
+    mode: 'driver',
+    login: LOGGED_IN_DRIVER,
+    status: ({ elapsedS }) =>
+      liveDriver(
+        {
+          network: streamingNetwork(1),
+          rates: LIVE_RATES,
+          recording: { ...recordingActive(elapsedS), disk_free_bytes: DISK_FREE_LOW_BYTES },
+        },
+        elapsedS,
+      ),
+  },
+  {
+    id: 'driver-dashboard-live',
+    group: 'driver',
+    state: 'dashboard-live',
+    title: 'Driver: telemetry dashboard with live store',
+    description: 'Dashboard tab with the telemetry stream flowing (bridge subscription fed at 100 Hz).',
+    mode: 'driver',
+    login: LOGGED_IN_DRIVER,
+    telemetry: { variant: 'gt3', field: 'gt3', playerPlace: 7, flow: 'live' },
+    status: ({ elapsedS }) => liveDriver({ network: streamingNetwork(1), rates: LIVE_RATES }, elapsedS),
+    steps: [{ kind: 'clickText', text: 'Telemetry Dashboard' }],
+    settleMs: LIVE_SETTLE_MS,
+  },
+];
+
+const QUALI_TIMELINE = streamTimeline('gt3', 'qualifying');
+const START_TIMELINE = streamTimeline('gt3', 'race-start');
+/** Race start with just over one lap of history: enough for a lap-distance track outline. */
+const GEOMETRY_BACKFILL_S = Math.ceil(raceTimeline('gt3').lapTimeS + 20);
+const GEOMETRY_TIMELINE = streamTimeline('gt3', 'race-start', GEOMETRY_BACKFILL_S);
+
+const joinSteps = (code: string): Step[] => [
+  { kind: 'click', selector: '[data-testid="btn-open-join"]' },
+  { kind: 'type', selector: '[data-testid="join-code-input"]', text: code },
+  { kind: 'click', selector: '[data-testid="btn-join-session"]' },
+  { kind: 'wait', ms: 300 },
+];
+
+const engineerW0Scenarios: Scenario[] = [
+  {
+    ...engineerScenario({
+      id: 'engineer-not-logged-in',
+      state: 'not-logged-in',
+      title: 'Engineer: not logged in',
+      description: 'Engineer mode without a stored login: joining needs a login first.',
+      initialPhase: 'idle',
+      alerts: [],
+    }),
+    login: NOT_LOGGED_IN_ENGINEER,
+  },
+  engineerScenario({
+    id: 'engineer-live-lmu-origin',
+    state: 'live-lmu-origin',
+    title: 'Engineer: live pitwall, LMU origin',
+    description: 'Simulated LMU origin (origin = lmu): the live look the app shows for real LMU data.',
+    origin: 'lmu',
+    initialPhase: 'monitoring',
+    settleMs: LIVE_SETTLE_MS,
+  }),
+  engineerScenario({
+    id: 'engineer-kicked',
+    state: 'kicked',
+    title: 'Engineer: disconnected by the driver',
+    description: 'The driver removed this engineer; a fresh code is needed to connect again (OR-3).',
+    initialPhase: 'ended',
+    alerts: [],
+    telemetry: { variant: 'gt3', field: 'gt3', playerPlace: 7, flow: 'stop' },
+    status: (ctx) =>
+      engineerLive('gt3', ctx, {
+        driver_name: DRIVER_NAME,
+        ended_reason: 'The driver disconnected you.',
+        stream_health: 'no_data',
+      }),
+  }),
+  engineerScenario({
+    id: 'engineer-join-session-full',
+    state: 'join-session-full',
+    title: 'Engineer: join refused (session full)',
+    description: 'The driver already has 2 engineers connected; the relay refuses a third (OR-4).',
+    initialPhase: 'idle',
+    alerts: [],
+    joinError: { code: 'session_full', message: 'Driver already has 2 engineers connected' },
+    steps: joinSteps('P4HN7W'),
+  }),
+  engineerScenario({
+    id: 'engineer-join-expired-retry',
+    state: 'join-expired-retry',
+    title: 'Engineer: expired code, then a fresh code',
+    description: 'First code expired; the fresh code from the driver is accepted and the identity card shows.',
+    initialPhase: 'idle',
+    alerts: [],
+    joinError: { code: 'code_expired', message: 'This code has expired. Ask the driver for a new code.' },
+    joinErrorAttempts: 1,
+    steps: [
+      ...joinSteps('H3WZ9P'),
+      { kind: 'type', selector: '[data-testid="join-code-input"]', text: CODE },
+      { kind: 'click', selector: '[data-testid="btn-join-session"]' },
+      { kind: 'wait', ms: 300 },
+    ],
+  }),
+  engineerScenario({
+    id: 'engineer-quali',
+    state: 'quali',
+    title: 'Engineer: qualifying session',
+    description: 'GT3 qualifying, mid-session: order by best lap, best-lap gaps, no fuel-to-finish.',
+    initialPhase: 'monitoring',
+    settleMs: LIVE_SETTLE_MS,
+    alerts: [],
+    telemetry: { variant: 'gt3', field: 'gt3', playerPlace: 5, flow: 'live', timeline: 'qualifying' },
+    status: (ctx) => engineerLive('gt3', ctx, {}, {}, QUALI_TIMELINE),
+  }),
+  engineerScenario({
+    id: 'engineer-class-filter',
+    state: 'class-filter',
+    title: 'Engineer: mixed field filtered to GT3',
+    description: 'GT3 player (P18, class P5) in a mixed field; the tower filtered to the GT3 class.',
+    initialPhase: 'monitoring',
+    settleMs: LIVE_SETTLE_MS,
+    telemetry: { variant: 'gt3', field: 'mixed', playerPlace: 18, classPlace: 5, flow: 'live' },
+    steps: [{ kind: 'clickText', text: 'GT3' }],
+  }),
+  engineerScenario({
+    id: 'engineer-fcy',
+    state: 'fcy',
+    title: 'Engineer: full-course yellow declared',
+    description: 'FCY just declared (yellow state pending): flags in telemetry and scoring.',
+    initialPhase: 'monitoring',
+    settleMs: LIVE_SETTLE_MS,
+    telemetry: { variant: 'gt3', field: 'gt3', playerPlace: 7, flow: 'live', fcy: true },
+  }),
+  engineerScenario({
+    id: 'engineer-gt3-ve',
+    state: 'gt3-ve',
+    title: 'Engineer: GT3 with virtual energy (non-hybrid)',
+    description: 'LMGT3 reports virtual energy but has no hybrid system: VE populated, ERS channels absent.',
+    initialPhase: 'monitoring',
+    settleMs: LIVE_SETTLE_MS,
+    telemetry: { variant: 'gt3', field: 'gt3', playerPlace: 7, flow: 'live', virtualEnergy: true },
+    steps: [{ kind: 'clickText', text: 'Inputs & Energy' }],
+  }),
+  engineerScenario({
+    id: 'engineer-first-lap-no-geometry',
+    state: 'first-lap-no-geometry',
+    title: 'Engineer: first lap, no track geometry yet',
+    description: 'Joined at the race start: under one lap of history, no completed lap, no lap-based estimates.',
+    initialPhase: 'monitoring',
+    settleMs: LIVE_SETTLE_MS,
+    alerts: [],
+    telemetry: { variant: 'gt3', field: 'gt3', playerPlace: 7, flow: 'live', timeline: 'race-start' },
+    status: (ctx) => engineerLive('gt3', ctx, {}, {}, START_TIMELINE),
+  }),
+  engineerScenario({
+    id: 'engineer-geometry-built',
+    state: 'geometry-built',
+    title: 'Engineer: one lap of history (geometry available)',
+    description: 'Race start plus one full lap of position history, enough to build the track outline.',
+    initialPhase: 'monitoring',
+    settleMs: LIVE_SETTLE_MS,
+    alerts: [],
+    telemetry: {
+      variant: 'gt3',
+      field: 'gt3',
+      playerPlace: 7,
+      flow: 'live',
+      timeline: 'race-start',
+      backfillS: GEOMETRY_BACKFILL_S,
+    },
+    status: (ctx) => engineerLive('gt3', ctx, {}, {}, GEOMETRY_TIMELINE),
+  }),
+];
+
+const settingsW0Scenarios: Scenario[] = [
+  {
+    id: 'settings-ui-scale-125',
+    group: 'settings',
+    state: 'ui-scale-125',
+    title: 'Settings: UI scale 125 %',
+    description: 'Driver mode with the stored UI scale at 1.25 (settings page open).',
+    mode: 'driver',
+    login: LOGGED_IN_DRIVER,
+    snapshot: { config: { ...previewConfig('driver'), ui: { scale: 1.25, max_refresh_hz: 60 } } },
+    status: ({ elapsedS }) => liveDriver({}, elapsedS),
+    steps: [{ kind: 'clickText', text: 'Settings' }],
+  },
+];
+
+export const SCENARIOS: readonly Scenario[] = [
+  ...driverScenarios,
+  ...driverW0Scenarios,
+  ...engineerScenarios,
+  ...engineerW0Scenarios,
+  ...appScenarios,
+  ...settingsW0Scenarios,
+];
 
 /** Scenario for the current URL (`?scenario=<id>` or `?screen=<group>&state=<state>`), or null for the index. */
 export function scenarioFromQuery(search: string): Scenario | null {
@@ -673,6 +1017,7 @@ export function scenarioFromQuery(search: string): Scenario | null {
 export function identityCardFor(scenario: Scenario): IdentityCardDto {
   const variant = scenario.telemetry?.variant ?? 'gt3';
   const car = variant === 'gt3' ? GT3 : HYPER;
+  const timeline = scenarioTimeline(scenario);
   return {
     session_id: SESSION_ID,
     driver_display_name: DRIVER_NAME,
@@ -680,8 +1025,8 @@ export function identityCardFor(scenario: Scenario): IdentityCardDto {
     car: car.name,
     vehicle_class: car.vehicleClass,
     track: TRACK_NAME,
-    session_type: 'RACE',
-    started_at_ns: (NOW_UNIX_S - SESSION_TIME_AT_LOAD_S) * 1e9,
+    session_type: timeline.sessionType,
+    started_at_ns: (NOW_UNIX_S - timeline.sessionTimeAtLoadS) * 1e9,
     schema_version: 1,
   };
 }

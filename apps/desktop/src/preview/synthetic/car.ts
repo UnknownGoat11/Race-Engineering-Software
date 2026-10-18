@@ -141,11 +141,16 @@ export function noise(seed: number, i: number): number {
 }
 
 export interface WheelState {
+  /** Middle surface temperature (°C): carcass plus a short local spike. */
   surface: number;
   inner: number;
   outer: number;
+  /** Carcass temperature (°C): slow, carries the tyre's thermal state. */
   carcass: number;
+  /** Short surface spike (°C above the carcass) from this wheel's current corner / braking load. */
+  spike: number;
   brake: number;
+  /** Brake temperature peak since the stint start (°C; never decreases within the stint). */
   brakePeak: number;
   pressurePa: number;
   wear: number;
@@ -177,7 +182,25 @@ export interface CarRow {
 }
 
 const AMBIENT_C = 29;
-const TRACK_C = 41;
+
+/** Largest local surface spike (°C over the carcass). */
+export const MAX_SURFACE_SPIKE_C = 16;
+/** Inner (camber) and outer edge offsets from the middle surface (°C), front / rear. */
+const INNER_OFFSET_C = [5, 3.5] as const;
+const OUTER_OFFSET_C = [3.5, 2.5] as const;
+/** Carcass equilibrium (°C) the tyres run at over a lap, front / rear. */
+const CARCASS_EQ_C: Readonly<Record<CarVariant, readonly [number, number]>> = { gt3: [86, 83], hypercar: [92, 88] };
+/** Brake heat gain; cooling rate (1/s) = BRAKE_COOL_BASE + BRAKE_COOL_PER_MS × speed. */
+const BRAKE_HEAT: Readonly<Record<CarVariant, number>> = { gt3: 5.0, hypercar: 6.0 };
+const BRAKE_COOL_BASE = 0.008;
+const BRAKE_COOL_PER_MS = 0.00035;
+
+export interface SimulatorOptions {
+  /** Seconds already driven into the current lap at the first row (so the lap clock does not start at 0). */
+  readonly lapOffsetS?: number;
+  /** Non-hybrid car that still reports virtual energy (LMGT3 runs VE without a hybrid system). */
+  readonly virtualEnergy?: boolean;
+}
 
 /** Stateful 100 Hz simulator. `startLap` laps are already completed at `startSessionTimeS`. */
 export class CarSimulator {
@@ -188,32 +211,59 @@ export class CarSimulator {
   readonly #t0: number;
   readonly #startLap: number;
   readonly #wheels: WheelState[];
+  readonly #lapOffsetS: number;
+  readonly #virtualEnergy: boolean;
   #fuel: number;
   #ve: number;
   #soc: number;
 
-  constructor(variant: CarVariant, startSessionTimeS: number, startLap: number, fuelL: number) {
+  constructor(
+    variant: CarVariant,
+    startSessionTimeS: number,
+    startLap: number,
+    fuelL: number,
+    options: SimulatorOptions = {},
+  ) {
     this.variant = variant;
     this.params = CAR_PARAMS[variant];
     this.profile = buildLapProfile(variant);
     this.#t0 = startSessionTimeS;
     this.#startLap = startLap;
+    this.#lapOffsetS = Math.max(0, Math.min(this.profile.lapTimeS - ROW_DT_S, options.lapOffsetS ?? 0));
+    this.#virtualEnergy = this.params.hybrid || options.virtualEnergy === true;
     this.#fuel = fuelL;
     this.#ve = 0.71;
     this.#soc = 0.55;
-    this.#wheels = [0, 1, 2, 3].map((w) => ({
-      surface: w < 2 ? 88 : 84,
-      inner: w < 2 ? 93 : 88,
-      outer: w < 2 ? 82 : 79,
-      carcass: w < 2 ? 86 : 83,
-      brake: w < 2 ? 420 : 340,
-      brakePeak: w < 2 ? 690 : 540,
-      pressurePa: w < 2 ? 178_000 : 174_000,
-      wear: 0.9 - 0.012 * w,
-    }));
-    // Warm the thermal state up over one lap without emitting it.
-    const warm = Math.round(this.profile.lapTimeS / ROW_DT_S);
+    const eq = CARCASS_EQ_C[variant];
+    this.#wheels = [0, 1, 2, 3].map((w) => {
+      const axle = w < 2 ? 0 : 1;
+      const carcass = eq[axle];
+      return {
+        surface: carcass,
+        inner: carcass + INNER_OFFSET_C[axle],
+        outer: carcass - OUTER_OFFSET_C[axle],
+        carcass,
+        spike: 0,
+        brake: w < 2 ? 380 : 300,
+        brakePeak: 0,
+        pressurePa: (w < 2 ? 155_000 : 152_000) * ((carcass + 273.15) / (25 + 273.15)),
+        wear: 0.9 - 0.012 * w,
+      };
+    });
+    // Warm the thermal state up over two laps without emitting them. They are laps of the same stint, so the
+    // stint brake peak includes them.
+    const warm = Math.round((2 * this.profile.lapTimeS) / ROW_DT_S);
     for (let i = 0; i < warm; i++) this.#integrate(i, false);
+  }
+
+  /** Whether the car reports virtual energy (hybrid, or a VE-only non-hybrid). */
+  get hasVirtualEnergy(): boolean {
+    return this.#virtualEnergy;
+  }
+
+  /** Seconds into the lap at the first emitted row. */
+  get lapOffsetS(): number {
+    return this.#lapOffsetS;
   }
 
   /** Session time (s) of the next row. */
@@ -232,10 +282,10 @@ export class CarSimulator {
     const p = this.params;
     const prof = this.profile;
     const elapsed = rowIndex * ROW_DT_S;
-    // Small lap-to-lap pace variation.
     const lapTime = prof.lapTimeS;
-    const lapsDone = Math.floor(elapsed / lapTime);
-    const tInLap = elapsed - lapsDone * lapTime;
+    const driven = elapsed + this.#lapOffsetS;
+    const lapsDone = Math.floor(driven / lapTime);
+    const tInLap = driven - lapsDone * lapTime;
     const dist = distanceAtTime(prof, tInLap);
     const i = Math.min(TRACK_SAMPLES.length - 1, Math.floor(dist));
     const speed = Math.max(0, (prof.speed[i] ?? 0) * (1 + 0.004 * noise(3, rowIndex)));
@@ -249,7 +299,8 @@ export class CarSimulator {
       throttle = 0;
     } else if (a > 0.4) {
       brake = 0;
-      throttle = Math.min(1, 0.55 + a / p.powerAccel);
+      // Progressive on a corner exit, flat out once the car is on a straight (power-limited acceleration).
+      throttle = Math.abs(k) < 0.002 ? 1 : Math.min(1, 0.55 + a / p.powerAccel);
     } else {
       brake = 0;
       throttle = speed >= p.vmax * 0.98 ? 1 : 0.42 + 0.2 * Math.abs(noise(7, Math.floor(rowIndex / 10)));
@@ -266,29 +317,41 @@ export class CarSimulator {
       Math.max(3200, 5600 + ((speed - bottom) / Math.max(1, top - bottom)) * (p.rpmMax - 5800)),
     );
 
-    // Thermal model (first order): brake heat from brake pressure × speed, tyre heat from lateral and
-    // longitudinal load; cooling grows with speed.
-    const lat = Math.abs(k) * speed * speed;
+    // Thermal model. Brakes: heat from brake pressure x speed on the axle's bias share, cooling grows with
+    // speed; the stint peak never decreases. Tyres: the carcass is slow (tens of seconds) and carries the tyre's
+    // state; the middle surface is the carcass plus a short local spike from this wheel's own load (outside
+    // wheels in a corner, fronts under braking, rears under traction), so the four corners do not swing in
+    // phase. The inner (camber) and outer edges sit either side of the middle, so the middle always lies
+    // between them.
+    const latG = (Math.abs(k) * speed * speed) / G;
     const leftCorner = k > 0;
+    const eq = CARCASS_EQ_C[this.variant];
     for (let w = 0; w < 4; w++) {
       const wheel = this.#wheels[w];
       if (wheel === undefined) continue;
       const front = w < 2;
+      const axle = front ? 0 : 1;
       const outerSide = leftCorner ? w === 1 || w === 3 : w === 0 || w === 2;
       const bias = front ? p.brakeBiasFront : 1 - p.brakeBiasFront;
-      const brakeHeat = brake * speed * bias * (front ? 3.5 : 3.0);
-      const brakeCool = (wheel.brake - AMBIENT_C) * (0.0002 + speed * 0.000008) * 100;
+      const brakeHeat = BRAKE_HEAT[this.variant] * brake * speed * bias;
+      const brakeCool = (wheel.brake - AMBIENT_C) * (BRAKE_COOL_BASE + BRAKE_COOL_PER_MS * speed);
       wheel.brake += (brakeHeat - brakeCool) * ROW_DT_S;
-      wheel.brakePeak = Math.max(wheel.brakePeak * 0.99995, wheel.brake);
-      const tyreHeat = lat * (outerSide ? 0.5 : 0.32) * (front ? 1.08 : 1) + brake * speed * (front ? 0.2 : 0.12);
-      const tyreCool = (wheel.surface - TRACK_C) * (0.05 + speed * 0.0013);
-      wheel.surface += (tyreHeat - tyreCool) * ROW_DT_S * 4.5;
-      wheel.inner += (wheel.surface + 6 - wheel.inner) * ROW_DT_S * 0.9;
-      wheel.outer += (wheel.surface - 6 - wheel.outer) * ROW_DT_S * 0.9;
-      wheel.carcass += (wheel.surface - 1 - wheel.carcass) * ROW_DT_S * 0.08;
+      wheel.brakePeak = Math.max(wheel.brakePeak, wheel.brake);
+
+      const load =
+        latG * (outerSide ? 7.5 : 2.2) * (front ? 1.1 : 1) + brake * (front ? 6 : 2.5) + (front ? 0 : throttle * 1.5);
+      const spikeTarget = Math.min(MAX_SURFACE_SPIKE_C, load);
+      // Fast rise (~0.6 s), slower decay (~1.5 s).
+      const rate = spikeTarget > wheel.spike ? 1 / 0.6 : 1 / 1.5;
+      wheel.spike += (spikeTarget - wheel.spike) * Math.min(1, rate * ROW_DT_S);
+      wheel.spike = Math.max(0, Math.min(MAX_SURFACE_SPIKE_C, wheel.spike));
+      wheel.carcass += (eq[axle] + 0.25 * wheel.spike - wheel.carcass) * (ROW_DT_S / 45);
+      wheel.surface = wheel.carcass + wheel.spike;
+      wheel.inner = wheel.surface + INNER_OFFSET_C[axle] - 0.15 * wheel.spike;
+      wheel.outer = wheel.surface - OUTER_OFFSET_C[axle] + (outerSide ? 0.1 : -0.05) * wheel.spike;
       const cold = front ? 155_000 : 152_000;
       wheel.pressurePa = cold * ((wheel.carcass + 273.15) / (25 + 273.15));
-      if (advanceConsumables) wheel.wear = Math.max(0.05, wheel.wear - (lat * 1.5e-9 + brake * 1e-8));
+      if (advanceConsumables) wheel.wear = Math.max(0.05, wheel.wear - (latG * G * 1.5e-9 + brake * 1e-8));
     }
 
     let ve: number | null = null;
@@ -304,10 +367,12 @@ export class CarSimulator {
       motorRpm = speed * 95;
       if (advanceConsumables) {
         this.#soc = Math.min(0.95, Math.max(0.05, this.#soc + (brake * 0.0012 - deploy * 0.0002)));
-        this.#ve = Math.max(0, this.#ve - (0.0285 / lapTime) * ROW_DT_S * (0.35 + throttle));
       }
-      ve = this.#ve;
       soc = this.#soc;
+    }
+    if (this.#virtualEnergy) {
+      if (advanceConsumables) this.#ve = Math.max(0, this.#ve - (0.0285 / lapTime) * ROW_DT_S * (0.35 + throttle));
+      ve = this.#ve;
     }
 
     return {

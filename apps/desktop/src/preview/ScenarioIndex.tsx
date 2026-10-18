@@ -23,6 +23,8 @@ export function ScenarioIndex({ unknownQuery }: { readonly unknownQuery: string 
       </header>
       <p className="panel-note">
         Every scenario runs the real app screens against a fake backend with synthetic data (never LMU data).
+        Scenarios marked <em>simulated LMU origin</em> report <code>origin = lmu</code> to show the live-data look;
+        their data is still synthetic and their pages carry a PREVIEW tag.
         Select with <code>?scenario=&lt;id&gt;</code> or <code>?screen=&lt;group&gt;&amp;state=&lt;state&gt;</code>.
       </p>
       {unknownQuery !== null && (
@@ -46,6 +48,11 @@ export function ScenarioIndex({ unknownQuery }: { readonly unknownQuery: string 
                   <tr key={s.id}>
                     <td>
                       <a href={`?scenario=${s.id}`}>{s.title}</a>
+                      {s.origin === 'lmu' && (
+                        <span className="preview-origin-lmu" data-testid={`origin-lmu-${s.id}`}>
+                          simulated LMU origin — preview only
+                        </span>
+                      )}
                     </td>
                     <td>
                       <code>
