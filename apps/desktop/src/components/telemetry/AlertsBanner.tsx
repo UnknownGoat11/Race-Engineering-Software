@@ -1,5 +1,6 @@
 import { type JSX } from 'react';
 import type { AlertDto } from '../../lib/ipc';
+import { useScopeDq } from './presentation';
 
 export interface AlertsBannerProps {
   readonly alerts: readonly AlertDto[];
@@ -8,13 +9,25 @@ export interface AlertsBannerProps {
 }
 
 export function AlertsBanner({ alerts, onDismiss, onClearAll }: AlertsBannerProps): JSX.Element | null {
-  if (alerts.length === 0) return null;
+  const scopeDq = useScopeDq();
+
+  // On ended session or when there are no alerts, don't show active alerts
+  if (alerts.length === 0 || scopeDq === 'ended') return null;
+
+  const isStale = scopeDq === 'stale';
 
   return (
-    <div className="alerts-container" data-testid="alerts-banner" style={{ marginBottom: '12px' }}>
+    <div
+      className={`alerts-container ${isStale ? 'alerts-container-stale' : ''}`}
+      data-testid="alerts-banner"
+      style={{ marginBottom: '12px' }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-        <span className="card-row-label" style={{ fontWeight: 600, color: 'var(--color-warn)' }}>
-          ACTIVE ALERTS ({alerts.length})
+        <span
+          className="card-row-label"
+          style={{ fontWeight: 600, color: isStale ? 'var(--text-tertiary)' : 'var(--color-warn)' }}
+        >
+          ACTIVE ALERTS ({alerts.length}){isStale ? ' · STALE' : ''}
         </span>
         {onClearAll && alerts.length > 1 && (
           <button type="button" className="btn btn-xs" onClick={onClearAll}>
@@ -32,7 +45,12 @@ export function AlertsBanner({ alerts, onDismiss, onClearAll }: AlertsBannerProp
                 : 'status-badge-info';
 
           return (
-            <div key={alert.id} className={`alert-item alert-item-${alert.level}`} data-testid={`alert-${alert.id}`}>
+            <div
+              key={alert.id}
+              className={`alert-item alert-item-${alert.level} ${isStale ? 'alert-item-stale' : ''}`}
+              data-testid={`alert-${alert.id}`}
+              role={alert.level === 'critical' ? 'alert' : 'status'}
+            >
               <span className={`status-badge ${badgeClass}`} style={{ textTransform: 'uppercase' }}>
                 {alert.level}
               </span>
@@ -56,3 +74,4 @@ export function AlertsBanner({ alerts, onDismiss, onClearAll }: AlertsBannerProp
     </div>
   );
 }
+

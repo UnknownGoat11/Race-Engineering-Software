@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { IdentityCardDto } from '../lib/ipc';
+import { IpcError } from '../lib/ipc';
 import * as ipc from '../lib/ipc';
 import { JoinSessionModal } from './JoinSessionModal';
 
@@ -67,6 +68,16 @@ describe('JoinSessionModal', () => {
       expect(screen.getByText('Jane Doe (@janedoe)')).toBeInTheDocument();
       expect(screen.getByText('Ferrari 499P')).toBeInTheDocument();
       expect(screen.getByText('Circuit de la Sarthe')).toBeInTheDocument();
+      expect(screen.getByText('8F3A2C')).toBeInTheDocument();
+      expect(screen.getByText('HY')).toBeInTheDocument();
+      expect(
+        screen.getByText('Only confirm if this is the driver you expect.'),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "This code can't be reused. Ask the driver for a new one.",
+        ),
+      ).toBeInTheDocument();
     });
 
     // Confirm button
@@ -100,8 +111,33 @@ describe('JoinSessionModal', () => {
     });
   });
 
-  it('displays error when join fails', async () => {
-    vi.mocked(ipc.engineerJoin).mockRejectedValue(new Error('Session full (max 2 engineers)'));
+  it('displays mapped error and clears code field when join code expires (EN02)', async () => {
+    vi.mocked(ipc.engineerJoin).mockRejectedValue(
+      new IpcError('engineer_join', 'code_expired', 'The code expired'),
+    );
+
+    render(<JoinSessionModal />);
+
+    const input = screen.getByTestId<HTMLInputElement>('join-code-input');
+    fireEvent.change(input, { target: { value: '8F3A2C' } });
+    fireEvent.click(screen.getByTestId('btn-join-session'));
+
+    await waitFor(() => {
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'That code has expired or was already used',
+      );
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'Ask the driver for a new code.',
+      );
+      // Code field was reset because clearField is true for code_expired
+      expect(input.value).toBe('');
+    });
+  });
+
+  it('displays mapped error when session is full (OR-4)', async () => {
+    vi.mocked(ipc.engineerJoin).mockRejectedValue(
+      new IpcError('engineer_join', 'session_full', 'Driver already has 2 engineers connected'),
+    );
 
     render(<JoinSessionModal />);
 
@@ -110,7 +146,12 @@ describe('JoinSessionModal', () => {
     fireEvent.click(screen.getByTestId('btn-join-session'));
 
     await waitFor(() => {
-      expect(screen.getByRole('alert')).toHaveTextContent('Session full (max 2 engineers)');
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'The driver already has 2 engineers',
+      );
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        'The driver must remove an engineer first.',
+      );
     });
   });
 });

@@ -99,16 +99,31 @@ describe('EngineerScreen', () => {
     vi.mocked(ipc.getCoreStatus).mockResolvedValue(MOCK_STATUS);
   });
 
-  it('renders top bar with LIVE stream health, driver, car, track, and latency', async () => {
+  it('renders top bar with LIVE stream health, driver, car, track, and latency when LMU origin', async () => {
     render(<EngineerScreen />);
 
     await waitFor(() => {
       expect(screen.getByTestId('stream-health-badge')).toHaveTextContent('LIVE STREAM');
       expect(screen.getByTestId('engineer-driver-name')).toHaveTextContent('Jane Doe');
-      expect(screen.getByTestId('engineer-car')).toHaveTextContent('Ferrari 499P (Hypercar)');
+      expect(screen.getByTestId('engineer-car')).toHaveTextContent('Ferrari 499P (HY)');
       expect(screen.getByTestId('engineer-track')).toHaveTextContent('Circuit de la Sarthe');
       expect(screen.getByTestId('engineer-rtt')).toHaveTextContent('33 ms');
       expect(screen.getByTestId('engineer-stream-age')).toHaveTextContent('0.1s');
+    });
+  });
+
+  it('renders SYNTHETIC badge and no "LIVE" text when origin is synthetic (T04)', async () => {
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue({
+      ...MOCK_STATUS,
+      origin: 'synthetic',
+    });
+
+    render(<EngineerScreen />);
+
+    await waitFor(() => {
+      const badge = screen.getByTestId('stream-health-badge');
+      expect(badge).toHaveTextContent('SYNTHETIC');
+      expect(badge.textContent).not.toContain('LIVE');
     });
   });
 
@@ -164,19 +179,31 @@ describe('EngineerScreen', () => {
     });
   });
 
-  it('disconnects when disconnect button is clicked', async () => {
+  it('requires confirmation to leave session and disconnects on confirm (EN04)', async () => {
     render(<EngineerScreen />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('btn-engineer-disconnect')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-engineer-disconnect-trigger')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId('btn-engineer-disconnect'));
+    // First click opens the inline confirm prompt
+    fireEvent.click(screen.getByTestId('btn-engineer-disconnect-trigger'));
 
-    expect(ipc.engineerDisconnect).toHaveBeenCalled();
+    expect(ipc.engineerDisconnect).not.toHaveBeenCalled();
+    expect(screen.getByText("Leave this driver's session?")).toBeInTheDocument();
+    expect(
+      screen.getByText('You need a new engineer code from the driver to rejoin.'),
+    ).toBeInTheDocument();
+
+    // Confirm button click executes disconnect
+    fireEvent.click(screen.getByTestId('btn-engineer-disconnect-confirm'));
+
+    await waitFor(() => {
+      expect(ipc.engineerDisconnect).toHaveBeenCalled();
+    });
   });
 
-  it('shows driver away badge when driver is away', async () => {
+  it('shows driver away banner and badge when driver is away (T08)', async () => {
     vi.mocked(ipc.getCoreStatus).mockResolvedValue({
       ...MOCK_STATUS,
       engineer: MOCK_STATUS.engineer
@@ -191,6 +218,92 @@ describe('EngineerScreen', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('driver-away-badge')).toBeInTheDocument();
+      expect(screen.getByTestId('state-banner-away')).toBeInTheDocument();
+      expect(screen.getByTestId('state-banner-away')).toHaveTextContent('Driver away');
+    });
+  });
+
+  it('renders incompatible banner and untrusted panels when schema is incompatible (T05)', async () => {
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue({
+      ...MOCK_STATUS,
+      engineer: MOCK_STATUS.engineer
+        ? {
+            ...MOCK_STATUS.engineer,
+            incompatible_schema: true,
+          }
+        : null,
+    });
+
+    render(<EngineerScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('state-banner-incompatible')).toBeInTheDocument();
+      expect(screen.getByTestId('state-banner-incompatible')).toHaveTextContent('Update required');
+      expect(screen.getAllByText('UNTRUSTED').length).toBeGreaterThan(0);
+    });
+  });
+
+  it('renders ended banner with reason and rejoin button when session ends (T06)', async () => {
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue({
+      ...MOCK_STATUS,
+      engineer: MOCK_STATUS.engineer
+        ? {
+            ...MOCK_STATUS.engineer,
+            phase: 'ended',
+            ended_reason: 'The driver ended the session.',
+          }
+        : null,
+    });
+
+    render(<EngineerScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('state-banner-ended')).toBeInTheDocument();
+      expect(screen.getByTestId('state-banner-ended')).toHaveTextContent('Session ended by Jane Doe');
+      expect(screen.getByTestId('btn-rejoin')).toBeInTheDocument();
+      expect(screen.getByTestId('btn-rejoin')).toHaveTextContent('Join with new code');
+    });
+  });
+
+  it('does not render "Driver" placeholder or workspace when not connected (T09, EN01)', async () => {
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue({
+      ...MOCK_STATUS,
+      engineer: MOCK_STATUS.engineer
+        ? {
+            ...MOCK_STATUS.engineer,
+            phase: 'idle',
+            driver_name: null,
+          }
+        : null,
+    });
+
+    render(<EngineerScreen />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('engineer-driver-name')).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Driver$/i)).not.toBeInTheDocument();
+      expect(screen.getByTestId('not-connected-panel')).toBeInTheDocument();
+      expect(screen.getByText('Not connected to a driver')).toBeInTheDocument();
+      expect(screen.queryByTestId('engineer-workspace')).not.toBeInTheDocument();
+    });
+  });
+
+  it('hides header completely while awaiting confirmation (T09, OR-3)', async () => {
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue({
+      ...MOCK_STATUS,
+      engineer: MOCK_STATUS.engineer
+        ? {
+            ...MOCK_STATUS.engineer,
+            phase: 'awaiting_confirmation',
+          }
+        : null,
+    });
+
+    render(<EngineerScreen />);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('engineer-header')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('engineer-driver-name')).not.toBeInTheDocument();
     });
   });
 
@@ -220,4 +333,3 @@ describe('EngineerScreen', () => {
     });
   });
 });
-

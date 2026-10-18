@@ -1,41 +1,89 @@
-import { useState, type JSX, type ChangeEvent, type SyntheticEvent } from 'react';
-import { engineerCancel, engineerConfirm, engineerJoin, type IdentityCardDto } from '../lib/ipc';
+import { useRef, useState, type JSX, type ChangeEvent, type SyntheticEvent } from 'react';
+import { classColorVar } from '../lib/classes';
+import { IpcError, engineerCancel, engineerConfirm, engineerJoin, type IdentityCardDto } from '../lib/ipc';
+import { COPY, joinErrorCopy, vehicleClassCode, type JoinErrorCopy } from '../lib/labels';
+import { NO_VALUE } from '../lib/units';
 
 export interface JoinSessionModalProps {
   readonly onJoined?: () => void;
   readonly onCancel?: () => void;
 }
 
+function extractErrorCode(err: unknown): string {
+  if (err instanceof IpcError) return err.code;
+  if (typeof err === 'object' && err !== null && 'code' in err) {
+    const code = err.code;
+    if (typeof code === 'string') return code;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.toLowerCase().includes('session full') || msg.toLowerCase().includes('already has 2')) {
+    return 'session_full';
+  }
+  if (msg.toLowerCase().includes('expired')) return 'code_expired';
+  if (msg.toLowerCase().includes('invalid')) return 'code_invalid';
+  return msg;
+}
+
+function formatStartedAgo(startedAtNs: number | null): string | null {
+  if (startedAtNs == null || startedAtNs <= 0) return null;
+  const nowNs = Date.now() * 1_000_000;
+  const diffNs = nowNs - startedAtNs;
+  if (diffNs < 0) return 'started just now';
+  const diffS = Math.floor(diffNs / 1_000_000_000);
+  if (diffS < 60) return 'started just now';
+  const mins = Math.floor(diffS / 60);
+  if (mins < 60) return `started ${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  return `started ${hours}h ${mins % 60}m ago`;
+}
+
 export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps): JSX.Element {
   const [code, setCode] = useState('');
+  const [redeemedCode, setRedeemedCode] = useState('');
   const [joining, setJoining] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [card, setCard] = useState<IdentityCardDto | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [errorCopy, setErrorCopy] = useState<JoinErrorCopy | null>(null);
+  const [rawError, setRawError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   const handleCodeChange = (e: ChangeEvent<HTMLInputElement>) => {
     // Sanitize: max 6 alphanumeric characters, uppercase
     const raw = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
     setCode(raw);
-    setError(null);
+    setErrorCopy(null);
+    setRawError(null);
   };
 
   const handleJoin = async (e?: SyntheticEvent) => {
     e?.preventDefault();
     const cleanCode = code.trim().toUpperCase();
     if (cleanCode.length !== 6) {
-      setError('Please enter a valid 6-character connection code.');
+      const copy = joinErrorCopy('code_malformed');
+      setErrorCopy(copy);
+      setRawError(null);
       return;
     }
 
     setJoining(true);
-    setError(null);
+    setErrorCopy(null);
+    setRawError(null);
     try {
       const idCard = await engineerJoin(cleanCode);
       setCard(idCard);
+      setRedeemedCode(cleanCode);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
+      const codeKey = extractErrorCode(err);
+      const copy = joinErrorCopy(codeKey);
+      const raw = err instanceof Error ? err.message : String(err);
+      setErrorCopy(copy);
+      setRawError(raw);
+      if (copy.clearField) {
+        setCode('');
+        setTimeout(() => {
+          inputRef.current?.focus();
+        }, 0);
+      }
     } finally {
       setJoining(false);
     }
@@ -43,44 +91,83 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
 
   const handleConfirm = async () => {
     setConfirming(true);
-    setError(null);
+    setErrorCopy(null);
+    setRawError(null);
     try {
       await engineerConfirm();
       onJoined?.();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
+      const codeKey = extractErrorCode(err);
+      const copy = joinErrorCopy(codeKey);
+      const raw = err instanceof Error ? err.message : String(err);
+      setErrorCopy(copy);
+      setRawError(raw);
       setConfirming(false);
     }
   };
 
   const handleCancel = async () => {
-    setError(null);
+    setErrorCopy(null);
+    setRawError(null);
     try {
       await engineerCancel();
     } catch {
       // Ignore cancellation cleanup error
     }
-    setCard(null);
-    onCancel?.();
+    if (card) {
+      // Returning from identity card to code input
+      setCard(null);
+      setRedeemedCode('');
+      setCode('');
+    } else {
+      onCancel?.();
+    }
   };
 
+  const startedText = card ? formatStartedAgo(card.started_at_ns) : null;
+
   return (
-    <div className="modal-backdrop" data-testid="join-session-modal">
+    <div
+      className="modal-backdrop"
+      data-testid="join-session-modal"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="join-session-title"
+    >
       <div className="card modal-content" style={{ maxWidth: '520px', width: '100%', margin: '0 auto' }}>
         <div className="card-header">
-          <span className="card-header-title">
+          <span className="card-header-title" id="join-session-title">
             {card ? 'CONFIRM DRIVER IDENTITY' : 'CONNECT TO DRIVER RELAY'}
           </span>
         </div>
         <div className="card-body">
-          {error && (
+          {errorCopy && (
             <div
-              className="status-badge status-badge-error"
-              style={{ width: '100%', marginBottom: '12px', padding: '8px', textAlign: 'center' }}
+              className="status-badge status-badge-error join-error-block"
+              style={{
+                width: '100%',
+                marginBottom: '16px',
+                padding: '10px 14px',
+                textAlign: 'left',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '4px',
+                textTransform: 'none',
+                letterSpacing: 'normal',
+                fontWeight: 'normal',
+              }}
               role="alert"
+              data-testid="join-error-banner"
             >
-              {error}
+              <strong style={{ fontWeight: 700, color: 'var(--color-error)' }}>
+                {errorCopy.title}
+              </strong>
+              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
+                {errorCopy.helper}
+              </span>
+              {rawError && rawError !== errorCopy.title && rawError !== errorCopy.helper && (
+                <span style={{ fontSize: '11px', opacity: 0.8 }}>({rawError})</span>
+              )}
             </div>
           )}
 
@@ -93,6 +180,7 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
 
               <div style={{ textAlign: 'center', marginBottom: '20px' }}>
                 <input
+                  ref={inputRef}
                   type="text"
                   className="input"
                   style={{
@@ -112,6 +200,8 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
                   onChange={handleCodeChange}
                   autoFocus
                   data-testid="join-code-input"
+                  aria-label="Engineer code"
+                  autoComplete="one-time-code"
                 />
               </div>
 
@@ -132,65 +222,127 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
                   disabled={code.length !== 6 || joining}
                   data-testid="btn-join-session"
                 >
-                  {joining ? 'Connecting...' : 'Join Driver'}
+                  {joining ? 'Connecting...' : COPY.joinDriver}
                 </button>
               </div>
             </form>
           ) : (
-            /* Phase 2: Driver Identity Card confirmation */
+            /* Phase 2: Driver Identity Card confirmation (D-022, OR-3) */
             <div data-testid="driver-identity-card">
-              <p className="panel-note" style={{ marginBottom: '16px' }}>
+              <p className="panel-note" style={{ marginBottom: '14px' }}>
                 Please verify that you are connecting to the correct driver before confirming.
               </p>
 
-              <div className="telemetry-grid-2x2" style={{ marginBottom: '16px' }}>
-                <div className="card-row">
-                  <span className="card-row-label">Driver</span>
-                  <span className="card-row-value" style={{ fontWeight: 600 }}>
-                    {card.driver_display_name} (@{card.driver_username})
-                  </span>
+              <dl className="identity-card-dl" style={{ marginBottom: '16px' }}>
+                <div className="identity-card-row">
+                  <dt>Driver</dt>
+                  <dd>
+                    <span style={{ fontWeight: 600 }}>
+                      {card.driver_display_name} (@{card.driver_username})
+                    </span>
+                  </dd>
                 </div>
-                <div className="card-row">
-                  <span className="card-row-label">Vehicle</span>
-                  <span className="card-row-value">{card.car ?? '—'}</span>
+                <div className="identity-card-row">
+                  <dt>Vehicle</dt>
+                  <dd>{card.car ?? NO_VALUE}</dd>
                 </div>
-                <div className="card-row">
-                  <span className="card-row-label">Class</span>
-                  <span className="card-row-value">{card.vehicle_class ?? '—'}</span>
+                <div className="identity-card-row">
+                  <dt>Class</dt>
+                  <dd style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span
+                      className="class-chip"
+                      style={{
+                        display: 'inline-block',
+                        padding: '1px 6px',
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        borderRadius: '2px',
+                        backgroundColor: 'rgba(255, 255, 255, 0.08)',
+                        color: classColorVar(vehicleClassCode(card.vehicle_class)),
+                        border: `1px solid ${classColorVar(vehicleClassCode(card.vehicle_class))}`,
+                      }}
+                    >
+                      {vehicleClassCode(card.vehicle_class)}
+                    </span>
+                    <span>{card.vehicle_class ?? NO_VALUE}</span>
+                  </dd>
                 </div>
-                <div className="card-row">
-                  <span className="card-row-label">Track</span>
-                  <span className="card-row-value">{card.track ?? '—'}</span>
+                <div className="identity-card-row">
+                  <dt>Track</dt>
+                  <dd>{card.track ?? NO_VALUE}</dd>
                 </div>
-                <div className="card-row">
-                  <span className="card-row-label">Session</span>
-                  <span className="card-row-value">{card.session_type ?? '—'}</span>
+                <div className="identity-card-row">
+                  <dt>Session</dt>
+                  <dd>
+                    <span>{card.session_type ?? NO_VALUE}</span>
+                    {startedText && (
+                      <span style={{ color: 'var(--text-tertiary)', marginLeft: '6px' }}>
+                        ({startedText})
+                      </span>
+                    )}
+                  </dd>
                 </div>
-                <div className="card-row">
-                  <span className="card-row-label">Schema Version</span>
-                  <span className="card-row-value">v{card.schema_version}</span>
+                <div className="identity-card-row">
+                  <dt>Code</dt>
+                  <dd>
+                    <code
+                      style={{
+                        fontFamily: 'monospace',
+                        fontSize: '14px',
+                        letterSpacing: '2px',
+                        fontWeight: 700,
+                        color: 'var(--text-primary)',
+                      }}
+                    >
+                      {redeemedCode}
+                    </code>
+                  </dd>
                 </div>
-              </div>
+                <div className="identity-card-row">
+                  <dt>Schema Version</dt>
+                  <dd>v{card.schema_version}</dd>
+                </div>
+              </dl>
 
-              <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => { void handleCancel(); }}
-                  disabled={confirming}
-                  data-testid="btn-cancel-identity"
+              <p
+                className="panel-note"
+                style={{
+                  margin: '14px 0 16px',
+                  color: 'var(--color-warn)',
+                  fontStyle: 'italic',
+                }}
+              >
+                Only confirm if this is the driver you expect.
+              </p>
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
+                <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => { void handleCancel(); }}
+                    disabled={confirming}
+                    data-testid="btn-cancel-identity"
+                    aria-describedby="decline-consequence"
+                  >
+                    {COPY.notThisDriver}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => { void handleConfirm(); }}
+                    disabled={confirming}
+                    data-testid="btn-confirm-identity"
+                  >
+                    {confirming ? 'Confirming...' : COPY.confirmJoin}
+                  </button>
+                </div>
+                <span
+                  id="decline-consequence"
+                  style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'right' }}
                 >
-                  Decline
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => { void handleConfirm(); }}
-                  disabled={confirming}
-                  data-testid="btn-confirm-identity"
-                >
-                  {confirming ? 'Confirming...' : 'Confirm & Join'}
-                </button>
+                  {COPY.notThisDriverConsequence}
+                </span>
               </div>
             </div>
           )}
@@ -199,3 +351,4 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
     </div>
   );
 }
+
