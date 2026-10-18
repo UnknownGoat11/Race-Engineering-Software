@@ -307,6 +307,23 @@ export function TimingTower({
     };
   }, [isRailExpanded]);
 
+  const [focusedSlotId, setFocusedSlotId] = useState<number | null>(null);
+  const rowRefs = useRef<Map<number, HTMLTableRowElement>>(new Map());
+  const railRowRefs = useRef<Map<number, HTMLTableRowElement>>(new Map());
+
+  const activeSlotId = useMemo(() => {
+    if (focusedSlotId !== null && filteredVehicles.some((v) => v.slot_id === focusedSlotId)) {
+      return focusedSlotId;
+    }
+    if (selectedSlotId != null && filteredVehicles.some((v) => v.slot_id === selectedSlotId)) {
+      return selectedSlotId;
+    }
+    if (playerVehicle && filteredVehicles.some((v) => v.slot_id === playerVehicle.slot_id)) {
+      return playerVehicle.slot_id;
+    }
+    return filteredVehicles[0]?.slot_id ?? null;
+  }, [focusedSlotId, selectedSlotId, playerVehicle, filteredVehicles]);
+
   const handleRowClick = (slotId: number) => {
     onSelectSlot?.(slotId);
     // If pinned row was clicked, scroll driver into view in tbody
@@ -315,6 +332,50 @@ export function TimingTower({
     );
     if (typeof targetRow?.scrollIntoView === 'function') {
       targetRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  };
+
+  const handleRowKeyDown = (
+    e: React.KeyboardEvent<HTMLTableRowElement>,
+    v: CompetitorEntryDto,
+    idx: number,
+    isRailRow = false,
+  ) => {
+    const refs = isRailRow ? railRowRefs : rowRefs;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIdx = Math.min(idx + 1, filteredVehicles.length - 1);
+      const nextSlot = filteredVehicles[nextIdx]?.slot_id;
+      if (nextSlot !== undefined) {
+        setFocusedSlotId(nextSlot);
+        refs.current.get(nextSlot)?.focus();
+      }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prevIdx = Math.max(idx - 1, 0);
+      const prevSlot = filteredVehicles[prevIdx]?.slot_id;
+      if (prevSlot !== undefined) {
+        setFocusedSlotId(prevSlot);
+        refs.current.get(prevSlot)?.focus();
+      }
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      const firstSlot = filteredVehicles[0]?.slot_id;
+      if (firstSlot !== undefined) {
+        setFocusedSlotId(firstSlot);
+        refs.current.get(firstSlot)?.focus();
+      }
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      const lastSlot = filteredVehicles[filteredVehicles.length - 1]?.slot_id;
+      if (lastSlot !== undefined) {
+        setFocusedSlotId(lastSlot);
+        refs.current.get(lastSlot)?.focus();
+      }
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setFocusedSlotId(v.slot_id);
+      handleRowClick(v.slot_id);
     }
   };
 
@@ -441,7 +502,7 @@ export function TimingTower({
             }}
           >
             <span className="standings-rail-glyph">▶</span>
-            <span className="standings-rail-hdr-title">POS</span>
+            <span className="standings-rail-hdr-title"><abbr title="Position">POS</abbr></span>
           </button>
         </div>
 
@@ -449,14 +510,15 @@ export function TimingTower({
           <table className={`standings-table standings-table--rail ${dqClass}`}>
             <thead>
               <tr>
-                <th className="standings-col-pos" title="Position">P</th>
-                <th className="standings-col-num" title="Car Number">#</th>
+                <th className="standings-col-pos" scope="col"><abbr title="Position">P</abbr></th>
+                <th className="standings-col-num" scope="col"><abbr title="Car Number">#</abbr></th>
               </tr>
             </thead>
             <tbody>
               {filteredVehicles.map((v, idx) => {
                 const isSelected = selectedSlotId === v.slot_id;
                 const isDriver = v.is_player;
+                const isFocused = v.slot_id === activeSlotId;
                 const rowClass = [
                   'standings-row',
                   isDriver ? 'standings-row-driver' : '',
@@ -472,11 +534,25 @@ export function TimingTower({
                 return (
                   <tr
                     key={v.slot_id}
+                    ref={(el) => {
+                      if (el) railRowRefs.current.set(v.slot_id, el);
+                      else railRowRefs.current.delete(v.slot_id);
+                    }}
                     className={rowClass}
+                    role="row"
+                    aria-selected={isSelected}
+                    tabIndex={isFocused ? 0 : -1}
                     data-testid={`standings-row-${v.slot_id}`}
                     onClick={(e) => {
                       e.stopPropagation();
+                      setFocusedSlotId(v.slot_id);
                       onSelectSlot?.(v.slot_id);
+                    }}
+                    onFocus={() => {
+                      setFocusedSlotId(v.slot_id);
+                    }}
+                    onKeyDown={(e) => {
+                      handleRowKeyDown(e, v, idx, true);
                     }}
                   >
                     <td
@@ -580,16 +656,16 @@ export function TimingTower({
         <table className={`standings-table ${dqClass}`}>
           <thead>
             <tr>
-              <th className="standings-col-pos" title="Position">P</th>
-              <th className="standings-col-class" title="Class">CLS</th>
-              <th className="standings-col-num" title="Car Number">#</th>
-              <th className="standings-col-driver">DRIVER</th>
-              <th className="standings-col-gap" title="Interval to car ahead">INT</th>
-              <th className="standings-col-gap" title="Gap to leader">GAP</th>
+              <th className="standings-col-pos" scope="col"><abbr title="Position">P</abbr></th>
+              <th className="standings-col-class" scope="col"><abbr title="Class">CLS</abbr></th>
+              <th className="standings-col-num" scope="col"><abbr title="Car Number">#</abbr></th>
+              <th className="standings-col-driver" scope="col">DRIVER</th>
+              <th className="standings-col-gap" scope="col"><abbr title="Interval to car ahead">INT</abbr></th>
+              <th className="standings-col-gap" scope="col"><abbr title="Gap to leader">GAP</abbr></th>
               {showLastAndPit && (
                 <>
-                  <th className="standings-col-last standings-col-time" title="Last lap time">LAST</th>
-                  <th className="standings-col-pit" title="Pit status">PIT</th>
+                  <th className="standings-col-last standings-col-time" scope="col"><abbr title="Last lap time">LAST</abbr></th>
+                  <th className="standings-col-pit" scope="col"><abbr title="Pit status">PIT</abbr></th>
                 </>
               )}
             </tr>
@@ -600,9 +676,18 @@ export function TimingTower({
                 className="standings-row standings-row-driver standings-row-pinned standings-row-pinned--top"
                 data-testid="standings-pinned-driver-top"
                 data-pinned="top"
+                role="row"
+                tabIndex={0}
+                aria-label="Driver pinned to top — click or press Enter to jump to position"
                 title="Driver (pinned to top) — Click to jump"
                 onClick={() => {
                   handleRowClick(playerVehicle.slot_id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleRowClick(playerVehicle.slot_id);
+                  }
                 }}
               >
                 {renderRowCells(playerVehicle, playerIndex, true)}
@@ -614,6 +699,7 @@ export function TimingTower({
             {filteredVehicles.map((v, idx) => {
               const isSelected = selectedSlotId === v.slot_id;
               const isDriver = v.is_player;
+              const isFocused = v.slot_id === activeSlotId;
               const rowClass = [
                 'standings-row',
                 isDriver ? 'standings-row-driver' : '',
@@ -626,10 +712,24 @@ export function TimingTower({
               return (
                 <tr
                   key={v.slot_id}
+                  ref={(el) => {
+                    if (el) rowRefs.current.set(v.slot_id, el);
+                    else rowRefs.current.delete(v.slot_id);
+                  }}
                   className={rowClass}
+                  role="row"
+                  aria-selected={isSelected}
+                  tabIndex={isFocused ? 0 : -1}
                   data-testid={`standings-row-${v.slot_id}`}
                   onClick={() => {
-                    onSelectSlot?.(v.slot_id);
+                    setFocusedSlotId(v.slot_id);
+                    handleRowClick(v.slot_id);
+                  }}
+                  onFocus={() => {
+                    setFocusedSlotId(v.slot_id);
+                  }}
+                  onKeyDown={(e) => {
+                    handleRowKeyDown(e, v, idx, false);
                   }}
                 >
                   {renderRowCells(v, idx, false)}
@@ -645,9 +745,18 @@ export function TimingTower({
                 className="standings-row standings-row-driver standings-row-pinned standings-row-pinned--bottom"
                 data-testid="standings-pinned-driver-bottom"
                 data-pinned="bottom"
+                role="row"
+                tabIndex={0}
+                aria-label="Driver pinned to bottom — click or press Enter to jump to position"
                 title="Driver (pinned to bottom) — Click to jump"
                 onClick={() => {
                   handleRowClick(playerVehicle.slot_id);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    handleRowClick(playerVehicle.slot_id);
+                  }
                 }}
               >
                 {renderRowCells(playerVehicle, playerIndex, true)}

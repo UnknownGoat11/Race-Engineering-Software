@@ -450,4 +450,129 @@ describe('TimingTower Component', () => {
       expect(p2Btn).toHaveAttribute('aria-pressed', 'false');
     });
   });
+
+  describe('W4.3 Keyboard accessibility and abbreviations', () => {
+    it('renders accessible <abbr> elements in table header (A07)', () => {
+      const v1 = makeVehicle({ slot_id: 1, place: 1 });
+      render(<TimingTower scoring={makeScoring([v1])} />);
+
+      const abbrPos = screen.getByTitle('Position');
+      expect(abbrPos.tagName.toLowerCase()).toBe('abbr');
+      expect(abbrPos.textContent).toBe('P');
+
+      const abbrClass = screen.getByTitle('Class');
+      expect(abbrClass.tagName.toLowerCase()).toBe('abbr');
+      expect(abbrClass.textContent).toBe('CLS');
+
+      const abbrNum = screen.getByTitle('Car Number');
+      expect(abbrNum.tagName.toLowerCase()).toBe('abbr');
+      expect(abbrNum.textContent).toBe('#');
+
+      const abbrInt = screen.getByTitle('Interval to car ahead');
+      expect(abbrInt.tagName.toLowerCase()).toBe('abbr');
+      expect(abbrInt.textContent).toBe('INT');
+
+      const abbrGap = screen.getByTitle('Gap to leader');
+      expect(abbrGap.tagName.toLowerCase()).toBe('abbr');
+      expect(abbrGap.textContent).toBe('GAP');
+
+      const abbrLast = screen.getByTitle('Last lap time');
+      expect(abbrLast.tagName.toLowerCase()).toBe('abbr');
+      expect(abbrLast.textContent).toBe('LAST');
+
+      const abbrPit = screen.getByTitle('Pit status');
+      expect(abbrPit.tagName.toLowerCase()).toBe('abbr');
+      expect(abbrPit.textContent).toBe('PIT');
+    });
+
+    it('renders <abbr> in rail mode header and table', () => {
+      const v1 = makeVehicle({ slot_id: 1, place: 1 });
+      render(<TimingTower scoring={makeScoring([v1])} variant="rail" />);
+
+      const abbrPosList = screen.getAllByTitle('Position');
+      expect(abbrPosList.length).toBe(2);
+      expect(abbrPosList[0]?.textContent).toBe('POS');
+      expect(abbrPosList[1]?.textContent).toBe('P');
+
+      const abbrNum = screen.getByTitle('Car Number');
+      expect(abbrNum.tagName.toLowerCase()).toBe('abbr');
+      expect(abbrNum.textContent).toBe('#');
+    });
+
+    it('supports roving tabIndex and keyboard selection with Enter and Space (A03)', () => {
+      const v1 = makeVehicle({ slot_id: 10, place: 1, is_player: false });
+      const v2 = makeVehicle({ slot_id: 20, place: 2, is_player: true });
+      const v3 = makeVehicle({ slot_id: 30, place: 3, is_player: false });
+      const onSelect = vi.fn();
+
+      const { rerender } = render(
+        <TimingTower scoring={makeScoring([v1, v2, v3])} selectedSlotId={null} onSelectSlot={onSelect} />,
+      );
+
+      const row1 = screen.getByTestId('standings-row-10');
+      const row2 = screen.getByTestId('standings-row-20');
+      const row3 = screen.getByTestId('standings-row-30');
+
+      // Player row (row 2) defaults to active roving tabindex (tabIndex=0) when unselected
+      expect(row2).toHaveAttribute('tabindex', '0');
+      expect(row1).toHaveAttribute('tabindex', '-1');
+      expect(row3).toHaveAttribute('tabindex', '-1');
+      expect(row1).toHaveAttribute('aria-selected', 'false');
+      expect(row2).toHaveAttribute('aria-selected', 'false');
+
+      // ArrowDown navigates to row 3
+      fireEvent.keyDown(row2, { key: 'ArrowDown' });
+      expect(row3).toHaveAttribute('tabindex', '0');
+      expect(row2).toHaveAttribute('tabindex', '-1');
+
+      // ArrowUp navigates back to row 2
+      fireEvent.keyDown(row3, { key: 'ArrowUp' });
+      expect(row2).toHaveAttribute('tabindex', '0');
+
+      // Home jumps to first row (row 1)
+      fireEvent.keyDown(row2, { key: 'Home' });
+      expect(row1).toHaveAttribute('tabindex', '0');
+
+      // End jumps to last row (row 3)
+      fireEvent.keyDown(row1, { key: 'End' });
+      expect(row3).toHaveAttribute('tabindex', '0');
+
+      // Enter key selects row 3
+      fireEvent.keyDown(row3, { key: 'Enter' });
+      expect(onSelect).toHaveBeenCalledWith(30);
+
+      // Space key selects row 1
+      fireEvent.keyDown(row1, { key: ' ' });
+      expect(onSelect).toHaveBeenCalledWith(10);
+
+      // With selectedSlotId=30, row 3 has aria-selected=true
+      rerender(
+        <TimingTower scoring={makeScoring([v1, v2, v3])} selectedSlotId={30} onSelectSlot={onSelect} />,
+      );
+      expect(screen.getByTestId('standings-row-30')).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByTestId('standings-row-10')).toHaveAttribute('aria-selected', 'false');
+    });
+
+    it('supports keyboard navigation in rail mode', () => {
+      const v1 = makeVehicle({ slot_id: 10, place: 1 });
+      const v2 = makeVehicle({ slot_id: 20, place: 2 });
+      const onSelect = vi.fn();
+
+      render(
+        <TimingTower scoring={makeScoring([v1, v2])} variant="rail" onSelectSlot={onSelect} />,
+      );
+
+      const row1 = screen.getByTestId('standings-row-10');
+      const row2 = screen.getByTestId('standings-row-20');
+
+      expect(row1).toHaveAttribute('tabindex', '0');
+      expect(row2).toHaveAttribute('tabindex', '-1');
+
+      fireEvent.keyDown(row1, { key: 'ArrowDown' });
+      expect(row2).toHaveAttribute('tabindex', '0');
+
+      fireEvent.keyDown(row2, { key: 'Enter' });
+      expect(onSelect).toHaveBeenCalledWith(20);
+    });
+  });
 });

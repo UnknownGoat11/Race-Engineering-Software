@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GRAPH_KEYBOARD_HELP,
+  GRAPH_KEYBOARD_SHORTCUTS,
   KEY_PAN_FRACTION,
   KEY_ZOOM_FACTOR,
   MIN_ZOOM_BOX_PX,
@@ -58,13 +60,25 @@ describe('zoomBoxAction', () => {
   });
 });
 
-describe('keyAction', () => {
-  it('maps arrows to pans, +/- to centred zooms and End to LIVE', () => {
+describe('keyAction and keyboard accessibility', () => {
+  it('maps arrows to pans, +/- and up/down to centred zooms, and End to LIVE', () => {
     expect(keyAction('ArrowLeft', RANGE)).toEqual({ type: 'pan', dx: -10 * KEY_PAN_FRACTION });
     expect(keyAction('ArrowRight', RANGE)).toEqual({ type: 'pan', dx: 10 * KEY_PAN_FRACTION });
     expect(keyAction('+', RANGE)).toEqual({ type: 'zoom', factor: 1 / KEY_ZOOM_FACTOR, anchor: 105 });
+    expect(keyAction('=', RANGE)).toEqual({ type: 'zoom', factor: 1 / KEY_ZOOM_FACTOR, anchor: 105 });
+    expect(keyAction('ArrowUp', RANGE)).toEqual({ type: 'zoom', factor: 1 / KEY_ZOOM_FACTOR, anchor: 105 });
     expect(keyAction('-', RANGE)).toEqual({ type: 'zoom', factor: KEY_ZOOM_FACTOR, anchor: 105 });
+    expect(keyAction('_', RANGE)).toEqual({ type: 'zoom', factor: KEY_ZOOM_FACTOR, anchor: 105 });
+    expect(keyAction('ArrowDown', RANGE)).toEqual({ type: 'zoom', factor: KEY_ZOOM_FACTOR, anchor: 105 });
     expect(keyAction('End', RANGE)).toEqual({ type: 'live' });
     expect(keyAction('a', RANGE)).toBeNull();
+  });
+
+  it('provides documented keyboard shortcuts and accessible help string (REDESIGN.md §4 W4.3)', () => {
+    expect(GRAPH_KEYBOARD_SHORTCUTS.length).toBeGreaterThanOrEqual(3);
+    expect(GRAPH_KEYBOARD_SHORTCUTS.some((s) => s.keys.includes('←'))).toBe(true);
+    expect(GRAPH_KEYBOARD_HELP).toContain('Left and Right');
+    expect(GRAPH_KEYBOARD_HELP).toContain('zoom');
+    expect(GRAPH_KEYBOARD_HELP).toContain('End');
   });
 });

@@ -239,6 +239,19 @@
   outline: 1px solid var(--border-control, #5a6372);
 }
 
+.standings-row:focus-visible {
+  outline: 2px solid var(--border-focus, #ffd34d);
+  outline-offset: -2px;
+  position: relative;
+  z-index: 2;
+}
+
+.standings-table th abbr {
+  text-decoration: none;
+  border-bottom: none;
+  cursor: help;
+}
+
 /* Driver car highlight per C2: --surface-selected + 2px white left rule + DRIVER chip */
 .standings-row-driver {
   background-color: var(--surface-selected, #1e242b) !important;

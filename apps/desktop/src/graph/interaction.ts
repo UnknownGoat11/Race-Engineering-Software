@@ -76,9 +76,11 @@ export function keyAction(key: string, range: XRange): ViewAction | null {
       return { type: 'pan', dx: -span * KEY_PAN_FRACTION };
     case 'ArrowRight':
       return { type: 'pan', dx: span * KEY_PAN_FRACTION };
+    case 'ArrowUp':
     case '+':
     case '=':
       return { type: 'zoom', factor: 1 / KEY_ZOOM_FACTOR, anchor: centre };
+    case 'ArrowDown':
     case '-':
     case '_':
       return { type: 'zoom', factor: KEY_ZOOM_FACTOR, anchor: centre };
@@ -88,3 +90,19 @@ export function keyAction(key: string, range: XRange): ViewAction | null {
       return null;
   }
 }
+
+/** Documented keyboard shortcuts for the telemetry graph plot (REDESIGN.md §4 W4.3). */
+export interface GraphKeyboardShortcut {
+  readonly keys: string;
+  readonly description: string;
+}
+
+export const GRAPH_KEYBOARD_SHORTCUTS: readonly GraphKeyboardShortcut[] = [
+  { keys: '← / →', description: 'Pan view left / right by 10%' },
+  { keys: '↑ / ↓ or + / −', description: 'Zoom in / out at center' },
+  { keys: 'End', description: 'Return to live view' },
+  { keys: 'Esc', description: 'Cancel drag / zoom box' },
+] as const;
+
+export const GRAPH_KEYBOARD_HELP =
+  'Telemetry graph plot. Use Left and Right arrows to pan, Up and Down arrows or + and - to zoom, and End to return to live view.';

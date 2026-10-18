@@ -25,7 +25,7 @@ import { Canvas2DRenderer } from './canvas2dRenderer';
 import { findTimeGaps, findValueBreaks } from './decimate';
 import { sharedFrameLoop } from './frameLoop';
 import { DurationRecorder, summarize, type DurationSummary } from './frameStats';
-import { dragPanAction, keyAction, wheelAction, zoomBoxAction } from './interaction';
+import { GRAPH_KEYBOARD_HELP, dragPanAction, keyAction, wheelAction, zoomBoxAction } from './interaction';
 import {
   X_TICK_SPACING_CSS,
   axisKey,
@@ -576,7 +576,9 @@ export class GraphEngine {
     const over = document.createElement('canvas');
     over.className = 'telemetry-graph__layer telemetry-graph__input';
     over.tabIndex = 0;
-    over.setAttribute('role', 'img');
+    over.setAttribute('role', 'region');
+    over.setAttribute('aria-label', GRAPH_KEYBOARD_HELP);
+    over.setAttribute('aria-keyshortcuts', 'ArrowLeft ArrowRight ArrowUp ArrowDown + - End');
     container.append(under, host, over);
     this.#under = under;
     this.#host = host;

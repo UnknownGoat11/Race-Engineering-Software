@@ -285,6 +285,11 @@
   touch-action: none;
 }
 
+.telemetry-graph__input:focus-visible {
+  outline: 2px solid var(--border-focus, #ffd34d);
+  outline-offset: -2px;
+}
+
 /* uPlot (series layer only): the subset of uPlot.min.css its DOM needs. */
 .telemetry-graph__uplot-group {
   position: absolute;

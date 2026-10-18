@@ -34,6 +34,7 @@ import {
   driverStopStreaming,
   getAppInfo,
   type DemoScenario,
+  type EngineerSlotDto,
   type Environment,
 } from '../lib/ipc';
 import {
@@ -88,9 +89,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
   const prevLmuStateRef = useRef<string | undefined>(undefined);
   const prevStreamingRef = useRef<boolean | undefined>(undefined);
   const prevRecordingStateRef = useRef<string | undefined>(undefined);
-  const prevEngineersRef = useRef<
-    readonly { connection_id: number; username: string; display_name?: string }[] | undefined
-  >(undefined);
+  const prevEngineersRef = useRef<readonly EngineerSlotDto[] | undefined>(undefined);
 
   // Announce state transitions to screen readers (REDESIGN.md §4 W4.2, A02, A11)
   useEffect(() => {
