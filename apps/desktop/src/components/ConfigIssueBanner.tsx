@@ -14,7 +14,7 @@ interface ConfigIssueBannerProps {
 /** Explains why the stored configuration was rejected and where the rejected file was preserved. */
 export function ConfigIssueBanner({ issue }: ConfigIssueBannerProps): JSX.Element {
   return (
-    <div className="alert" role="alert">
+    <div className="alert alert-warn config-issue-banner" role="alert">
       <span className="alert-title">{TITLES[issue.kind]}</span>
       <span>{issue.message}</span>
       {issue.errors.length > 0 && (

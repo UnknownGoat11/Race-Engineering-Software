@@ -47,7 +47,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
   };
 
   return (
-    <section className="page">
+    <section className="page settings-page">
       <h2 className="page-title">Settings</h2>
 
       <div className="panel">
@@ -128,7 +128,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
             </dd>
             <dt>Log directory</dt>
             <dd>
-              <code>{textOrDash(info.log_dir)}</code>
+              {info.log_dir !== null ? <code>{info.log_dir}</code> : textOrDash(null)}
             </dd>
           </dl>
         </div>
@@ -137,7 +137,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
       <div className="panel">
         <div className="panel-header">
           <span>Configuration</span>
-          <span className="num">schema v{config.schema_version}</span>
+          <span className="num">Schema v{config.schema_version}</span>
         </div>
         <div className="panel-body">
           <dl className="kv">
@@ -149,13 +149,19 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
             <dd className="num">{config.network.connect_timeout_ms} ms</dd>
             <dt>Extra CA file</dt>
             <dd>
-              {textOrDash(config.network.extra_ca_file)}
+              {config.network.extra_ca_file !== null ? (
+                <code>{config.network.extra_ca_file}</code>
+              ) : (
+                textOrDash(null)
+              )}
               {config.network.extra_ca_file !== null && !extraCaHonoured && ' (ignored outside development builds)'}
             </dd>
             <dt>Recording</dt>
             <dd>{config.telemetry.recording_enabled ? 'Enabled' : 'Disabled'}</dd>
             <dt>Recording directory</dt>
-            <dd>{config.telemetry.recording_dir ?? 'Default (per-user app data)'}</dd>
+            <dd>
+              <code>{config.telemetry.recording_dir ?? 'Default (per-user app data)'}</code>
+            </dd>
             <dt>Fuel averaging window (laps)</dt>
             <dd className="num">{config.fuel.window_laps}</dd>
             <dt>Fuel reserve (laps)</dt>

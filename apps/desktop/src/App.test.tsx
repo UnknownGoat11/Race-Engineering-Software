@@ -162,13 +162,52 @@ describe('App', () => {
     expect(banner).toHaveTextContent('config.invalid-20260930T120000Z.json');
   });
 
-  it('shows a retryable error when the backend is unavailable', async () => {
+  it('shows a retryable error when the backend is unavailable with log path and copy button', async () => {
+    const writeTextMock = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: writeTextMock,
+      },
+    });
+
     vi.mocked(ipc.getConfig).mockRejectedValue(new ipc.IpcError('get_config', 'backend_unavailable', 'no backend'));
 
     render(<App />);
 
     expect(await screen.findByText('Backend unavailable')).toBeInTheDocument();
+    expect(screen.getByTestId('backend-log-path')).toHaveTextContent('C:\\logs');
     expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+
+    const copyBtn = screen.getByTestId('copy-details-btn');
+    expect(copyBtn).toHaveTextContent('Copy details');
+    fireEvent.click(copyBtn);
+
+    expect(writeTextMock).toHaveBeenCalledWith(
+      expect.stringContaining('Backend error: no backend\nLog directory: C:\\logs'),
+    );
+  });
+
+  it('renders pending text in mode select while saving mode choice', async () => {
+    vi.mocked(ipc.getConfig).mockResolvedValue(snapshot(null));
+    let resolveSetMode: (snap: ConfigSnapshot) => void = () => undefined;
+    vi.mocked(ipc.setMode).mockReturnValue(
+      new Promise<ConfigSnapshot>((resolve) => {
+        resolveSetMode = resolve;
+      }),
+    );
+
+    render(<App />);
+
+    const engineerBtn = await screen.findByRole('button', { name: 'ENGINEER MODE' });
+    fireEvent.click(engineerBtn);
+
+    expect(screen.getByText('Saving…')).toBeInTheDocument();
+    expect(engineerBtn).toBeDisabled();
+
+    resolveSetMode(snapshot('engineer'));
+    await waitFor(() => {
+      expect(screen.getByTestId('header-mode')).toHaveTextContent('ENGINEER');
+    });
   });
 
   it('routes to LoginScreen when mode is set but login state is unauthenticated (T11, B12)', async () => {

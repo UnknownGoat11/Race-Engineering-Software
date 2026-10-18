@@ -1,0 +1,333 @@
+/*
+ * Entry screens styling: ModeSelectScreen, Backend Unavailable, Loading, and Settings (REDESIGN.md §4 W2.4)
+ * Strict dark motorsport theme using tokens from tokens.css.
+ */
+
+/* ------------------------------------------------------------- Fullscreen Entry Container */
+
+.entry-fullscreen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background-color: var(--surface-app);
+  box-sizing: border-box;
+}
+
+.entry-loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.entry-loading-text {
+  font-family: var(--font-sans);
+  font-size: var(--type-body, 13px);
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
+/* ------------------------------------------------------------- Mode Selection Screen */
+
+.mode-select-screen {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background-color: var(--surface-app);
+  box-sizing: border-box;
+}
+
+.mode-select-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 760px;
+  width: 100%;
+  gap: 20px;
+}
+
+.mode-select-title {
+  font-family: var(--font-sans);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  margin: 0;
+  text-align: center;
+}
+
+.mode-select-prompt {
+  font-family: var(--font-sans);
+  font-size: var(--type-label, 12px);
+  color: var(--text-secondary);
+  margin: 0;
+  text-align: center;
+}
+
+.mode-select-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  justify-content: center;
+  width: 100%;
+}
+
+/* Two 360x200 mode tiles per REDESIGN.md §4 W2.4 */
+.mode-select-tile {
+  width: 360px;
+  height: 200px;
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-sm);
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+  color: inherit;
+}
+
+.mode-select-tile:hover:not(:disabled) {
+  border-color: var(--interactive);
+  background-color: var(--surface-hover);
+}
+
+.mode-select-tile:focus-visible {
+  outline: 2px solid var(--interactive-fill);
+  outline-offset: 2px;
+}
+
+.mode-select-tile:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.mode-select-tile__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.mode-select-tile__title {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+  text-transform: uppercase;
+}
+
+.mode-select-tile__pending {
+  font-family: var(--font-mono);
+  font-size: var(--type-caption, 11px);
+  color: var(--status-warn);
+  font-weight: 600;
+}
+
+.mode-select-tile__desc {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin: 0;
+  flex: 1;
+  padding-top: 12px;
+}
+
+.mode-select-tile__footer {
+  font-family: var(--font-mono);
+  font-size: var(--type-caption, 11px);
+  color: var(--text-tertiary);
+}
+
+.mode-select-note {
+  font-family: var(--font-sans);
+  font-size: var(--type-caption, 11px);
+  color: var(--text-tertiary);
+  margin: 0;
+  text-align: center;
+}
+
+/* ------------------------------------------------------------- Backend Unavailable Error Panel */
+
+.entry-error-panel {
+  width: 100%;
+  max-width: 560px;
+  background-color: var(--surface-panel);
+  border: 1px solid var(--status-critical);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.entry-error-panel__header {
+  background-color: var(--surface-panel-header);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.entry-error-panel__header h1 {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--status-critical);
+  margin: 0;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.entry-error-panel__body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.entry-error-message {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-primary);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.entry-error-details {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background-color: var(--surface-inset);
+  color: var(--status-warn);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin: 0;
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.entry-error-log {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.entry-error-log__label {
+  font-family: var(--font-sans);
+  font-size: var(--type-caption, 11px);
+  color: var(--text-secondary);
+}
+
+.entry-error-log__path {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  background-color: var(--surface-inset);
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  word-break: break-all;
+  user-select: text;
+}
+
+.entry-error-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  background-color: var(--surface-panel-header);
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ------------------------------------------------------------- Settings Page Gutter & Mono */
+
+.settings-page {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 960px;
+}
+
+.settings-page .panel {
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.settings-page .panel-header {
+  padding: 8px 12px;
+  background-color: var(--surface-panel-header);
+  border-bottom: 1px solid var(--border-subtle);
+  font-family: var(--font-sans);
+  font-size: var(--type-label, 12px);
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.settings-page .panel-body {
+  padding: 12px;
+}
+
+.settings-page code,
+.settings-path-mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-primary);
+  background-color: var(--surface-inset);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+/* Config Issue Banner */
+.config-issue-banner {
+  background-color: var(--surface-panel);
+  border: 1px solid var(--status-warn);
+  border-radius: var(--radius-sm);
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.config-issue-banner .alert-title {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--status-warn);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+
+.config-issue-banner .alert-message {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  color: var(--text-primary);
+  margin: 4px 0;
+}
+
+.config-issue-banner code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background-color: var(--surface-inset);
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
+}
