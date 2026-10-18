@@ -154,4 +154,73 @@ describe('JoinSessionModal', () => {
       );
     });
   });
+
+  it('has accessible label, autocomplete, inputMode, and paste hint for engineer code (A06)', () => {
+    render(<JoinSessionModal />);
+
+    const label = screen.getByText('Engineer code');
+    expect(label).toHaveAttribute('for', 'engineer-code-input');
+
+    const input = screen.getByTestId<HTMLInputElement>('join-code-input');
+    expect(input).toHaveAttribute('id', 'engineer-code-input');
+    expect(input).toHaveAttribute('autocomplete', 'one-time-code');
+    expect(input).toHaveAttribute('inputmode', 'text');
+    expect(
+      screen.getByText('Paste 6-character code from clipboard (Ctrl+V)'),
+    ).toBeInTheDocument();
+  });
+
+  it('handles Escape in phase 1 by cancelling joining', () => {
+    const onCancel = vi.fn();
+    render(<JoinSessionModal onCancel={onCancel} />);
+
+    const dialog = screen.getByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles Escape in phase 2 (identity card) by cancelling back to code input', async () => {
+    vi.mocked(ipc.engineerJoin).mockResolvedValue(MOCK_CARD);
+    vi.mocked(ipc.engineerCancel).mockResolvedValue(undefined);
+
+    const onCancel = vi.fn();
+    render(<JoinSessionModal onCancel={onCancel} />);
+
+    const input = screen.getByTestId('join-code-input');
+    fireEvent.change(input, { target: { value: '8F3A2C' } });
+    fireEvent.click(screen.getByTestId('btn-join-session'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('driver-identity-card')).toBeInTheDocument();
+    });
+
+    // Pressing Escape on the identity card
+    const dialog = screen.getByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+
+    await waitFor(() => {
+      // Calls engineerCancel and returns to code input
+      expect(ipc.engineerCancel).toHaveBeenCalled();
+      expect(screen.getByTestId('join-code-input')).toBeInTheDocument();
+      // Does not close entire modal (does not call onCancel)
+      expect(onCancel).not.toHaveBeenCalled();
+    });
+  });
+
+  it('shifts focus to identity card heading on phase transition', async () => {
+    vi.mocked(ipc.engineerJoin).mockResolvedValue(MOCK_CARD);
+
+    render(<JoinSessionModal />);
+
+    const input = screen.getByTestId('join-code-input');
+    expect(input).toHaveFocus();
+
+    fireEvent.change(input, { target: { value: '8F3A2C' } });
+    fireEvent.click(screen.getByTestId('btn-join-session'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('driver-identity-card')).toBeInTheDocument();
+      expect(screen.getByText('CONFIRM DRIVER IDENTITY')).toHaveFocus();
+    });
+  });
 });

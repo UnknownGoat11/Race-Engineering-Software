@@ -9,6 +9,7 @@
  * - Move Up / Move Down to reorder slots and palette assignment
  * - Max 8 series hardware guard (WebGL shader slot capacity)
  * - Quick presets (Inputs, Powertrain, Tyres, Brakes) and Clear All
+ * - Accessible Modal dialog (native <dialog>, showModal, focus trap, Escape, A01, A05)
  */
 import { useId, useMemo, useState, type JSX } from 'react';
 import {
@@ -21,8 +22,10 @@ import {
   type ChannelDef,
 } from '../../generated/channels';
 import { channelDef, isNumericChannel } from '../../telemetry/registry';
+import { Modal } from '../ui/Modal';
 import { ProvenanceBadge } from './ProvenanceBadge';
 import '../../graph/graph.css';
+import '../../styles/modal.css';
 
 export interface ChannelSelectorModalProps {
   readonly isOpen: boolean;
@@ -129,8 +132,6 @@ export function ChannelSelectorModal({
     return map;
   }, [filteredChannels]);
 
-  if (!isOpen) return null;
-
   const isSelected = (id: number): boolean => selectedIds.includes(id);
 
   const getSlot = (id: number): number | null => {
@@ -215,12 +216,13 @@ export function ChannelSelectorModal({
   };
 
   return (
-    <div
-      className="modal-backdrop"
-      data-testid="channel-selector-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={titleId}
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      ariaLabelledBy={titleId}
+      size="xl"
+      testId="channel-selector-modal"
+      className="channel-selector-modal-wrapper"
     >
       <div className="card modal-content channel-selector-modal">
         {/* Header */}
@@ -236,9 +238,7 @@ export function ChannelSelectorModal({
           <button
             type="button"
             className="btn btn-xs channel-selector-close-btn"
-            onClick={() => {
-              onClose();
-            }}
+            onClick={onClose}
             aria-label="Close dialog"
           >
             ✕
@@ -526,9 +526,7 @@ export function ChannelSelectorModal({
             <button
               type="button"
               className="btn btn-sm"
-              onClick={() => {
-                onClose();
-              }}
+              onClick={onClose}
               data-testid="channel-selector-cancel-btn"
             >
               Cancel
@@ -536,9 +534,7 @@ export function ChannelSelectorModal({
             <button
               type="button"
               className="btn btn-sm btn-primary"
-              onClick={() => {
-                handleApply();
-              }}
+              onClick={handleApply}
               disabled={selectedIds.length === 0}
               data-testid="channel-selector-apply-btn"
             >
@@ -547,6 +543,6 @@ export function ChannelSelectorModal({
           </div>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

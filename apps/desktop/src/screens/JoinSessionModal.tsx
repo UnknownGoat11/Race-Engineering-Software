@@ -1,10 +1,13 @@
-import { useRef, useState, type JSX, type ChangeEvent, type SyntheticEvent } from 'react';
+import { useId, useRef, useState, type JSX, type ChangeEvent, type SyntheticEvent } from 'react';
+import { Modal } from '../components/ui/Modal';
 import { classColorVar } from '../lib/classes';
 import { IpcError, engineerCancel, engineerConfirm, engineerJoin, type IdentityCardDto } from '../lib/ipc';
 import { COPY, joinErrorCopy, vehicleClassCode, type JoinErrorCopy } from '../lib/labels';
 import { NO_VALUE } from '../lib/units';
+import '../styles/modal.css';
 
 export interface JoinSessionModalProps {
+  readonly isOpen?: boolean;
   readonly onJoined?: () => void;
   readonly onCancel?: () => void;
 }
@@ -37,7 +40,7 @@ function formatStartedAgo(startedAtNs: number | null): string | null {
   return `started ${hours}h ${mins % 60}m ago`;
 }
 
-export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps): JSX.Element {
+export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSessionModalProps): JSX.Element {
   const [code, setCode] = useState('');
   const [redeemedCode, setRedeemedCode] = useState('');
   const [joining, setJoining] = useState(false);
@@ -45,7 +48,10 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
   const [card, setCard] = useState<IdentityCardDto | null>(null);
   const [errorCopy, setErrorCopy] = useState<JoinErrorCopy | null>(null);
   const [rawError, setRawError] = useState<string | null>(null);
+
+  const titleId = useId();
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const identityHeadingRef = useRef<HTMLSpanElement | null>(null);
 
   const handleCodeChange = (e: ChangeEvent<HTMLInputElement>) => {
     // Sanitize: max 6 alphanumeric characters, uppercase
@@ -109,13 +115,13 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
   const handleCancel = async () => {
     setErrorCopy(null);
     setRawError(null);
-    try {
-      await engineerCancel();
-    } catch {
-      // Ignore cancellation cleanup error
-    }
     if (card) {
-      // Returning from identity card to code input
+      try {
+        await engineerCancel();
+      } catch {
+        // Ignore cancellation cleanup error
+      }
+      // Returning from identity card to code input (A01 / REDESIGN.md §4 W4.1)
       setCard(null);
       setRedeemedCode('');
       setCode('');
@@ -127,16 +133,25 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
   const startedText = card ? formatStartedAgo(card.started_at_ns) : null;
 
   return (
-    <div
-      className="modal-backdrop"
-      data-testid="join-session-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="join-session-title"
+    <Modal
+      isOpen={isOpen}
+      onClose={() => {
+        void handleCancel();
+      }}
+      ariaLabelledBy={titleId}
+      size="md"
+      initialFocusRef={card ? identityHeadingRef : inputRef}
+      focusKey={card ? 'card' : 'code'}
+      testId="join-session-modal"
     >
-      <div className="card modal-content" style={{ maxWidth: '520px', width: '100%', margin: '0 auto' }}>
+      <div className="card modal-content" style={{ width: '100%', margin: '0' }}>
         <div className="card-header">
-          <span className="card-header-title" id="join-session-title">
+          <span
+            ref={card ? identityHeadingRef : undefined}
+            tabIndex={card ? -1 : undefined}
+            className="card-header-title"
+            id={titleId}
+          >
             {card ? 'CONFIRM DRIVER IDENTITY' : 'CONNECT TO DRIVER RELAY'}
           </span>
         </div>
@@ -172,14 +187,19 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
           )}
 
           {!card ? (
-            /* Phase 1: Code entry */
+            /* Phase 1: Code entry (A06) */
             <form onSubmit={(e) => { void handleJoin(e); }}>
               <p className="panel-note" style={{ marginBottom: '16px' }}>
                 Ask the driver for their 6-character engineer session code from their Relay Streaming card.
               </p>
 
-              <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+              <label htmlFor="engineer-code-input" className="join-code-label">
+                Engineer code
+              </label>
+
+              <div style={{ textAlign: 'center', marginBottom: '8px' }}>
                 <input
+                  id="engineer-code-input"
                   ref={inputRef}
                   type="text"
                   className="input"
@@ -202,7 +222,12 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
                   data-testid="join-code-input"
                   aria-label="Engineer code"
                   autoComplete="one-time-code"
+                  inputMode="text"
                 />
+              </div>
+
+              <div className="join-code-paste-hint">
+                Paste 6-character code from clipboard (Ctrl+V)
               </div>
 
               <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
@@ -348,7 +373,6 @@ export function JoinSessionModal({ onJoined, onCancel }: JoinSessionModalProps):
           )}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
-

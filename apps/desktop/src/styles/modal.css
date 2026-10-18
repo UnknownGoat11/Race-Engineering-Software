@@ -1,24 +1,131 @@
 /*
- * Modal backdrop and frame (JoinSessionModal, ChannelSelectorModal). Owned by W1.3 / W4.1.
- * Moved verbatim from screens.css (REDESIGN W1.1).
+ * Modal styles (Modal primitive, JoinSessionModal, ChannelSelectorModal, ConfirmAction).
+ * Owned by UI W4.1.
  */
 
+/* ==========================================================================
+   Native <dialog> Modal Base
+   ========================================================================== */
 
-/* Modal Backdrop & Content */
-.modal-backdrop {
+dialog.modal-dialog {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: var(--text-primary);
   position: fixed;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  margin: auto;
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
-  padding: 16px;
+  max-width: 96vw;
+  max-height: 96vh;
+  overflow: visible;
 }
 
-.modal-content {
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+dialog.modal-dialog::backdrop {
+  background-color: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(2px);
+}
+
+.modal-dialog-inner {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--surface-card);
   border: 1px solid var(--color-border);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.75);
+  border-radius: var(--radius-sm, 2px);
+  width: 100%;
+  max-height: 90vh;
+  overflow: hidden;
+}
+
+/* Modal Sizes */
+.modal-dialog--sm .modal-dialog-inner {
+  width: 400px;
+  max-width: 90vw;
+}
+
+.modal-dialog--md .modal-dialog-inner {
+  width: 520px;
+  max-width: 92vw;
+}
+
+.modal-dialog--lg .modal-dialog-inner {
+  width: 780px;
+  max-width: 94vw;
+}
+
+.modal-dialog--xl .modal-dialog-inner {
+  width: 960px;
+  max-width: 96vw;
+}
+
+/* ==========================================================================
+   ConfirmAction Modal (C20)
+   ========================================================================== */
+
+.confirm-modal-body {
+  display: flex;
+  flex-direction: column;
+  background-color: var(--surface-card);
+}
+
+.confirm-modal-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.confirm-modal-content {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.confirm-action-prompt {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.confirm-action-consequence {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.confirm-modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 4px;
+}
+
+/* ==========================================================================
+   JoinSessionModal Elements (A06)
+   ========================================================================== */
+
+.join-code-label {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.join-code-paste-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  text-align: center;
+  margin-top: 6px;
+  margin-bottom: 16px;
 }
 
 /* Join error block (sentence case alert) */
@@ -56,3 +163,39 @@
   padding: 0;
 }
 
+/* ==========================================================================
+   Channel Selector Tray Buttons (A05 >= 24x24 px touch/click targets)
+   ========================================================================== */
+
+.channel-selector-slot-btn,
+.channel-selector-remove-btn {
+  min-width: 24px;
+  min-height: 24px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 11px;
+}
+
+/* ==========================================================================
+   Legacy Backdrop & Content (Preserved for compatibility)
+   ========================================================================== */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 16px;
+}
+
+.modal-content {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--color-border);
+}

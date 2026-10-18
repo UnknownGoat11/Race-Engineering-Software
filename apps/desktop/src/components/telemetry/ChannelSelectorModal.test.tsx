@@ -192,4 +192,44 @@ describe('ChannelSelectorModal (MoTeC i2 Pro style)', () => {
     fireEvent.click(screen.getByLabelText('Close dialog'));
     expect(onClose).toHaveBeenCalledTimes(2);
   });
+
+  it('calls onClose when Escape key is pressed (A01)', () => {
+    const onClose = vi.fn();
+
+    render(
+      <ChannelSelectorModal
+        isOpen={true}
+        activeChannelIds={[ch.SPEED]}
+        onClose={onClose}
+        onApply={vi.fn()}
+      />,
+    );
+
+    const dialog = screen.getByRole('dialog');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('tray controls have accessible labels and button classes (A05)', () => {
+    render(
+      <ChannelSelectorModal
+        isOpen={true}
+        activeChannelIds={[ch.SPEED, ch.THROTTLE]}
+        onClose={vi.fn()}
+        onApply={vi.fn()}
+      />,
+    );
+
+    // Speed item controls
+    const speedDownBtn = screen.getByLabelText('Move Speed down');
+    const speedRemoveBtn = screen.getByLabelText('Remove Speed');
+    expect(speedDownBtn).toHaveClass('channel-selector-slot-btn');
+    expect(speedRemoveBtn).toHaveClass('channel-selector-remove-btn');
+
+    // Throttle item controls
+    const throttleUpBtn = screen.getByLabelText('Move Throttle up');
+    const throttleRemoveBtn = screen.getByLabelText('Remove Throttle');
+    expect(throttleUpBtn).toHaveClass('channel-selector-slot-btn');
+    expect(throttleRemoveBtn).toHaveClass('channel-selector-remove-btn');
+  });
 });
