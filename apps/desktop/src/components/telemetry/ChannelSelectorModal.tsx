@@ -395,7 +395,7 @@ export function ChannelSelectorModal({
                               <span className="channel-selector-row-export">
                                 {def.exportName}
                               </span>
-                              <span className="channel-selector-row-label">
+                              <span className="channel-selector-row-label" title={def.label}>
                                 {def.label}
                               </span>
                             </div>
