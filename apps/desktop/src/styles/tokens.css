@@ -1,163 +1,315 @@
 /*
- * Design tokens — the only place raw colours, font stacks, sizes and spacing values are defined.
- * Professional dark theme: flat surfaces, high contrast, compact type, no gradients, no decorative motion.
- * Fonts are system fonts only (no remote font loading; the CSP is default-src 'self').
+ * Design Tokens — Three-layer token architecture per REDESIGN §2.1–§2.5.
+ * Layer 1: Primitives (--p-*) — exact raw values
+ * Layer 2: Semantic tokens — surfaces, borders, text, status, data-quality, class, domain
+ * Layer 3: Component tokens & backward-compatibility aliases
+ *
+ * All sizing and spacing scales derive from --ui-scale (default 1).
  */
+
 :root {
   color-scheme: dark;
 
-  /* Surfaces */
-  --color-bg: #0b0d10;
-  --color-surface: #12151a;
-  --color-surface-raised: #181c22;
-  --color-surface-hover: #1f242c;
-  --color-border: #272c34;
-  --color-border-strong: #3b424d;
+  /* -------------------------------------------------------------------------
+   * 2.1 Primitives (exact values)
+   * ------------------------------------------------------------------------- */
 
-  /* Text (WCAG contrast on --color-bg: text 16.4:1, muted 8.5:1, dim 5.1:1 — all ≥ AA) */
-  --color-text: #e9ecf0;
-  --color-text-muted: #a3acb8;
-  --color-text-dim: #7a8492;
-  --color-text-inverse: #0b0d10;
+  /* Neutrals (cool graphite) */
+  --p-gray-950: #07090b;
+  --p-gray-900: #0b0d10;
+  --p-gray-850: #0f1216;
+  --p-gray-800: #13171c;
+  --p-gray-750: #181d23;
+  --p-gray-700: #1e242b;
+  --p-gray-600: #2a313a;
+  --p-gray-550: #5a6372;
+  --p-gray-500: #3b434e;
+  --p-gray-400: #6a7380;
+  --p-gray-300: #8b95a3;
+  --p-gray-200: #a9b2be;
+  --p-gray-100: #d6dbe1;
+  --p-gray-50:  #eef1f4;
+  --p-white:    #ffffff;
 
-  /* Interaction */
-  --color-accent: #4c9dff;
-  --color-accent-strong: #7ab6ff;
-  --color-selected-bg: #16263b;
-  --color-focus: #ffd34d;
+  /* Status hues: 500 = mark/text, 950 = tinted background */
+  --p-green-500:   #2fd27a;
+  --p-green-950:   #0f2a1b;
+  --p-amber-500:   #f5c542;
+  --p-amber-950:   #2a2410;
+  --p-red-500:     #ff4d4d;
+  --p-red-950:     #2e1214;
+  --p-violet-400:  #b49cff;
+  --p-violet-950:  #1e1830;
+  --p-magenta-500: #ff4fd8;
+  --p-magenta-950: #2a1026;
+  --p-purple-500:  #c264ff; /* timing: session best only */
 
-  /* Status (used for state, never for decoration) */
-  --color-ok: #3fcf73;
-  --color-warn: #f5b83d;
-  --color-error: #ff5f5f;
-  --color-info: #4c9dff;
-  --color-warn-bg: #2a2110;
-  --color-error-bg: #2b1414;
-
-  /* Environment badges */
-  --color-env-development: var(--color-warn);
-  --color-env-staging: var(--color-info);
-  --color-env-production: var(--color-text-muted);
-
-  /*
-   * Telemetry data quality (spec §87, §126, §162: normal / warning / critical / stale). Colour is never the
-   * only signal: every state also carries a text label and a distinct marker shape.
-   * Stale on --color-bg: 7.2:1 (AA).
-   */
-  --color-quality-live: var(--color-ok);
-  --color-quality-degraded: var(--color-warn);
-  --color-quality-stale: #a78bfa;
-  --color-quality-invalid: var(--color-error);
-  /* No data, unavailable, not supported, disconnected: nothing to show, so it recedes. */
-  --color-quality-none: var(--color-text-dim);
-
-  /* Provenance badges (spec §107) are neutral; the border style tells them apart. */
-  --color-provenance: var(--color-text-muted);
-  --color-provenance-border: var(--color-border-strong);
-
-  /*
-   * Telemetry graphs (src/graph). Series colours are categorical only: they never carry a state, so they avoid
-   * the status hues above; a stale or gap state is always also drawn as a dashed line or a labelled band.
-   */
-  --graph-series-1: #5aa9ff;
-  --graph-series-2: #ff8c42;
-  --graph-series-3: #3dd6c6;
-  --graph-series-4: #f06fb0;
-  --graph-series-5: #d4d46a;
-  --graph-series-6: #e0a96d;
-  --graph-series-7: #b0e05c;
-  --graph-series-8: #6fd3ff;
-  --graph-bg: var(--color-surface);
-  --graph-grid: #1d2229;
-  --graph-axis: var(--color-border-strong);
-  --graph-axis-text: var(--color-text-muted);
-  --graph-cursor: var(--color-text);
-  --graph-cursor-text: var(--color-text-inverse);
-  --graph-zoom-fill: #4c9dff26;
-  --graph-zoom-stroke: var(--color-accent);
-  --graph-marker-sector: var(--color-text-dim);
-  --graph-marker-lap: var(--color-text-muted);
-  --graph-marker-event: var(--color-info);
-  --graph-current-car: var(--color-accent-strong);
-  --graph-current-car-stale: var(--color-quality-stale);
-  --graph-gap-fill: #ffffff0f;
-  --graph-gap-text: var(--color-text-dim);
-  --graph-reference: var(--color-text-muted);
-  /* Text of a graph that cannot show current data (frame error, renderer failure). */
-  --graph-error-text: var(--color-error);
-
-  /* Typography */
-  --font-ui: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
-  --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, ui-monospace, monospace;
-  --font-size-2xs: 10px;
-  --font-size-xs: 11px;
-  --font-size-sm: 12px;
-  --font-size-md: 13px;
-  --font-size-lg: 15px;
-  --font-size-xl: 18px;
-  --font-size-display: 26px;
-  --font-weight-regular: 400;
-  --font-weight-semibold: 600;
-  --font-weight-bold: 700;
-  --line-height-tight: 1.2;
-  --line-height-normal: 1.45;
-  --letter-spacing-caps: 0.08em;
-  --letter-spacing-display: 0.18em;
-
-  /* Spacing (4 px grid) */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
-  --space-7: 48px;
-
-  /* Shape */
-  --radius-sm: 2px;
-  --radius-md: 3px;
-  --border-width: 1px;
-  --focus-ring-width: 2px;
-
-  /* Numeric readouts (spec §161): fixed-width value slot so digits never shift the layout. */
-  --font-size-readout: 22px;
-  --readout-value-min-width: 7ch;
-  --quality-marker-size: 8px;
-
-  /* Layout */
-  --header-height: 40px;
-  --control-height: 28px;
-  --control-height-sm: 22px;
-  --control-height-lg: 48px;
-  --content-max-width: 1200px;
-
-  /*
-   * REDESIGN.md W1.1 additions (additive; the full three-layer system arrives in W2.1).
-   * Class hues (C1, owner approval 2026-10-18) sit in bands no status colour uses; red and amber stay
-   * reserved for alerts. Class colour is used only as a row stripe, a map dot and a 3-char chip.
-   */
+  /* Class hues (C1: distinct hues reserved away from status colours) */
   --p-class-cyan: #22d3ee;
   --p-class-blue: #4d7cff;
   --p-class-lime: #a3e635;
   --p-class-grey: #8b95a3;
+
+  /* -------------------------------------------------------------------------
+   * 2.2 Semantic Tokens
+   * ------------------------------------------------------------------------- */
+
+  /* Surfaces */
+  --surface-app: var(--p-gray-900);          /* #0b0d10: window background */
+  --surface-panel: var(--p-gray-850);        /* #0f1216: panel body */
+  --surface-panel-header: var(--p-gray-800); /* #13171c: panel title strip */
+  --surface-inset: var(--p-gray-950);        /* #07090b: plot area, map canvas, code slots */
+  --surface-hover: var(--p-gray-750);        /* #181d23: row/control hover */
+  --surface-selected: var(--p-gray-700);     /* #1e242b: selected row/tab */
+  --surface-row-alt: rgba(255, 255, 255, 0.02); /* #ffffff05: opt-in zebra */
+  --surface-overlay: rgba(0, 0, 0, 0.7);     /* #000000b3: modal scrim */
+
+  /* Borders */
+  --border-subtle: var(--p-gray-700);        /* #1e242b: panel border, dividers */
+  --border-control: var(--p-gray-550);       /* #5a6372: input/select/button outline (3.1:1 on panel) */
+  --border-strong: var(--p-gray-400);        /* #6a7380: hover outline */
+  --border-focus: #ffd34d;                   /* 2px, offset 2px: :focus-visible */
+
+  /* Text (WCAG contrast on --surface-panel #0f1216: primary 15.9:1, secondary 8.4:1, tertiary 6.2:1) */
+  --text-primary: var(--p-gray-50);          /* #eef1f4: values, titles */
+  --text-secondary: var(--p-gray-200);       /* #a9b2be: labels */
+  --text-tertiary: var(--p-gray-300);        /* #8b95a3: units, captions, ticks, LDR */
+  --text-disabled: var(--p-gray-400);        /* #6a7380: disabled controls, —, placeholder slots */
+  --text-inverse: var(--p-gray-900);         /* #0b0d10: text on bright fills */
+
+  /* Interactive */
+  --interactive: var(--p-gray-100);          /* #d6dbe1: secondary button text, links */
+  --interactive-fill: var(--p-gray-50);      /* #eef1f4: primary button fill (dark text), one per region */
+  --track-line: var(--p-gray-400);           /* #6a7380: 4px (3.9:1) map base line */
+  --track-groove: var(--p-gray-600);         /* #2a313a: 2px inner groove */
+
+  /* Status levels (badge, alert rule, tile rule, and bar use the same tokens) */
+  --status-ok: var(--p-green-500);
+  --status-ok-bg: var(--p-green-950);
+  --status-info: var(--p-gray-100);
+  --status-info-bg: var(--p-gray-800);
+  --status-warn: var(--p-amber-500);
+  --status-warn-bg: var(--p-amber-950);
+  --status-critical: var(--p-red-500);
+  --status-critical-bg: var(--p-red-950);
+  --status-off: var(--p-gray-400);
+
+  /* Data-quality states */
+  --dq-live: var(--p-green-500);
+  --dq-stale: var(--p-violet-400);
+  --dq-stale-value: var(--p-gray-300);       /* C5: neutral dim for stale values */
+  --dq-unavailable: var(--p-gray-400);
+  --dq-synthetic: var(--p-magenta-500);
+  --dq-synthetic-bg: var(--p-magenta-950);
+  --dq-degraded: var(--p-amber-500);
+  --dq-untrusted: var(--p-red-500);
+  --dq-ended: var(--p-gray-400);
+
+  /* Vehicle classes (C1: row stripe, map dot, 3-char chip only) */
   --class-hypercar: var(--p-class-cyan);
   --class-lmp2: var(--p-class-blue);
   --class-gt3: var(--p-class-lime);
   --class-gte: var(--p-class-lime);
   --class-unknown: var(--p-class-grey);
 
-  /* Delta / timing convention (only in delta values, sector chips and delta graph fill). */
-  --delta-faster: #2fd27a;
-  --delta-slower: #ff4d4d;
-  /* Alias used by TimingPanel / DriverInputsPanel before W1.5 (was undefined); removed in W2.1. */
-  --color-ahead: var(--delta-faster);
+  /* Domain conventions */
+  --delta-faster: var(--p-green-500);
+  --delta-slower: var(--p-red-500);
+  --timing-best-overall: var(--p-purple-500);
+  --timing-best-personal: var(--p-green-500);
+  --timing-slower: var(--p-amber-500);
+  --input-throttle: var(--p-green-500);
+  --input-brake: var(--p-red-500);
+  --player-highlight: var(--p-white);        /* C2: own car white marker/rule/cursor */
+  --thermal-cold: var(--p-gray-300);
+  --thermal-optimal: var(--p-green-500);
+  --thermal-hot: var(--p-amber-500);
+  --thermal-over: var(--p-red-500);
 
-  /* Data-quality states (C3, C5): synthetic is magenta, never amber; stale values keep a neutral dim grey. */
-  --dq-synthetic: #ff4fd8;
-  --dq-synthetic-bg: #2a1026;
-  --dq-stale-value: #8b95a3;
-  --dq-untrusted: #ff4d4d;
+  /* Categorical graph series 1..8 (DS18: series 2 moved off warning amber) */
+  --graph-series-1: #5aa9ff;
+  --graph-series-2: #ffb36b;
+  --graph-series-3: #3dd6c6;
+  --graph-series-4: #f06fb0;
+  --graph-series-5: #d4d46a;
+  --graph-series-6: #e0a96d;
+  --graph-series-7: #b0e05c;
+  --graph-series-8: #6fd3ff;
 
-  /* Own car (C2): white ring / rule / cursor; cyan now belongs to the Hypercar class. */
-  --player-highlight: #ffffff;
+  --env-badge-border: var(--border-control);
+  --env-badge-text: var(--text-secondary);
+
+  /* -------------------------------------------------------------------------
+   * 2.3 Fonts & Typography
+   * ------------------------------------------------------------------------- */
+
+  --font-ui: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --font-data: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+
+  /* -------------------------------------------------------------------------
+   * 2.4 Type Scale (base 13px * --ui-scale; floor 11px)
+   * ------------------------------------------------------------------------- */
+
+  --ui-scale: 1;
+
+  --type-caption-size: calc(11px * var(--ui-scale));
+  --type-caption-lh: calc(14px * var(--ui-scale));
+
+  --type-label-size: calc(12px * var(--ui-scale));
+  --type-label-lh: calc(16px * var(--ui-scale));
+
+  --type-panel-title-size: calc(11px * var(--ui-scale));
+  --type-panel-title-lh: calc(16px * var(--ui-scale));
+
+  --type-badge-size: calc(11px * var(--ui-scale));
+  --type-badge-lh: calc(16px * var(--ui-scale));
+
+  --type-body-size: calc(13px * var(--ui-scale));
+  --type-body-lh: calc(18px * var(--ui-scale));
+
+  --type-button-size: calc(12px * var(--ui-scale));
+  --type-button-lh: calc(16px * var(--ui-scale));
+
+  --type-value-sm-size: calc(13px * var(--ui-scale));
+  --type-value-sm-lh: calc(18px * var(--ui-scale));
+
+  --type-value-md-size: calc(16px * var(--ui-scale));
+  --type-value-md-lh: calc(20px * var(--ui-scale));
+
+  --type-value-lg-size: calc(22px * var(--ui-scale));
+  --type-value-lg-lh: calc(26px * var(--ui-scale));
+
+  --type-value-xl-size: calc(32px * var(--ui-scale));
+  --type-value-xl-lh: calc(36px * var(--ui-scale));
+
+  --type-glance-label-size: calc(13px * var(--ui-scale));
+  --type-glance-label-lh: calc(16px * var(--ui-scale));
+
+  --type-glance-size: calc(56px * var(--ui-scale));
+  --type-glance-lh: calc(60px * var(--ui-scale));
+
+  --type-glance-code-size: calc(64px * var(--ui-scale));
+  --type-glance-code-lh: calc(68px * var(--ui-scale));
+
+  --type-board-hero-size: calc(96px * var(--ui-scale));
+  --type-board-hero-lh: calc(100px * var(--ui-scale));
+
+  /* -------------------------------------------------------------------------
+   * 2.5 Spacing, Shape, Motion
+   * ------------------------------------------------------------------------- */
+
+  /* Spacing (4 px grid * --ui-scale) */
+  --space-0: 0px;
+  --space-1: calc(4px * var(--ui-scale));
+  --space-2: calc(8px * var(--ui-scale));
+  --space-3: calc(12px * var(--ui-scale));
+  --space-4: calc(16px * var(--ui-scale));
+  --space-5: calc(24px * var(--ui-scale));
+  --space-6: calc(32px * var(--ui-scale));
+  --space-7: calc(48px * var(--ui-scale));
+  --space-8: calc(64px * var(--ui-scale));
+
+  /* Radius (only 0 and 2px) */
+  --radius-0: 0px;
+  --radius-1: 2px;
+
+  /* Motion */
+  --motion-duration-fast: 120ms;
+  --motion-ease: ease-out;
+
+  /* Control heights */
+  --control-height-dense: 24px;
+  --control-height: 28px;
+  --control-height-driver: 48px;
+
+  /* -------------------------------------------------------------------------
+   * Backward-Compatibility Aliases (kept until W5.3)
+   * ------------------------------------------------------------------------- */
+
+  --color-bg: var(--surface-app);
+  --color-surface: var(--surface-panel);
+  --color-surface-raised: var(--surface-panel-header);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+
+  --color-text: var(--text-primary);
+  --color-text-muted: var(--text-secondary);
+  --color-text-dim: var(--text-tertiary);
+  --color-text-inverse: var(--text-inverse);
+
+  --color-accent: var(--interactive-fill);
+  --color-accent-strong: var(--interactive);
+  --color-selected-bg: var(--surface-selected);
+  --color-focus: var(--border-focus);
+
+  --color-ok: var(--status-ok);
+  --color-warn: var(--status-warn);
+  --color-error: var(--status-critical);
+  --color-info: var(--status-info);
+  --color-warn-bg: var(--status-warn-bg);
+  --color-error-bg: var(--status-critical-bg);
+
+  --color-env-development: var(--status-warn);
+  --color-env-staging: var(--text-secondary);
+  --color-env-production: var(--text-tertiary);
+
+  --color-quality-live: var(--dq-live);
+  --color-quality-degraded: var(--dq-degraded);
+  --color-quality-stale: var(--dq-stale);
+  --color-quality-invalid: var(--status-critical);
+  --color-quality-none: var(--dq-unavailable);
+
+  --color-provenance: var(--text-secondary);
+  --color-provenance-border: var(--border-strong);
+
+  --graph-bg: var(--surface-panel);
+  --graph-grid: var(--p-gray-750);
+  --graph-axis: var(--border-strong);
+  --graph-axis-text: var(--text-secondary);
+  --graph-cursor: var(--text-primary);
+  --graph-cursor-text: var(--text-inverse);
+  --graph-zoom-fill: rgba(238, 241, 244, 0.15);
+  --graph-zoom-stroke: var(--interactive-fill);
+  --graph-marker-sector: var(--text-tertiary);
+  --graph-marker-lap: var(--text-secondary);
+  --graph-marker-event: var(--status-info);
+  --graph-current-car: var(--player-highlight);
+  --graph-current-car-stale: var(--dq-stale);
+  --graph-gap-fill: rgba(255, 255, 255, 0.06);
+  --graph-gap-text: var(--text-tertiary);
+  --graph-reference: var(--text-secondary);
+  --graph-error-text: var(--status-critical);
+
+  --font-mono: var(--font-data);
+  --font-size-2xs: var(--type-badge-size);
+  --font-size-xs: var(--type-caption-size);
+  --font-size-sm: var(--type-label-size);
+  --font-size-md: var(--type-body-size);
+  --font-size-lg: var(--type-value-md-size);
+  --font-size-xl: var(--type-value-xl-size);
+  --font-size-display: var(--type-glance-size);
+
+  --font-weight-regular: 400;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+
+  --line-height-tight: 1.2;
+  --line-height-normal: 1.45;
+  --letter-spacing-caps: 0.06em;
+  --letter-spacing-display: 0.12em;
+
+  --radius-sm: var(--radius-1);
+  --radius-md: var(--radius-1);
+  --border-width: 1px;
+  --focus-ring-width: 2px;
+
+  --font-size-readout: var(--type-value-lg-size);
+  --readout-value-min-width: 7ch;
+  --quality-marker-size: 8px;
+
+  --header-height: 40px;
+  --control-height-sm: var(--control-height-dense);
+  --control-height-lg: var(--control-height-driver);
+  --content-max-width: 1200px;
 }

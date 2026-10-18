@@ -17,6 +17,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from '../App';
 import { AppErrorBoundary } from '../components/ErrorBoundary';
 import { logUiError } from '../lib/ipc';
+import '../styles/fonts.css';
 import '../styles/tokens.css';
 import '../styles/app.css';
 import { fakeBackend } from './backend';
