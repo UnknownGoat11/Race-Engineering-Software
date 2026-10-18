@@ -22,6 +22,7 @@ import {
 } from '../../generated/channels';
 import { channelDef, isNumericChannel } from '../../telemetry/registry';
 import { ProvenanceBadge } from './ProvenanceBadge';
+import '../../graph/graph.css';
 
 export interface ChannelSelectorModalProps {
   readonly isOpen: boolean;
@@ -221,60 +222,36 @@ export function ChannelSelectorModal({
       aria-modal="true"
       aria-labelledby={titleId}
     >
-      <div
-        className="card modal-content channel-selector-modal"
-        style={{
-          maxWidth: '880px',
-          width: '95vw',
-          height: 'min(640px, 90vh)',
-          maxHeight: '90vh',
-          display: 'flex',
-          flexDirection: 'column',
-          margin: '0 auto',
-        }}
-      >
+      <div className="card modal-content channel-selector-modal">
         {/* Header */}
-        <div className="card-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="card-header channel-selector-header">
           <div>
             <span id={titleId} className="card-header-title">
-              MoTeC i2 Pro Channel Selector
+              Choose channels
             </span>
-            <span style={{ fontSize: '11px', color: 'var(--color-text-dim)', marginLeft: '8px' }}>
+            <span className="channel-selector-subtitle">
               Select & order up to {MAX_PLOT_CHANNELS} channels to plot
             </span>
           </div>
           <button
             type="button"
-            className="btn btn-xs"
+            className="btn btn-xs channel-selector-close-btn"
             onClick={() => {
               onClose();
             }}
             aria-label="Close dialog"
-            style={{ fontWeight: 700, padding: '2px 8px' }}
           >
             ✕
           </button>
         </div>
 
         {/* Toolbar & Filter */}
-        <div
-          style={{
-            padding: '10px 14px',
-            backgroundColor: 'var(--color-surface)',
-            borderBottom: '1px solid var(--color-border)',
-            display: 'flex',
-            flexWrap: 'wrap',
-            gap: '8px',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-          }}
-        >
+        <div className="channel-selector-toolbar">
           {/* Search box */}
-          <div style={{ flex: '1 1 240px', display: 'flex', alignItems: 'center', position: 'relative' }}>
+          <div className="channel-selector-search-box">
             <input
               type="text"
-              className="input"
-              style={{ width: '100%', padding: '6px 10px', fontSize: '12px' }}
+              className="input channel-selector-search-input"
               placeholder="Search channels (e.g. speed, steer, temp, fl, rad)..."
               value={searchQuery}
               onChange={(e) => {
@@ -285,17 +262,9 @@ export function ChannelSelectorModal({
             {searchQuery && (
               <button
                 type="button"
+                className="channel-selector-clear-search-btn"
                 onClick={() => {
                   setSearchQuery('');
-                }}
-                style={{
-                  position: 'absolute',
-                  right: '8px',
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'var(--color-text-dim)',
-                  cursor: 'pointer',
-                  fontSize: '12px',
                 }}
                 aria-label="Clear search"
               >
@@ -305,8 +274,8 @@ export function ChannelSelectorModal({
           </div>
 
           {/* Preset Buttons */}
-          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-            <span style={{ fontSize: '11px', color: 'var(--color-text-dim)', textTransform: 'uppercase' }}>
+          <div className="channel-selector-presets-row">
+            <span className="channel-selector-presets-label">
               Presets:
             </span>
             {Object.entries(QUICK_PRESETS).map(([key, p]) => (
@@ -324,8 +293,7 @@ export function ChannelSelectorModal({
             ))}
             <button
               type="button"
-              className="btn btn-xs"
-              style={{ color: 'var(--color-error)' }}
+              className="btn btn-xs channel-selector-clear-btn"
               onClick={() => {
                 handleClearAll();
               }}
@@ -339,8 +307,7 @@ export function ChannelSelectorModal({
         {/* Error / Notice Alert */}
         {errorNotice && (
           <div
-            className="status-badge status-badge-warn"
-            style={{ margin: '8px 14px 0 14px', padding: '6px 10px', display: 'block', textAlign: 'left' }}
+            className="status-badge status-badge-warn channel-selector-notice"
             role="alert"
           >
             {errorNotice}
@@ -348,18 +315,9 @@ export function ChannelSelectorModal({
         )}
 
         {/* Modal Main Body (2 Columns: Catalog Tree + Active Series Tray) */}
-        <div style={{ flex: 1, minHeight: 0, display: 'flex', overflow: 'hidden' }}>
+        <div className="channel-selector-body">
           {/* Left: Channel Catalog */}
-          <div
-            style={{
-              flex: 1,
-              minWidth: 0,
-              overflowY: 'auto',
-              padding: '10px 14px',
-              borderRight: '1px solid var(--color-border)',
-            }}
-            data-testid="channel-catalog-list"
-          >
+          <div className="channel-selector-catalog" data-testid="channel-catalog-list">
             {ALL_CHANNEL_GROUPS.map((group) => {
               const channelsInGroup = groupedChannels.get(group) ?? [];
               if (channelsInGroup.length === 0) return null;
@@ -367,25 +325,12 @@ export function ChannelSelectorModal({
               const groupSelectedCount = channelsInGroup.filter((c) => isSelected(c.id)).length;
 
               return (
-                <div key={group} style={{ marginBottom: '8px' }}>
+                <div key={group} className="channel-selector-group">
                   {/* Category Header */}
                   <div
+                    className="channel-selector-group-header"
                     onClick={() => {
                       handleToggleGroup(group);
-                    }}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      padding: '6px 8px',
-                      backgroundColor: 'var(--color-surface-raised)',
-                      border: '1px solid var(--color-border)',
-                      borderRadius: '3px',
-                      cursor: 'pointer',
-                      userSelect: 'none',
-                      fontSize: '11px',
-                      fontWeight: 700,
-                      letterSpacing: '0.5px',
                     }}
                     role="button"
                     tabIndex={0}
@@ -396,19 +341,16 @@ export function ChannelSelectorModal({
                     }}
                     aria-expanded={isExpanded}
                   >
-                    <span style={{ color: 'var(--color-text-dim)' }}>
+                    <span className="channel-selector-group-title">
                       {isExpanded ? '▼' : '▶'} {CHANNEL_GROUP_TITLES[group].toUpperCase()}
                     </span>
-                    <span style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                    <span className="channel-selector-group-meta">
                       {groupSelectedCount > 0 && (
-                        <span
-                          className="status-badge status-badge-live"
-                          style={{ padding: '1px 5px', fontSize: '9px' }}
-                        >
+                        <span className="status-badge status-badge-live channel-selector-active-badge">
                           {groupSelectedCount} active
                         </span>
                       )}
-                      <span style={{ color: 'var(--color-text-dim)', fontSize: '10px' }}>
+                      <span className="channel-selector-count">
                         ({channelsInGroup.length})
                       </span>
                     </span>
@@ -416,7 +358,7 @@ export function ChannelSelectorModal({
 
                   {/* Channel Items Table */}
                   {isExpanded && (
-                    <div style={{ paddingLeft: '4px', paddingTop: '4px' }}>
+                    <div className="channel-selector-items">
                       {channelsInGroup.map((def) => {
                         const selected = isSelected(def.id);
                         const slot = getSlot(def.id);
@@ -425,24 +367,9 @@ export function ChannelSelectorModal({
                         return (
                           <div
                             key={def.id}
+                            className={`channel-selector-row${selected ? ' channel-selector-row--selected' : ''}`}
                             onClick={() => {
                               handleToggleChannel(def.id);
-                            }}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              justifyContent: 'space-between',
-                              padding: '5px 8px',
-                              marginBottom: '2px',
-                              borderRadius: '3px',
-                              cursor: 'pointer',
-                              backgroundColor: selected
-                                ? 'var(--color-selected-bg)'
-                                : 'transparent',
-                              border: selected
-                                ? '1px solid var(--color-accent)'
-                                : '1px solid transparent',
-                              fontSize: '11px',
                             }}
                             role="checkbox"
                             aria-checked={selected}
@@ -455,7 +382,7 @@ export function ChannelSelectorModal({
                             }}
                             data-testid={`channel-row-${def.id}`}
                           >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                            <div className="channel-selector-row-left">
                               <input
                                 type="checkbox"
                                 checked={selected}
@@ -465,46 +392,26 @@ export function ChannelSelectorModal({
                                 tabIndex={-1}
                                 aria-hidden="true"
                               />
-                              <span
-                                style={{
-                                  fontFamily: 'var(--font-mono)',
-                                  fontWeight: 600,
-                                  color: selected ? 'var(--color-accent-strong)' : 'var(--color-text)',
-                                }}
-                              >
+                              <span className="channel-selector-row-export">
                                 {def.exportName}
                               </span>
-                              <span
-                                style={{
-                                  color: 'var(--color-text-muted)',
-                                  whiteSpace: 'nowrap',
-                                  overflow: 'hidden',
-                                  textOverflow: 'ellipsis',
-                                }}
-                              >
+                              <span className="channel-selector-row-label">
                                 {def.label}
                               </span>
                             </div>
 
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                            <div className="channel-selector-row-right">
                               {unitSymbol && (
-                                <span
-                                  style={{
-                                    fontFamily: 'var(--font-mono)',
-                                    color: 'var(--color-text-dim)',
-                                    fontSize: '10px',
-                                  }}
-                                >
+                                <span className="channel-selector-row-unit">
                                   {unitSymbol}
                                 </span>
                               )}
                               <ProvenanceBadge provenance={def.provenance} />
                               {slot !== null && (
                                 <span
-                                  className="telemetry-graph__swatch"
+                                  className="telemetry-graph__swatch channel-selector-swatch-slot"
                                   data-slot={slot}
                                   title={`Plot Series #${slot}`}
-                                  style={{ width: '14px', height: '14px', borderRadius: '2px' }}
                                 />
                               )}
                             </div>
@@ -519,40 +426,22 @@ export function ChannelSelectorModal({
           </div>
 
           {/* Right: Selected Plot Series Tray */}
-          <div
-            style={{
-              width: '280px',
-              backgroundColor: 'var(--color-surface-raised)',
-              display: 'flex',
-              flexDirection: 'column',
-              flexShrink: 0,
-            }}
-            data-testid="selected-series-tray"
-          >
-            <div
-              style={{
-                padding: '8px 12px',
-                borderBottom: '1px solid var(--color-border)',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-              }}
-            >
-              <span style={{ fontSize: '11px', fontWeight: 700, textTransform: 'uppercase', color: 'var(--color-text-dim)' }}>
+          <div className="channel-selector-tray" data-testid="selected-series-tray">
+            <div className="channel-selector-tray-header">
+              <span className="channel-selector-tray-title">
                 PLOTTED SERIES
               </span>
               <span
-                className={`status-badge ${selectedIds.length === MAX_PLOT_CHANNELS ? 'status-badge-warn' : 'status-badge-live'}`}
-                style={{ fontSize: '10px', padding: '1px 6px' }}
+                className={`status-badge ${selectedIds.length === MAX_PLOT_CHANNELS ? 'status-badge-warn' : 'status-badge-live'} channel-selector-tray-count`}
                 data-testid="selected-channel-count"
               >
                 {selectedIds.length} / {MAX_PLOT_CHANNELS}
               </span>
             </div>
 
-            <div style={{ flex: 1, overflowY: 'auto', padding: '8px' }}>
+            <div className="channel-selector-tray-list">
               {selectedIds.length === 0 ? (
-                <div style={{ padding: '24px 12px', textAlign: 'center', color: 'var(--color-text-dim)', fontSize: '11px' }}>
+                <div className="channel-selector-empty">
                   No channels selected.<br />Select channels from the catalog on the left or click a preset above.
                 </div>
               ) : (
@@ -564,80 +453,58 @@ export function ChannelSelectorModal({
                   return (
                     <div
                       key={id}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        padding: '6px 8px',
-                        marginBottom: '4px',
-                        backgroundColor: 'var(--color-surface)',
-                        border: '1px solid var(--color-border)',
-                        borderRadius: '3px',
-                        fontSize: '11px',
-                      }}
+                      className="channel-selector-selected-item"
                       data-testid={`selected-item-${id}`}
                     >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0 }}>
+                      <div className="channel-selector-selected-left">
                         <span
-                          className="telemetry-graph__swatch"
+                          className="telemetry-graph__swatch channel-selector-selected-swatch"
                           data-slot={slot}
                           title={`Color slot ${slot}`}
-                          style={{ width: '12px', height: '12px', borderRadius: '2px', flexShrink: 0 }}
                         />
-                        <span
-                          style={{
-                            fontFamily: 'var(--font-mono)',
-                            fontWeight: 600,
-                            overflow: 'hidden',
-                            textOverflow: 'ellipsis',
-                            whiteSpace: 'nowrap',
-                          }}
-                        >
+                        <span className="channel-selector-selected-name">
                           {def?.exportName ?? `Ch #${id}`}
                         </span>
                         {unitSymbol && (
-                          <span style={{ color: 'var(--color-text-dim)', fontSize: '10px' }}>
+                          <span className="channel-selector-selected-unit">
                             ({unitSymbol})
                           </span>
                         )}
                       </div>
 
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '2px', flexShrink: 0 }}>
+                      <div className="channel-selector-selected-controls">
                         <button
                           type="button"
-                          className="btn btn-xs"
+                          className="btn btn-xs channel-selector-slot-btn"
                           onClick={() => {
                             handleMoveUp(index);
                           }}
                           disabled={index === 0}
                           title="Move up (change color slot)"
                           aria-label={`Move ${def?.exportName ?? id} up`}
-                          style={{ padding: '0 4px', height: '18px' }}
                         >
                           ▲
                         </button>
                         <button
                           type="button"
-                          className="btn btn-xs"
+                          className="btn btn-xs channel-selector-slot-btn"
                           onClick={() => {
                             handleMoveDown(index);
                           }}
                           disabled={index === selectedIds.length - 1}
                           title="Move down (change color slot)"
                           aria-label={`Move ${def?.exportName ?? id} down`}
-                          style={{ padding: '0 4px', height: '18px' }}
                         >
                           ▼
                         </button>
                         <button
                           type="button"
-                          className="btn btn-xs"
+                          className="btn btn-xs channel-selector-remove-btn"
                           onClick={() => {
                             handleRemoveSelected(id);
                           }}
                           title="Remove from graph"
                           aria-label={`Remove ${def?.exportName ?? id}`}
-                          style={{ padding: '0 5px', height: '18px', color: 'var(--color-error)' }}
                         >
                           ✕
                         </button>
@@ -651,20 +518,11 @@ export function ChannelSelectorModal({
         </div>
 
         {/* Footer */}
-        <div
-          style={{
-            padding: '10px 14px',
-            backgroundColor: 'var(--color-surface)',
-            borderTop: '1px solid var(--color-border)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <span style={{ fontSize: '11px', color: 'var(--color-text-dim)' }}>
+        <div className="channel-selector-footer">
+          <span className="channel-selector-tip">
             Tip: Click swatches or channel labels on the graph legend to toggle traces on/off.
           </span>
-          <div style={{ display: 'flex', gap: '8px' }}>
+          <div className="channel-selector-actions">
             <button
               type="button"
               className="btn btn-sm"

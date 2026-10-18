@@ -27,7 +27,7 @@ describe('ChannelSelectorModal (MoTeC i2 Pro style)', () => {
     );
 
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByText('MoTeC i2 Pro Channel Selector')).toBeInTheDocument();
+    expect(screen.getByText('Choose channels')).toBeInTheDocument();
     expect(screen.getByTestId('channel-search-input')).toBeInTheDocument();
     expect(screen.getByTestId('selected-channel-count')).toHaveTextContent('2 / 8');
     expect(screen.getByTestId(`selected-item-${ch.SPEED}`)).toBeInTheDocument();

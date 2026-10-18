@@ -197,8 +197,8 @@ describe('TelemetryGraph', () => {
     expect(screen.queryByText(/LMU Telemetry|Calculated/)).toBeNull();
     expect(screen.getByRole('status')).toHaveTextContent('LIVE · SYNTHETIC');
     expect(screen.queryByText('MEASURED')).toBeNull();
-    expect(screen.queryByText('DERIVED')).toBeNull();
-    expect(screen.getAllByText('SYNTHETIC')).toHaveLength(2);
+    // DS04: Graph legend renders one common SYNTHETIC pill rather than duplicating per series
+    expect(screen.getAllByText('SYNTHETIC')).toHaveLength(1);
   });
 
   it('labels a source without a valid data kind as unverified, never as LMU (silent-failure H2 fail-safe)', () => {

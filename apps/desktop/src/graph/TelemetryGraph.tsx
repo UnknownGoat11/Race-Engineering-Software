@@ -227,6 +227,12 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
     ...references.map((r) => labelOf(r.source, r.channelId)),
   ];
 
+  // DS04: Render one provenance pill per graph; per-series chips only when a series differs.
+  const firstSourceLabel = sourceLabels[0];
+  const isUniformSource = firstSourceLabel !== undefined && sourceLabels.every((l) => l === firstSourceLabel);
+  const commonSourceLabel = isUniformSource ? firstSourceLabel : null;
+  const commonNonLmu = commonSourceLabel !== null ? NON_LMU_BADGES[commonSourceLabel] : undefined;
+
   const toggle = (id: number): void => {
     setDisabled((prev) => {
       const next = new Set(prev);
@@ -293,16 +299,26 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
         </div>
       )}
       <ul className="telemetry-graph__legend" aria-label="Channels">
+        {commonNonLmu !== undefined && (
+          <li className="telemetry-graph__legend-common" key="common-provenance">
+            <span className="badge telemetry-graph__data-badge" title={commonNonLmu.description}>
+              {commonNonLmu.label}
+              <span className="telemetry-visually-hidden">: {commonNonLmu.description}</span>
+            </span>
+          </li>
+        )}
         {series.map((s, i) => {
           const enabled = !disabled.has(s.channelId);
           const label = channelLabel(s.channelId);
           const sample = snapshot.readouts[seriesKey(s.channelId)] ?? null;
+          const sLabel = labelOf(source, s.channelId);
+          const showBadge = commonNonLmu === undefined;
           return (
             <li
               key={s.channelId}
               className="telemetry-graph__legend-item"
               data-enabled={enabled}
-              title={`Source: ${labelOf(source, s.channelId)} · Click to ${enabled ? 'hide' : 'show'}`}
+              title={`Source: ${sLabel} · Click to ${enabled ? 'hide' : 'show'}`}
             >
               <label className="telemetry-graph__toggle" title={enabled ? `Hide ${label}` : `Show ${label}`}>
                 <input
@@ -321,7 +337,6 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
                   onClick={() => {
                     toggle(s.channelId);
                   }}
-                  style={{ cursor: 'pointer' }}
                   title={`Click to hide ${label}`}
                 >
                   <LegendReadout readout={sample} label={label} at={snapshot.cursorLabel} />
@@ -332,24 +347,25 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
                   onClick={() => {
                     toggle(s.channelId);
                   }}
-                  style={{ cursor: 'pointer' }}
                   title={`Click to show ${label}`}
                 >
                   {label}
                 </span>
               )}
-              <SeriesBadge id={s.channelId} sourceLabel={labelOf(source, s.channelId)} />
+              {showBadge && <SeriesBadge id={s.channelId} sourceLabel={sLabel} />}
             </li>
           );
         })}
         {references.map((r) => {
           const sample = snapshot.readouts[referenceKey(r.key)] ?? null;
+          const rLabel = labelOf(r.source, r.channelId);
+          const showRefBadge = commonNonLmu === undefined || rLabel !== commonSourceLabel;
           return (
             <li
               key={`ref-${r.key}`}
               className="telemetry-graph__legend-item"
               data-reference="true"
-              title={`Source: ${labelOf(r.source, r.channelId)}`}
+              title={`Source: ${rLabel}`}
             >
               <span
                 className="telemetry-graph__swatch telemetry-graph__swatch--reference"
@@ -361,7 +377,7 @@ export function TelemetryGraph(props: TelemetryGraphProps): JSX.Element {
               ) : (
                 <span className="telemetry-graph__series-name">{r.label}</span>
               )}
-              <SeriesBadge id={r.channelId} sourceLabel={labelOf(r.source, r.channelId)} />
+              {showRefBadge && <SeriesBadge id={r.channelId} sourceLabel={rLabel} />}
             </li>
           );
         })}
