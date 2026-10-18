@@ -10,6 +10,7 @@ export interface LapDistanceBarProps {
   readonly sectors?: readonly SectorMark[] | undefined;
   readonly dq?: TrackMapDq | undefined;
   readonly progress?: number | undefined;
+  readonly summary?: string | undefined;
   readonly className?: string | undefined;
 }
 
@@ -25,6 +26,7 @@ export function LapDistanceBar({
   sectors,
   dq,
   progress,
+  summary,
   className = '',
 }: LapDistanceBarProps): JSX.Element {
   const lengthM = trackLengthM > 0 ? trackLengthM : 5000;
@@ -46,7 +48,7 @@ export function LapDistanceBar({
       className={`lap-distance-bar-wrapper ${isStale ? 'lap-dist-stale' : ''} ${isEnded ? 'lap-dist-ended' : ''} ${className}`}
       data-testid="lap-distance-bar"
       role="img"
-      aria-label={`Lap distance view: ${captionText}`}
+      aria-label={summary ?? `Lap distance view: ${captionText}`}
     >
       <div className="lap-distance-bar-header">
         <span className="lap-dist-caption" data-testid="lap-dist-caption">

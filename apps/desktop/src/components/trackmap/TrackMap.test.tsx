@@ -271,4 +271,107 @@ describe('TrackMap Component', () => {
     fireEvent.click(resetBtn);
     expect(handleRotation).toHaveBeenCalledWith(0);
   });
+
+  it('renders role="img" and descriptive aria summary for track map (A07)', () => {
+    render(
+      <TrackMap
+        map={TEST_MAP}
+        trackName="Sebring"
+        driverPlace={7}
+        driverSector={2}
+        driverPosition={{ x: 100, z: 0, headingRad: 0, lapDistM: 400 }}
+        competitors={[
+          {
+            id: 'car-51',
+            carNumber: '51',
+            driverName: 'Driver 51',
+            vehicleClass: 'hypercar',
+            x: 250,
+            z: 125,
+          },
+        ]}
+      />,
+    );
+
+    const svg = screen.getByTestId('trackmap-svg');
+    expect(svg).toHaveAttribute('role', 'img');
+    expect(svg).toHaveAttribute('aria-label', 'Sebring, 2 cars, driver P7 in sector 2');
+  });
+
+  it('renders legend chips showing only classes present in the session (A09)', () => {
+    render(
+      <TrackMap
+        map={TEST_MAP}
+        driverPosition={{ x: 100, z: 0 }}
+        competitors={[
+          {
+            id: 'c1',
+            carNumber: '51',
+            driverName: 'Driver 51',
+            vehicleClass: 'hypercar',
+            x: 250,
+            z: 125,
+          },
+          {
+            id: 'c2',
+            carNumber: '92',
+            driverName: 'Driver 92',
+            vehicleClass: 'gt3',
+            x: 0,
+            z: 200,
+          },
+        ]}
+      />,
+    );
+
+    const legend = screen.getByTestId('trackmap-legend');
+    expect(legend).toBeInTheDocument();
+    expect(screen.getByTestId('trackmap-legend-hy')).toBeInTheDocument();
+    expect(screen.getByTestId('trackmap-legend-gt3')).toBeInTheDocument();
+    expect(screen.queryByTestId('trackmap-legend-p2')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('trackmap-legend-gte')).not.toBeInTheDocument();
+  });
+
+  it('disables rotation controls when no map geometry is loaded', () => {
+    const handleRotation = vi.fn();
+    render(
+      <TrackMap
+        map={null}
+        rotationRad={0}
+        onRotationChange={handleRotation}
+      />,
+    );
+
+    const ccwBtn = screen.getByTestId('trackmap-btn-rotate-ccw');
+    expect(ccwBtn).toBeDisabled();
+    expect(ccwBtn).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(ccwBtn);
+    expect(handleRotation).not.toHaveBeenCalled();
+  });
+
+  it('renders competitor markers with legible car numbers at marker size >= 12px', () => {
+    render(
+      <TrackMap
+        map={TEST_MAP}
+        competitors={[
+          {
+            id: 'car-92',
+            carNumber: '92',
+            driverName: 'Driver 92',
+            vehicleClass: 'gt3',
+            x: 250,
+            z: 125,
+          },
+        ]}
+      />,
+    );
+
+    const carGroup = screen.getByTestId('competitor-92');
+    const circle = carGroup.querySelector('circle');
+    expect(circle).toBeInTheDocument();
+    // Radius 9 means diameter 18px >= 12px
+    const r = Number(circle?.getAttribute('r'));
+    expect(r).toBeGreaterThanOrEqual(6);
+    expect(carGroup).toHaveTextContent('92');
+  });
 });
