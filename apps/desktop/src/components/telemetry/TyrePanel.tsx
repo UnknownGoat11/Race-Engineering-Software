@@ -2,6 +2,8 @@ import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
 import { formatPressure, formatTemperature, NO_VALUE } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
+import { Panel } from '../ui/Panel';
+import { StatusBadge } from '../ui/StatusBadge';
 import { useScopeDq } from './presentation';
 import './telemetry.css';
 
@@ -13,6 +15,7 @@ const TYRE_CHANNELS = [
   ch.TYRE_CARCASS_TEMP_FL,
   ch.TYRE_PRESSURE_FL,
   ch.TYRE_WEAR_FL,
+  ch.TYRE_OPTIMAL_TEMP_FL,
   // FR
   ch.TYRE_TEMP_INNER_FR,
   ch.TYRE_TEMP_MIDDLE_FR,
@@ -20,6 +23,7 @@ const TYRE_CHANNELS = [
   ch.TYRE_CARCASS_TEMP_FR,
   ch.TYRE_PRESSURE_FR,
   ch.TYRE_WEAR_FR,
+  ch.TYRE_OPTIMAL_TEMP_FR,
   // RL
   ch.TYRE_TEMP_INNER_RL,
   ch.TYRE_TEMP_MIDDLE_RL,
@@ -27,6 +31,7 @@ const TYRE_CHANNELS = [
   ch.TYRE_CARCASS_TEMP_RL,
   ch.TYRE_PRESSURE_RL,
   ch.TYRE_WEAR_RL,
+  ch.TYRE_OPTIMAL_TEMP_RL,
   // RR
   ch.TYRE_TEMP_INNER_RR,
   ch.TYRE_TEMP_MIDDLE_RR,
@@ -34,9 +39,11 @@ const TYRE_CHANNELS = [
   ch.TYRE_CARCASS_TEMP_RR,
   ch.TYRE_PRESSURE_RR,
   ch.TYRE_WEAR_RR,
-  // Balance
+  ch.TYRE_OPTIMAL_TEMP_RR,
+  // Balance & Stint
   ch.TYRE_TEMP_BALANCE_FRONT_REAR,
   ch.TYRE_TEMP_BALANCE_LEFT_RIGHT,
+  ch.TYRE_SET_LAPS,
 ] as const;
 
 interface CornerData {
@@ -46,44 +53,97 @@ interface CornerData {
   carcass: number | null | undefined;
   pressure: number | null | undefined;
   wear: number | null | undefined;
+  optimal: number | null | undefined;
 }
 
-function getTempColor(tempC: number | null | undefined): string {
-  if (tempC == null || isNaN(tempC)) return 'var(--color-text-muted)';
-  if (tempC < 70) return '#60a5fa'; // Blue (cold)
-  if (tempC < 100) return '#4ade80'; // Green (optimal)
-  if (tempC < 115) return '#fbbf24'; // Amber (warm)
-  return '#f87171'; // Red (overheating)
+interface ThermalBand {
+  readonly modifier: string;
+  readonly glyph: string;
+  readonly tooltip: string;
 }
 
-function renderCorner(title: string, data: CornerData, testId: string): JSX.Element {
+/**
+ * Derives thermal band per C11 and A09 relative to measured TYRE_OPTIMAL_TEMP_*.
+ * - ±10 °C: optimal (●)
+ * - +10 to +20 °C: warm (◆)
+ * - -10 to -20 °C: low (◆)
+ * - > +20 °C: overheating (■)
+ * - < -20 °C: cold (▼)
+ * - optimal missing: neutral cell
+ */
+function getThermalBand(temp: number | null | undefined, optimal: number | null | undefined): ThermalBand {
+  if (temp == null || isNaN(temp)) {
+    return { modifier: 'tyre-tread-cell--neutral', glyph: '', tooltip: 'Unavailable' };
+  }
+  if (optimal == null || isNaN(optimal)) {
+    return { modifier: 'tyre-tread-cell--neutral', glyph: '', tooltip: 'Optimal window not reported' };
+  }
+
+  const diff = temp - optimal;
+  if (diff < -20) {
+    return { modifier: 'tyre-tread-cell--cold', glyph: '▼', tooltip: `Cold (${temp.toFixed(0)} °C vs opt ${optimal.toFixed(0)} °C)` };
+  }
+  if (diff < -10) {
+    return { modifier: 'tyre-tread-cell--low', glyph: '◆', tooltip: `Low (${temp.toFixed(0)} °C vs opt ${optimal.toFixed(0)} °C)` };
+  }
+  if (diff <= 10) {
+    return { modifier: 'tyre-tread-cell--optimal', glyph: '●', tooltip: `Optimal (${temp.toFixed(0)} °C vs opt ${optimal.toFixed(0)} °C)` };
+  }
+  if (diff <= 20) {
+    return { modifier: 'tyre-tread-cell--warm', glyph: '◆', tooltip: `Warm (${temp.toFixed(0)} °C vs opt ${optimal.toFixed(0)} °C)` };
+  }
+  return { modifier: 'tyre-tread-cell--over', glyph: '■', tooltip: `Overheating (${temp.toFixed(0)} °C vs opt ${optimal.toFixed(0)} °C)` };
+}
+
+function renderCorner(
+  title: string,
+  code: string,
+  data: CornerData,
+  isLeft: boolean,
+  testId: string,
+): JSX.Element {
+  // Left tyres: O - M - I. Right tyres: I - M - O (outer edge faces out per §2.6)
+  const slots = isLeft
+    ? [
+        { label: 'O', val: data.outer },
+        { label: 'M', val: data.mid },
+        { label: 'I', val: data.inner },
+      ]
+    : [
+        { label: 'I', val: data.inner },
+        { label: 'M', val: data.mid },
+        { label: 'O', val: data.outer },
+      ];
+
   return (
     <div className="tyre-corner-box" data-testid={testId}>
       <div className="tyre-corner-header">
-        <span className="tyre-corner-title">{title}</span>
+        <span className="tyre-corner-title">{code} · {title}</span>
         <span className="tyre-corner-pressure">
           {formatPressure(data.pressure, { withUnit: true })}
         </span>
       </div>
+
       <div className="tyre-tread-grid">
-        <div className="tyre-tread-slot" style={{ color: getTempColor(data.inner) }}>
-          <span className="tyre-slot-label">I</span>
-          <span className="tyre-slot-val">{formatTemperature(data.inner)}</span>
-        </div>
-        <div className="tyre-tread-slot" style={{ color: getTempColor(data.mid) }}>
-          <span className="tyre-slot-label">M</span>
-          <span className="tyre-slot-val">{formatTemperature(data.mid)}</span>
-        </div>
-        <div className="tyre-tread-slot" style={{ color: getTempColor(data.outer) }}>
-          <span className="tyre-slot-label">O</span>
-          <span className="tyre-slot-val">{formatTemperature(data.outer)}</span>
-        </div>
+        {slots.map((slot) => {
+          const band = getThermalBand(slot.val, data.optimal);
+          return (
+            <div
+              key={slot.label}
+              className={`tyre-tread-cell ${band.modifier}`}
+              title={band.tooltip}
+            >
+              {band.glyph && <span className="tyre-slot-glyph">{band.glyph}</span>}
+              <span className="tyre-slot-label">{slot.label}</span>
+              <span className="tyre-slot-val">{formatTemperature(slot.val)}</span>
+            </div>
+          );
+        })}
       </div>
+
       <div className="tyre-footer-row">
-        <span className="card-row-label">Carcass: {formatTemperature(data.carcass, { withUnit: true })}</span>
-        <span className="card-row-label">
-          Wear (raw): {data.wear != null ? data.wear.toFixed(2) : NO_VALUE}
-        </span>
+        <span>Carcass: {formatTemperature(data.carcass, { withUnit: true })}</span>
+        <span>Wear (raw): {data.wear != null ? data.wear.toFixed(2) : NO_VALUE}</span>
       </div>
     </div>
   );
@@ -93,14 +153,9 @@ export function TyrePanel(): JSX.Element {
   const store = useContext(TelemetryStoreContext);
   if (!store) {
     return (
-      <div className="card" data-testid="panel-tyres">
-        <div className="card-header">
-          <span className="card-header-title">TYRE CORNERS (4-WHEEL)</span>
-        </div>
-        <div className="card-body">
-          <span className="card-row-label">No telemetry store active</span>
-        </div>
-      </div>
+      <Panel title="TYRES" testId="panel-tyres">
+        <span className="card-row-label">No telemetry store active</span>
+      </Panel>
     );
   }
   return <TyrePanelContent />;
@@ -131,6 +186,7 @@ function TyrePanelContent(): JSX.Element {
     carcass: num(ch.TYRE_CARCASS_TEMP_FL),
     pressure: num(ch.TYRE_PRESSURE_FL),
     wear: num(ch.TYRE_WEAR_FL),
+    optimal: num(ch.TYRE_OPTIMAL_TEMP_FL),
   };
 
   const fr: CornerData = {
@@ -140,6 +196,7 @@ function TyrePanelContent(): JSX.Element {
     carcass: num(ch.TYRE_CARCASS_TEMP_FR),
     pressure: num(ch.TYRE_PRESSURE_FR),
     wear: num(ch.TYRE_WEAR_FR),
+    optimal: num(ch.TYRE_OPTIMAL_TEMP_FR),
   };
 
   const rl: CornerData = {
@@ -149,6 +206,7 @@ function TyrePanelContent(): JSX.Element {
     carcass: num(ch.TYRE_CARCASS_TEMP_RL),
     pressure: num(ch.TYRE_PRESSURE_RL),
     wear: num(ch.TYRE_WEAR_RL),
+    optimal: num(ch.TYRE_OPTIMAL_TEMP_RL),
   };
 
   const rr: CornerData = {
@@ -158,49 +216,54 @@ function TyrePanelContent(): JSX.Element {
     carcass: num(ch.TYRE_CARCASS_TEMP_RR),
     pressure: num(ch.TYRE_PRESSURE_RR),
     wear: num(ch.TYRE_WEAR_RR),
+    optimal: num(ch.TYRE_OPTIMAL_TEMP_RR),
   };
 
   const balFR = num(ch.TYRE_TEMP_BALANCE_FRONT_REAR);
   const balLR = num(ch.TYRE_TEMP_BALANCE_LEFT_RIGHT);
+  const tyreSetLaps = num(ch.TYRE_SET_LAPS);
+
+  const hasOptimal =
+    fl.optimal != null || fr.optimal != null || rl.optimal != null || rr.optimal != null;
+
+  const metaContent = (
+    <>
+      {balFR != null && (
+        <StatusBadge level="info" glyph={false}>
+          F/R {balFR > 0 ? '+' : ''}{balFR.toFixed(1)}°C
+        </StatusBadge>
+      )}
+      {balLR != null && (
+        <StatusBadge level="info" glyph={false}>
+          L/R {balLR > 0 ? '+' : ''}{balLR.toFixed(1)}°C
+        </StatusBadge>
+      )}
+      {tyreSetLaps != null && (
+        <StatusBadge level="off" glyph={false}>
+          {Math.round(tyreSetLaps)} LAPS
+        </StatusBadge>
+      )}
+    </>
+  );
+
+  const footerContent = !hasOptimal ? (
+    <span>Optimal window not reported</span>
+  ) : null;
 
   return (
-    <div className="card" data-testid="panel-tyres" data-dq={dq ?? undefined}>
-      <div className="card-header">
-        <span className="card-header-title">TYRE CORNERS (4-WHEEL)</span>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          {dq === 'stale' && (
-            <span className="status-badge status-badge-stale">STALE</span>
-          )}
-          {dq === 'untrusted' && (
-            <span className="status-badge status-badge-error">UNTRUSTED</span>
-          )}
-          {(balFR != null || balLR != null) && (
-            <div style={{ display: 'flex', gap: '8px' }}>
-              {balFR != null && (
-                <span className="status-badge status-badge-neutral">
-                  F/R {balFR > 0 ? '+' : ''}{balFR.toFixed(1)}°C
-                </span>
-              )}
-              {balLR != null && (
-                <span className="status-badge status-badge-neutral">
-                  L/R {balLR > 0 ? '+' : ''}{balLR.toFixed(1)}°C
-                </span>
-              )}
-            </div>
-          )}
-        </div>
+    <Panel
+      title="TYRES"
+      dq={dq}
+      meta={metaContent}
+      footer={footerContent}
+      testId="panel-tyres"
+    >
+      <div className="tyres-grid-2x2">
+        {renderCorner('FRONT LEFT', 'FL', fl, true, 'tyre-fl')}
+        {renderCorner('FRONT RIGHT', 'FR', fr, false, 'tyre-fr')}
+        {renderCorner('REAR LEFT', 'RL', rl, true, 'tyre-rl')}
+        {renderCorner('REAR RIGHT', 'RR', rr, false, 'tyre-rr')}
       </div>
-      <div className="card-body">
-        {dq === 'untrusted' && (
-          <div className="panel-untrusted-note">Untrusted — data format mismatch</div>
-        )}
-        <div className="tyres-grid-2x2">
-          {renderCorner('FRONT LEFT', fl, 'tyre-fl')}
-          {renderCorner('FRONT RIGHT', fr, 'tyre-fr')}
-          {renderCorner('REAR LEFT', rl, 'tyre-rl')}
-          {renderCorner('REAR RIGHT', rr, 'tyre-rr')}
-        </div>
-      </div>
-    </div>
+    </Panel>
   );
 }

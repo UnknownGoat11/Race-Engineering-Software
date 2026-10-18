@@ -22,4 +22,17 @@ describe('ProvenanceBadge (spec §107)', () => {
     render(<ProvenanceBadge provenance={speed.provenance} />);
     expect(screen.getByText('DERIVED', { exact: false })).toBeInTheDocument();
   });
+
+  it('renders est micro-tag only when provenance is Estimated (T25)', () => {
+    const { rerender } = render(<ProvenanceBadge provenance="Estimated" variant="micro" />);
+    const est = screen.getByText('est');
+    expect(est).toHaveClass('badge-micro', 'telemetry-est');
+
+    rerender(<ProvenanceBadge provenance="Measured" variant="micro" />);
+    expect(screen.queryByText('est')).toBeNull();
+
+    rerender(<ProvenanceBadge provenance="Derived" variant="micro" />);
+    expect(screen.queryByText('est')).toBeNull();
+  });
 });
+

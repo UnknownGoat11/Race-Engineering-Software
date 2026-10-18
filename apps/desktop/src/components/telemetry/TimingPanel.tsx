@@ -2,6 +2,8 @@ import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
 import { formatDelta, formatLapTime, NO_VALUE } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
+import { Panel } from '../ui/Panel';
+import { StatusBadge } from '../ui/StatusBadge';
 import { useScopeDq } from './presentation';
 import './telemetry.css';
 
@@ -27,14 +29,9 @@ export function TimingPanel(): JSX.Element {
   const store = useContext(TelemetryStoreContext);
   if (!store) {
     return (
-      <div className="card" data-testid="panel-timing">
-        <div className="card-header">
-          <span className="card-header-title">LAP TIMING & POSITION</span>
-        </div>
-        <div className="card-body">
-          <span className="card-row-label">No telemetry store active</span>
-        </div>
-      </div>
+      <Panel title="TIMING" testId="panel-timing">
+        <span className="card-row-label">No telemetry store active</span>
+      </Panel>
     );
   }
   return <TimingPanelContent />;
@@ -68,96 +65,102 @@ function TimingPanelContent(): JSX.Element {
   const lastS1 = num(ch.LAST_SECTOR1);
   const lastS2 = num(ch.LAST_SECTOR2);
   const lastS3 = num(ch.LAST_SECTOR3);
+  const bestS1 = num(ch.BEST_SECTOR1);
+  const bestS2 = num(ch.BEST_SECTOR2);
   const classPos = num(ch.CLASS_POSITION);
   const overallPos = num(ch.POSITION);
 
-  const deltaStyle = useMemo(() => {
+  // Delta hero per C12: deadband ±0.050 s, faster green with glyph, slower red with glyph
+  const deltaPresentation = useMemo(() => {
     if (deltaPb == null || isNaN(deltaPb)) {
-      return { text: NO_VALUE, className: 'delta-chip delta-neutral' };
+      return { text: NO_VALUE, cue: '', className: 'delta-chip delta-neutral' };
     }
-    const text = formatDelta(deltaPb);
+    const valText = formatDelta(deltaPb);
     if (deltaPb < -0.050) {
-      return { text, className: 'delta-chip delta-ahead' };
+      return { text: valText, cue: '▲ FASTER', className: 'delta-chip delta-ahead' };
     }
     if (deltaPb > 0.050) {
-      return { text, className: 'delta-chip delta-behind' };
+      return { text: valText, cue: '▼ SLOWER', className: 'delta-chip delta-behind' };
     }
-    return { text, className: 'delta-chip delta-neutral' };
+    return { text: valText, cue: '', className: 'delta-chip delta-neutral' };
   }, [deltaPb]);
 
+  const getSectorChipClass = (lastSec: number | null, bestSec: number | null): string => {
+    if (lastSec == null || isNaN(lastSec) || bestSec == null || isNaN(bestSec)) {
+      return 'meta-chip';
+    }
+    // Slower than personal best by more than 0.010 s
+    if (lastSec > bestSec + 0.010) {
+      return 'meta-chip meta-chip--slower';
+    }
+    // Matches or beats personal best
+    if (lastSec <= bestSec + 0.010) {
+      return 'meta-chip meta-chip--best-personal';
+    }
+    return 'meta-chip';
+  };
+
+  const metaContent = (
+    <>
+      <StatusBadge level="info" glyph={false}>
+        P{overallPos != null ? Math.round(overallPos) : NO_VALUE} (CP
+        {classPos != null ? Math.round(classPos) : NO_VALUE})
+      </StatusBadge>
+      <StatusBadge level="off" glyph={false}>
+        L{lapNum != null ? Math.round(lapNum) : NO_VALUE} / S
+        {sector != null ? Math.round(sector) + 1 : NO_VALUE}
+      </StatusBadge>
+    </>
+  );
+
   return (
-    <div className="card" data-testid="panel-timing" data-dq={dq ?? undefined}>
-      <div className="card-header">
-        <span className="card-header-title">LAP TIMING & POSITION</span>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          {dq === 'stale' && (
-            <span className="status-badge status-badge-stale">STALE</span>
-          )}
-          {dq === 'untrusted' && (
-            <span className="status-badge status-badge-error">UNTRUSTED</span>
-          )}
-          <span className="status-badge status-badge-info">
-            P{overallPos != null ? Math.round(overallPos) : NO_VALUE} (CP
-            {classPos != null ? Math.round(classPos) : NO_VALUE})
-          </span>
-          <span className="status-badge status-badge-neutral">
-            L{lapNum != null ? Math.round(lapNum) : NO_VALUE} / S
-            {sector != null ? Math.round(sector) + 1 : NO_VALUE}
+    <Panel title="TIMING" dq={dq} meta={metaContent} testId="panel-timing">
+      <div className="delta-hero-container">
+        <div className="delta-hero-label">DELTA TO PERSONAL BEST</div>
+        <div className={`delta-hero-value ${deltaPresentation.className}`} data-testid="timing-delta-pb">
+          <span>{deltaPresentation.text}</span>
+          {deltaPresentation.cue && <span className="delta-cue">{deltaPresentation.cue}</span>}
+        </div>
+      </div>
+
+      <div className="telemetry-grid-2x2">
+        <div className="card-row">
+          <span className="card-row-label">Current Lap</span>
+          <span className="card-row-value">{formatLapTime(lapTime)}</span>
+        </div>
+        <div className="card-row">
+          <span className="card-row-label">Predicted</span>
+          <span className="card-row-value">{formatLapTime(predicted)}</span>
+        </div>
+        <div className="card-row">
+          <span className="card-row-label">Last Lap</span>
+          <span className="card-row-value">{formatLapTime(lastLap)}</span>
+        </div>
+        <div className="card-row">
+          <span className="card-row-label">Best Lap</span>
+          <span className="card-row-value timing-best-val">
+            {formatLapTime(bestLap)}
           </span>
         </div>
       </div>
-      <div className="card-body">
-        {dq === 'untrusted' && (
-          <div className="panel-untrusted-note">Untrusted — data format mismatch</div>
-        )}
-        <div className="delta-hero-container" style={{ margin: '4px 0 12px 0' }}>
-          <div className="delta-hero-label">DELTA TO PERSONAL BEST</div>
-          <div className={`delta-hero-value ${deltaStyle.className}`} data-testid="timing-delta-pb">
-            {deltaStyle.text}
-          </div>
-        </div>
 
-        <div className="telemetry-grid-2x2">
-          <div className="card-row">
-            <span className="card-row-label">Current Lap</span>
-            <span className="card-row-value">{formatLapTime(lapTime)}</span>
+      <div className="sectors-bar">
+        <div className="card-row-label">LAST LAP SECTOR SPLITS</div>
+        <div className="sectors-grid">
+          <div className={getSectorChipClass(lastS1, bestS1)}>
+            <span className="meta-chip-label">S1</span>
+            <span className="meta-chip-value">{formatLapTime(lastS1)}</span>
           </div>
-          <div className="card-row">
-            <span className="card-row-label">Predicted</span>
-            <span className="card-row-value">{formatLapTime(predicted)}</span>
+          <div className={getSectorChipClass(lastS2, bestS2)}>
+            <span className="meta-chip-label">S2</span>
+            <span className="meta-chip-value">{formatLapTime(lastS2)}</span>
           </div>
-          <div className="card-row">
-            <span className="card-row-label">Last Lap</span>
-            <span className="card-row-value">{formatLapTime(lastLap)}</span>
-          </div>
-          <div className="card-row">
-            <span className="card-row-label">Best Lap</span>
-            <span className="card-row-value" style={{ color: 'var(--delta-faster, #2fd27a)' }}>
-              {formatLapTime(bestLap)}
-            </span>
-          </div>
-        </div>
-
-        <div className="sectors-bar" style={{ marginTop: '12px' }}>
-          <div className="card-row-label" style={{ marginBottom: '4px' }}>
-            LAST LAP SECTOR SPLITS
-          </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <div className="meta-chip" style={{ flex: 1 }}>
-              <span className="meta-chip-label">S1</span>
-              <span className="meta-chip-value">{formatLapTime(lastS1)}</span>
-            </div>
-            <div className="meta-chip" style={{ flex: 1 }}>
-              <span className="meta-chip-label">S2</span>
-              <span className="meta-chip-value">{formatLapTime(lastS2)}</span>
-            </div>
-            <div className="meta-chip" style={{ flex: 1 }}>
-              <span className="meta-chip-label">S3</span>
-              <span className="meta-chip-value">{formatLapTime(lastS3)}</span>
-            </div>
+          <div className="meta-chip">
+            <span className="meta-chip-label">S3</span>
+            <span className="meta-chip-value">{formatLapTime(lastS3)}</span>
           </div>
         </div>
       </div>
-    </div>
+    </Panel>
   );
 }

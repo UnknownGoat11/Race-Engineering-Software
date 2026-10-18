@@ -2,6 +2,8 @@ import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
 import { NO_VALUE } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
+import { Panel } from '../ui/Panel';
+import { StatusBadge } from '../ui/StatusBadge';
 import { useScopeDq } from './presentation';
 import './telemetry.css';
 
@@ -17,14 +19,9 @@ export function EnergyPanel(): JSX.Element {
   const store = useContext(TelemetryStoreContext);
   if (!store) {
     return (
-      <div className="card" data-testid="panel-energy">
-        <div className="card-header">
-          <span className="card-header-title">VIRTUAL ENERGY & HYBRID</span>
-        </div>
-        <div className="card-body">
-          <span className="card-row-label">No telemetry store active</span>
-        </div>
-      </div>
+      <Panel title="POWER" testId="panel-energy">
+        <span className="card-row-label">No telemetry store active</span>
+      </Panel>
     );
   }
   return <EnergyPanelContent />;
@@ -56,121 +53,91 @@ function EnergyPanelContent(): JSX.Element {
   const hasVe = ve != null;
   const hasHybrid = soc != null || motorTorque != null || motorRpm != null;
 
-  return (
-    <div className="card" data-testid="panel-energy" data-dq={dq ?? undefined}>
-      <div className="card-header">
-        <span className="card-header-title">VIRTUAL ENERGY & HYBRID</span>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          {dq === 'stale' && (
-            <span className="status-badge status-badge-stale">STALE</span>
-          )}
-          {dq === 'untrusted' && (
-            <span className="status-badge status-badge-error">UNTRUSTED</span>
-          )}
-          {hasVe && (
-            <span className="status-badge status-badge-info">
-              {(ve * 100).toFixed(1)}% VE
-            </span>
-          )}
-          {!hasHybrid ? (
-            <span className="status-badge status-badge-neutral">Hybrid: none</span>
-          ) : soc != null ? (
-            <span className="status-badge status-badge-info">SoC {(soc * 100).toFixed(0)}%</span>
-          ) : null}
-        </div>
-      </div>
-      <div className="card-body">
-        {dq === 'untrusted' && (
-          <div className="panel-untrusted-note">Untrusted — data format mismatch</div>
-        )}
+  const metaContent = (
+    <>
+      {hasVe && (
+        <StatusBadge level="info" glyph={false}>
+          {(ve * 100).toFixed(1)}% VE
+        </StatusBadge>
+      )}
+      {!hasHybrid ? (
+        <StatusBadge level="off" glyph={false}>
+          Hybrid: none
+        </StatusBadge>
+      ) : soc != null ? (
+        <StatusBadge level="info" glyph={false}>
+          SoC {(soc * 100).toFixed(0)}%
+        </StatusBadge>
+      ) : null}
+    </>
+  );
 
-        {/* Virtual Energy Section */}
-        {hasVe ? (
-          <div style={{ marginBottom: '12px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-              <span className="card-row-label">Virtual Energy Remaining</span>
-              <span style={{ fontWeight: 700, fontFamily: 'monospace' }}>
-                {(ve * 100).toFixed(1)}%
+  return (
+    <Panel title="POWER" dq={dq} meta={metaContent} testId="panel-energy">
+      {/* Virtual Energy Section */}
+      {hasVe ? (
+        <div className="energy-section">
+          <div className="card-row energy-header-row">
+            <span className="card-row-label">Virtual Energy Remaining</span>
+            <span className="card-row-value">
+              {(ve * 100).toFixed(1)}%
+            </span>
+          </div>
+          <div className="progress-track">
+            <div
+              className="progress-fill progress-fill--ve"
+              style={{ width: `${Math.min(100, Math.max(0, ve * 100))}%` }}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="card-row energy-fallback-row">
+          <span className="card-row-label">Virtual Energy</span>
+          <span className="card-row-value">VE: not reported by this car</span>
+        </div>
+      )}
+
+      {/* Hybrid Section */}
+      {hasHybrid ? (
+        <div className="hybrid-section">
+          {soc != null && (
+            <div className="energy-section">
+              <div className="card-row energy-header-row">
+                <span className="card-row-label">Battery State of Charge (SoC)</span>
+                <span className="card-row-value">
+                  {(soc * 100).toFixed(1)}%
+                </span>
+              </div>
+              <div className="progress-track">
+                <div
+                  className="progress-fill progress-fill--safe"
+                  style={{ width: `${Math.min(100, Math.max(0, soc * 100))}%` }}
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="telemetry-grid-2x2">
+            <div className="card-row">
+              <span className="card-row-label">Motor Torque</span>
+              <span className="card-row-value">
+                {motorTorque != null ? `${motorTorque.toFixed(1)} Nm` : NO_VALUE}
               </span>
             </div>
-            <div
-              style={{
-                height: '8px',
-                backgroundColor: 'var(--color-surface)',
-                borderRadius: '4px',
-                overflow: 'hidden',
-              }}
-            >
-              <div
-                style={{
-                  height: '100%',
-                  width: `${Math.min(100, Math.max(0, ve * 100))}%`,
-                  backgroundColor: 'var(--color-accent)',
-                  transition: 'width 0.3s ease',
-                }}
-              />
+            <div className="card-row">
+              <span className="card-row-label">Motor RPM</span>
+              <span className="card-row-value">
+                {motorRpm != null ? Math.round(motorRpm).toLocaleString() : NO_VALUE}
+              </span>
             </div>
           </div>
-        ) : (
-          <div className="card-row" style={{ marginBottom: '10px' }}>
-            <span className="card-row-label">Virtual Energy</span>
-            <span className="card-row-value">VE: not reported by this car</span>
-          </div>
-        )}
-
-        {/* Hybrid Section */}
-        {hasHybrid ? (
-          <>
-            {soc != null && (
-              <div style={{ marginBottom: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
-                  <span className="card-row-label">Battery State of Charge (SoC)</span>
-                  <span style={{ fontWeight: 700, fontFamily: 'monospace' }}>
-                    {(soc * 100).toFixed(1)}%
-                  </span>
-                </div>
-                <div
-                  style={{
-                    height: '8px',
-                    backgroundColor: 'var(--color-surface)',
-                    borderRadius: '4px',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <div
-                    style={{
-                      height: '100%',
-                      width: `${Math.min(100, Math.max(0, soc * 100))}%`,
-                      backgroundColor: '#38bdf8',
-                      transition: 'width 0.3s ease',
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="telemetry-grid-2x2">
-              <div className="card-row">
-                <span className="card-row-label">Motor Torque</span>
-                <span className="card-row-value">
-                  {motorTorque != null ? `${motorTorque.toFixed(1)} Nm` : NO_VALUE}
-                </span>
-              </div>
-              <div className="card-row">
-                <span className="card-row-label">Motor RPM</span>
-                <span className="card-row-value">
-                  {motorRpm != null ? Math.round(motorRpm).toLocaleString() : NO_VALUE}
-                </span>
-              </div>
-            </div>
-          </>
-        ) : (
-          <div className="card-row">
-            <span className="card-row-label">Hybrid ERS</span>
-            <span className="card-row-value">Hybrid: none</span>
-          </div>
-        )}
-      </div>
-    </div>
+        </div>
+      ) : (
+        <div className="card-row">
+          <span className="card-row-label">Hybrid ERS</span>
+          <span className="card-row-value">Hybrid: none</span>
+        </div>
+      )}
+    </Panel>
   );
 }

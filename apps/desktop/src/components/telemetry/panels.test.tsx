@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { act, render, screen } from '@testing-library/react';
 import type { JSX, ReactNode } from 'react';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -356,4 +358,114 @@ describe('Telemetry Panels (REDESIGN W1.5)', () => {
       expect(screen.getByTestId('panel-timing')).toHaveAttribute('data-dq', 'untrusted');
     });
   });
+
+  describe('W2.2 Design System Requirements', () => {
+    it('applies C12 delta word cues: FASTER when < -0.050s, SLOWER when > +0.050s', () => {
+      const { frames, send, renderWithStore } = createPanelHarness();
+      renderWithStore(<TimingPanel />);
+
+      send([rec.f64(ch.DELTA_PERSONAL_BEST, -0.120)]);
+      act(() => {
+        frames.runFrame();
+      });
+      expect(screen.getByText('▲ FASTER')).toBeInTheDocument();
+
+      send([rec.f64(ch.DELTA_PERSONAL_BEST, 0.180)]);
+      act(() => {
+        frames.runFrame();
+      });
+      expect(screen.getByText('▼ SLOWER')).toBeInTheDocument();
+    });
+
+    it('evaluates tyre thermal bands relative to optimal temperature (C11, A09)', () => {
+      const { frames, send, renderWithStore } = createPanelHarness();
+      renderWithStore(<TyrePanel />);
+
+      // Optimal temp FL = 85 °C
+      // Inner = 88 °C (diff +3 -> Optimal)
+      // Middle = 100 °C (diff +15 -> Warm)
+      // Outer = 55 °C (diff -30 -> Cold)
+      send([
+        rec.f32(ch.TYRE_OPTIMAL_TEMP_FL, 85),
+        rec.f32(ch.TYRE_TEMP_INNER_FL, 88),
+        rec.f32(ch.TYRE_TEMP_MIDDLE_FL, 100),
+        rec.f32(ch.TYRE_TEMP_OUTER_FL, 55),
+      ]);
+      act(() => {
+        frames.runFrame();
+      });
+
+      // Verify glyphs and modifiers in FL corner
+      const flCorner = screen.getByTestId('tyre-fl');
+      expect(flCorner).toBeInTheDocument();
+      // Optimal cell has ● glyph
+      expect(flCorner.querySelector('.tyre-tread-cell--optimal')).toBeInTheDocument();
+      // Warm cell has ◆ glyph
+      expect(flCorner.querySelector('.tyre-tread-cell--warm')).toBeInTheDocument();
+      // Cold cell has ▼ glyph
+      expect(flCorner.querySelector('.tyre-tread-cell--cold')).toBeInTheDocument();
+    });
+
+    it('shows neutral tyre cells and "Optimal window not reported" when optimal is missing (C11)', () => {
+      const { frames, send, renderWithStore } = createPanelHarness();
+      renderWithStore(<TyrePanel />);
+
+      // Only temps, no optimal
+      send([
+        rec.f32(ch.TYRE_TEMP_INNER_FL, 90),
+        rec.f32(ch.TYRE_TEMP_MIDDLE_FL, 90),
+        rec.f32(ch.TYRE_TEMP_OUTER_FL, 90),
+      ]);
+      act(() => {
+        frames.runFrame();
+      });
+
+      expect(screen.getByText('Optimal window not reported')).toBeInTheDocument();
+      const flCorner = screen.getByTestId('tyre-fl');
+      const cells = flCorner.querySelectorAll('.tyre-tread-cell--neutral');
+      expect(cells.length).toBe(3);
+    });
+
+    it('renders combined Virtual Energy laps and consumption in FuelPanel (EN10)', () => {
+      const { frames, send, renderWithStore } = createPanelHarness();
+      renderWithStore(<FuelPanel />);
+
+      send([
+        rec.f32(ch.FUEL, 40),
+        rec.f32(ch.FUEL_CAPACITY, 100),
+        rec.f32(ch.VIRTUAL_ENERGY, 0.65),
+        rec.f32(ch.VE_LAPS_REMAINING, 8.4),
+        rec.f32(ch.VE_PER_LAP, 0.078),
+      ]);
+      act(() => {
+        frames.runFrame();
+      });
+
+      expect(screen.getByText('8.4 laps')).toBeInTheDocument();
+      expect(screen.getByText('7.8%')).toBeInTheDocument();
+    });
+
+    it('has zero forbidden inline styles in panel components (only dynamic width allowed)', () => {
+      const panelFiles = [
+        'TimingPanel.tsx',
+        'FuelPanel.tsx',
+        'TyrePanel.tsx',
+        'BrakePanel.tsx',
+        'EnergyPanel.tsx',
+        'DriverInputsPanel.tsx',
+      ];
+
+      for (const file of panelFiles) {
+        const fullPath = resolve(__dirname, file);
+        const content = readFileSync(fullPath, 'utf8');
+        // Match style={{ ... }}
+        const matches = content.match(/style=\{\{([^}]+)\}\}/g) ?? [];
+        for (const match of matches) {
+          // Only width is allowed
+          expect(match).toMatch(/style=\{\{\s*width:\s*`\$\{/);
+        }
+      }
+    });
+  });
 });
+

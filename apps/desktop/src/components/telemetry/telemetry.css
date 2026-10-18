@@ -355,47 +355,64 @@
   margin: var(--space-1, 4px) 0;
 }
 
-/* ------------------------------------------------------------------ Delta Hero (B03) */
+/* ------------------------------------------------------------------ Delta Hero (B03, C12) */
 
 .delta-hero-container {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: var(--space-2, 8px) 0;
-  border-bottom: 1px solid var(--color-border, #272c34);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border-subtle);
+  margin-bottom: var(--space-2);
 }
 
 .delta-hero-label {
-  font-size: var(--font-size-xs, 11px);
-  letter-spacing: var(--letter-spacing-caps, 0.08em);
-  color: var(--color-text-muted, #a3acb8);
-  margin-bottom: var(--space-1, 4px);
+  font-family: var(--font-ui);
+  font-size: var(--type-caption-size);
+  letter-spacing: 0.08em;
+  color: var(--text-secondary);
+  margin-bottom: var(--space-1);
 }
 
 .delta-hero-value {
-  font-family: var(--font-mono, monospace);
-  font-size: var(--font-size-display, 26px);
-  font-weight: var(--font-weight-bold, 700);
-  line-height: 1;
+  font-family: var(--font-data);
+  font-size: var(--type-value-xl-size);
+  font-weight: 700;
+  line-height: var(--type-value-xl-lh);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .delta-chip {
   padding: 2px 8px;
-  border-radius: var(--radius-sm, 2px);
+  border-radius: var(--radius-1);
   display: inline-block;
 }
 
 .delta-ahead {
-  color: var(--delta-faster, #2fd27a);
+  color: var(--delta-faster);
 }
 
 .delta-behind {
-  color: var(--delta-slower, #ff4d4d);
+  color: var(--delta-slower);
 }
 
 .delta-neutral {
-  color: var(--color-text-muted, #a3acb8);
+  color: var(--text-secondary);
+}
+
+.delta-cue {
+  font-family: var(--font-ui);
+  font-size: var(--type-badge-size);
+  font-weight: 700;
+  margin-left: var(--space-1);
+}
+
+.timing-best-val {
+  color: var(--timing-best-personal) !important;
+  font-weight: 600;
 }
 
 /* ------------------------------------------------------------- Fuel & Sectors (B04) */
@@ -403,41 +420,406 @@
 .fuel-hero {
   display: flex;
   align-items: baseline;
-  gap: var(--space-2, 8px);
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.fuel-hero-val {
+  font-family: var(--font-data);
+  font-size: var(--type-value-lg-size);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.fuel-pct-label {
+  margin-left: auto;
+}
+
+.reserve-note {
+  display: block;
+  font-size: 10px;
+  color: var(--text-tertiary);
+}
+
+.ve-combined-section {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--border-subtle);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.margin-row {
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 6px;
+}
+
+.energy-section {
+  margin-bottom: var(--space-3);
+}
+
+.energy-header-row {
+  margin-bottom: var(--space-1);
+}
+
+.energy-fallback-row {
+  margin-bottom: var(--space-2);
+}
+
+.hybrid-section {
+  margin-top: var(--space-1);
+}
+
+
+.progress-track {
+  height: 8px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  overflow: hidden;
+  margin-bottom: var(--space-3);
+  position: relative;
+}
+
+.progress-fill {
+  height: 100%;
+  transition: width var(--motion-duration-fast) var(--motion-ease);
+}
+
+.progress-fill--safe {
+  background: var(--status-ok);
+}
+
+.progress-fill--warn {
+  background: var(--status-warn);
+}
+
+.progress-fill--crit {
+  background: var(--status-critical);
+}
+
+.progress-fill--neutral {
+  background: var(--interactive);
+}
+
+.progress-fill--ve {
+  background: var(--class-hypercar);
 }
 
 .sectors-bar {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1, 4px);
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+.sectors-grid {
+  display: flex;
+  gap: var(--space-2);
 }
 
 .meta-chip {
   display: flex;
   flex-direction: column;
   align-items: center;
-  background-color: var(--color-surface-raised, #181c22);
-  border: 1px solid var(--color-border, #272c34);
-  border-radius: var(--radius-sm, 2px);
+  background-color: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
   padding: 4px;
+  flex: 1;
 }
 
 .meta-chip-label {
-  font-size: var(--font-size-2xs, 10px);
-  color: var(--color-text-dim, #7a8492);
-  font-weight: var(--font-weight-bold, 700);
+  font-family: var(--font-ui);
+  font-size: 10px;
+  color: var(--text-tertiary);
+  font-weight: 700;
 }
 
 .meta-chip-value {
-  font-family: var(--font-mono, monospace);
-  font-size: var(--font-size-xs, 11px);
-  font-weight: var(--font-weight-semibold, 600);
-  color: var(--color-text, #e9ecf0);
+  font-family: var(--font-data);
+  font-size: var(--type-caption-size);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.meta-chip--best-overall .meta-chip-value {
+  color: var(--timing-best-overall);
+}
+
+.meta-chip--best-personal .meta-chip-value {
+  color: var(--timing-best-personal);
+}
+
+.meta-chip--slower .meta-chip-value {
+  color: var(--timing-slower);
 }
 
 .telemetry-grid-2x2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2, 8px);
+  gap: var(--space-2);
 }
+
+/* ------------------------------------------------------------- Tyre Corners (§2.6) */
+
+.tyres-grid-2x2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.tyre-corner-box {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  box-sizing: border-box;
+}
+
+.tyre-corner-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.tyre-corner-title {
+  font-family: var(--font-ui);
+  font-size: var(--type-panel-title-size);
+  font-weight: 700;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+
+.tyre-corner-pressure {
+  font-family: var(--font-data);
+  font-size: var(--type-value-sm-size);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tyre-tread-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  margin: var(--space-1) 0;
+  height: 40px;
+}
+
+.tyre-tread-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+  border-top: 2px solid transparent;
+  border-radius: var(--radius-1);
+  height: 40px;
+  box-sizing: border-box;
+  position: relative;
+}
+
+.tyre-tread-cell--optimal {
+  background: var(--p-green-950);
+  border-top-color: var(--thermal-optimal);
+}
+
+.tyre-tread-cell--warm,
+.tyre-tread-cell--low {
+  background: var(--p-amber-950);
+  border-top-color: var(--thermal-hot);
+}
+
+.tyre-tread-cell--over {
+  background: var(--p-red-950);
+  border-top-color: var(--thermal-over);
+}
+
+.tyre-tread-cell--cold {
+  background: var(--surface-inset);
+  border-top-color: var(--thermal-cold);
+}
+
+.tyre-tread-cell--neutral {
+  background: var(--surface-inset);
+  border-top-color: var(--border-control);
+}
+
+.tyre-slot-glyph {
+  font-size: 8px;
+  line-height: 1;
+  position: absolute;
+  top: 2px;
+  right: 2px;
+}
+
+.tyre-slot-val {
+  font-family: var(--font-data);
+  font-size: var(--type-value-sm-size);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.tyre-slot-label {
+  font-family: var(--font-ui);
+  font-size: 9px;
+  color: var(--text-tertiary);
+  font-weight: 600;
+}
+
+.tyre-footer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--font-data);
+  font-size: var(--type-caption-size);
+  color: var(--text-secondary);
+  padding-top: 2px;
+}
+
+/* ------------------------------------------------------------- Brake Corners (§2.6) */
+
+.brakes-grid-2x2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.brake-corner-box {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  padding: var(--space-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  box-sizing: border-box;
+}
+
+.brake-corner-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.brake-corner-title {
+  font-family: var(--font-ui);
+  font-size: var(--type-panel-title-size);
+  font-weight: 700;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+
+.brake-peak-label {
+  font-family: var(--font-data);
+  font-size: var(--type-caption-size);
+  color: var(--text-tertiary);
+}
+
+.brake-temp-value {
+  font-family: var(--font-data);
+  font-size: var(--type-value-lg-size);
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.brake-bias-row {
+  margin-top: var(--space-2);
+  padding-top: var(--space-1);
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--font-data);
+  font-size: var(--type-caption-size);
+  color: var(--text-secondary);
+}
+
+/* ------------------------------------------------------------- Driver Inputs (§2.6) */
+
+.inputs-cockpit-grid {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  margin: var(--space-1) 0 var(--space-3) 0;
+}
+
+.inputs-col {
+  text-align: center;
+}
+
+.inputs-gear-val {
+  font-family: var(--font-data);
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+}
+
+.inputs-gear-val--neutral {
+  color: var(--text-secondary);
+}
+
+.inputs-gear-val--reverse {
+  color: var(--status-warn);
+}
+
+.inputs-speed-val {
+  font-family: var(--font-data);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-primary);
+}
+
+.pedal-bar-container {
+  display: flex;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.pedal-col {
+  flex: 1;
+}
+
+.pedal-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+
+.pedal-label--throttle {
+  color: var(--input-throttle);
+}
+
+.pedal-label--brake {
+  color: var(--input-brake);
+}
+
+.pedal-bar-track {
+  height: 10px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  overflow: hidden;
+}
+
+.pedal-bar-fill--throttle {
+  height: 100%;
+  background: var(--input-throttle);
+  transition: width 0.05s linear;
+}
+
+.pedal-bar-fill--brake {
+  height: 100%;
+  background: var(--input-brake);
+  transition: width 0.05s linear;
+}
+
 

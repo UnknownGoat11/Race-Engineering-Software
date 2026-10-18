@@ -1,0 +1,293 @@
+/* Panel anatomy & status badges per REDESIGN §2.6 */
+
+.panel {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.panel-header {
+  height: 28px;
+  min-height: 28px;
+  background: var(--surface-panel-header);
+  padding: 0 var(--space-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-subtle);
+  box-sizing: border-box;
+}
+
+.panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.panel-dq-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  line-height: 1;
+}
+
+.panel-dq-glyph--live {
+  color: var(--dq-live);
+}
+
+.panel-dq-glyph--stale {
+  color: var(--dq-stale);
+}
+
+.panel-dq-glyph--degraded {
+  color: var(--dq-degraded);
+}
+
+.panel-dq-glyph--untrusted,
+.panel-dq-glyph--critical {
+  color: var(--status-critical);
+}
+
+.panel-dq-glyph--ended,
+.panel-dq-glyph--unavailable,
+.panel-dq-glyph--off {
+  color: var(--text-disabled);
+}
+
+.panel-title {
+  font-family: var(--font-ui);
+  font-size: var(--type-panel-title-size);
+  font-weight: 700;
+  line-height: var(--type-panel-title-lh);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.panel-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+
+.panel-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-family: var(--font-data);
+  font-size: var(--type-caption-size);
+  color: var(--text-tertiary);
+}
+
+.panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.panel-body {
+  padding: var(--space-2);
+  flex: 1 1 auto;
+  position: relative;
+  box-sizing: border-box;
+}
+
+.panel-footer {
+  height: 20px;
+  min-height: 20px;
+  padding: 0 var(--space-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-ui);
+  font-size: var(--type-caption-size);
+  color: var(--text-tertiary);
+  border-top: 1px solid var(--border-subtle);
+  box-sizing: border-box;
+}
+
+/* ---------------------------------------------------------------- Data Quality States (§2.2, §2.6) */
+
+.panel[data-dq='unavailable'] .panel-body {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.panel-unavailable-note {
+  font-family: var(--font-ui);
+  font-size: var(--type-caption-size);
+  color: var(--text-disabled);
+  text-align: center;
+  padding: var(--space-2);
+}
+
+.panel[data-dq='untrusted'] .panel-body {
+  opacity: 0.7;
+}
+
+.panel-untrusted-note {
+  background: var(--p-red-950);
+  border: 1px solid var(--status-critical);
+  color: var(--status-critical);
+  font-family: var(--font-ui);
+  font-size: var(--type-caption-size);
+  font-weight: 600;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-1);
+  margin-bottom: var(--space-2);
+  text-align: center;
+}
+
+.panel[data-dq='stale'] .card-row-value,
+.panel[data-dq='stale'] .delta-hero-value,
+.panel[data-dq='stale'] .brake-temp-value,
+.panel[data-dq='stale'] .tyre-slot-val {
+  color: var(--dq-stale-value) !important;
+}
+
+/* ---------------------------------------------------------------- Status Badge (§2.6) */
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 18px;
+  padding: 0 6px;
+  border-radius: var(--radius-1);
+  font-family: var(--font-data);
+  font-size: var(--type-badge-size);
+  font-weight: 700;
+  line-height: var(--type-badge-lh);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  box-sizing: border-box;
+}
+
+.status-badge-glyph {
+  font-size: 8px;
+  line-height: 1;
+}
+
+/* Status Levels */
+.status-badge-ok,
+.status-badge-live {
+  background: var(--status-ok-bg);
+  color: var(--status-ok);
+  border: 1px solid rgba(47, 210, 122, 0.4);
+}
+
+.status-badge-info,
+.status-badge-neutral {
+  background: var(--status-info-bg);
+  color: var(--status-info);
+  border: 1px solid rgba(214, 219, 225, 0.4);
+}
+
+.status-badge-warn,
+.status-badge-degraded {
+  background: var(--status-warn-bg);
+  color: var(--status-warn);
+  border: 1px solid rgba(245, 197, 66, 0.4);
+}
+
+.status-badge-critical,
+.status-badge-error {
+  background: var(--status-critical-bg);
+  color: var(--status-critical);
+  border: 1px solid rgba(255, 77, 77, 0.4);
+}
+
+.status-badge-off,
+.status-badge-unavailable {
+  background: var(--surface-panel);
+  color: var(--status-off);
+  border: 1px solid var(--border-control);
+}
+
+.status-badge-stale {
+  background: var(--dq-stale-bg);
+  color: var(--dq-stale);
+  border: 1px solid rgba(180, 156, 255, 0.4);
+}
+
+.status-badge-synthetic {
+  background: var(--dq-synthetic-bg);
+  color: var(--dq-synthetic);
+  border: 1px dashed var(--dq-synthetic);
+}
+
+.status-badge-untrusted {
+  background: var(--p-red-950);
+  color: var(--status-critical);
+  border: 1px solid var(--status-critical);
+}
+
+.status-badge-ended {
+  background: var(--surface-panel);
+  color: var(--dq-ended);
+  border: 1px solid var(--border-control);
+}
+
+/* Class Badges */
+.status-badge-hypercar {
+  background: rgba(34, 211, 238, 0.12);
+  color: var(--class-hypercar);
+  border: 1px solid rgba(34, 211, 238, 0.4);
+}
+
+.status-badge-lmp2 {
+  background: rgba(77, 124, 255, 0.12);
+  color: var(--class-lmp2);
+  border: 1px solid rgba(77, 124, 255, 0.4);
+}
+
+.status-badge-gt3 {
+  background: rgba(163, 230, 53, 0.12);
+  color: var(--class-gt3);
+  border: 1px solid rgba(163, 230, 53, 0.4);
+}
+
+.status-badge-gte {
+  background: transparent;
+  color: var(--class-gte);
+  border: 1px solid var(--class-gte);
+}
+
+.status-badge-unknown {
+  background: rgba(139, 149, 163, 0.12);
+  color: var(--class-unknown);
+  border: 1px solid rgba(139, 149, 163, 0.4);
+}
+
+/* Micro badges (e.g. est tag) */
+.badge-micro {
+  font-size: 9px;
+  min-height: 14px;
+  line-height: 12px;
+  padding: 1px 4px;
+  border-radius: var(--radius-1);
+  font-family: var(--font-data);
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.telemetry-est {
+  background: rgba(139, 149, 163, 0.15);
+  color: var(--text-tertiary);
+  border: 1px dotted var(--text-disabled);
+}
