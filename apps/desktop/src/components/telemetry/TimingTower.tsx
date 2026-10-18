@@ -1,4 +1,4 @@
-import { useState, useMemo, type JSX } from 'react';
+import { useState, useMemo, useRef, useCallback, useEffect, type JSX } from 'react';
 import type { CompetitorEntryDto, ScoringStateDto } from '../../hooks/useScoring';
 import { formatGap, formatLapGap, formatLapTime, NO_VALUE } from '../../lib/units';
 import { parseVehicleClass, vehicleClassCode, classColorVar } from '../../lib/classes';
@@ -6,12 +6,27 @@ import { useScopeDq, type ScopeDq } from './presentation';
 import '../../styles/common.css';
 import './tower.css';
 
+export type TowerVariant = 'full' | 'compact' | 'rail';
+
 export interface TimingTowerProps {
   readonly scoring: ScoringStateDto | null;
   readonly selectedSlotId?: number | null;
   readonly onSelectSlot?: (slotId: number) => void;
   /** Optional explicit data quality override; falls back to ScopeDqContext. */
   readonly dq?: ScopeDq;
+  /**
+   * Tower layout variant:
+   * - 'full': 1920 primary layout with all columns (P, CLS, #, DRIVER, INT, GAP, LAST, PIT).
+   * - 'compact': 1366 layout with Last & Pit count dropped (P, CLS, #, DRIVER, INT, GAP).
+   * - 'rail': < 1280 collapsed 56px rail (P, class stripe, #) that expands as an overlay on click/focus.
+   * Defaults to 'full' (with container-query responsive collapsing).
+   */
+  readonly variant?: TowerVariant;
+  /**
+   * Optional manual override for testing the own-row pinning mechanism.
+   * In normal operation, pinning is computed automatically from scroll position.
+   */
+  readonly pinnedOverride?: 'none' | 'top' | 'bottom';
 }
 
 /**
@@ -160,10 +175,27 @@ function computeGapsAndIntervals(
   return { gaps, intervals };
 }
 
-export function TimingTower({ scoring, selectedSlotId, onSelectSlot, dq }: TimingTowerProps): JSX.Element {
+export function TimingTower({
+  scoring,
+  selectedSlotId,
+  onSelectSlot,
+  dq,
+  variant = 'full',
+  pinnedOverride,
+}: TimingTowerProps): JSX.Element {
   const [selectedClass, setSelectedClass] = useState<string>('ALL');
+  const [isRailExpanded, setIsRailExpanded] = useState<boolean>(false);
+  const [scrollPinned, setScrollPinned] = useState<'none' | 'top' | 'bottom'>('none');
+  const effectivePinned = pinnedOverride ?? scrollPinned;
+
+  const tableContainerRef = useRef<HTMLDivElement>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+
   const contextDq = useScopeDq();
   const effectiveDq = dq ?? contextDq;
+
+  const isRail = variant === 'rail';
+  const showLastAndPit = variant !== 'compact';
 
   const classes = useMemo(() => {
     if (!scoring) return [];
@@ -190,6 +222,9 @@ export function TimingTower({ scoring, selectedSlotId, onSelectSlot, dq }: Timin
     return list;
   }, [scoring, selectedClass]);
 
+  const playerVehicle = useMemo(() => filteredVehicles.find((v) => v.is_player), [filteredVehicles]);
+  const playerIndex = useMemo(() => filteredVehicles.findIndex((v) => v.is_player), [filteredVehicles]);
+
   const isRace = useMemo(() => isRaceSession(scoring?.session.session_type), [scoring?.session.session_type]);
   const isFiltered = selectedClass !== 'ALL';
 
@@ -198,8 +233,94 @@ export function TimingTower({ scoring, selectedSlotId, onSelectSlot, dq }: Timin
     [filteredVehicles, isRace, isFiltered],
   );
 
+  const updatePinnedState = useCallback(() => {
+    const container = tableContainerRef.current;
+    if (!container || !playerVehicle || playerIndex === -1) {
+      setScrollPinned('none');
+      return;
+    }
+
+    const { scrollTop, clientHeight, scrollHeight } = container;
+    if (scrollHeight <= clientHeight + 4) {
+      setScrollPinned('none');
+      return;
+    }
+
+    // Try finding the driver row element in tbody
+    const driverRowEl = container.querySelector<HTMLTableRowElement>(
+      `tbody [data-testid="standings-row-${playerVehicle.slot_id}"]`,
+    );
+
+    if (driverRowEl) {
+      const rowTop = driverRowEl.offsetTop;
+      const rowHeight = driverRowEl.offsetHeight || 22;
+      if (rowTop + rowHeight <= scrollTop + 2) {
+        setScrollPinned('top');
+      } else if (rowTop >= scrollTop + clientHeight - 2) {
+        setScrollPinned('bottom');
+      } else {
+        setScrollPinned('none');
+      }
+    } else {
+      // Fallback estimate assuming 22px row height
+      const estRowTop = playerIndex * 22;
+      if (estRowTop + 22 <= scrollTop) {
+        setScrollPinned('top');
+      } else if (estRowTop >= scrollTop + clientHeight) {
+        setScrollPinned('bottom');
+      } else {
+        setScrollPinned('none');
+      }
+    }
+  }, [playerVehicle, playerIndex]);
+
+  // Recalculate pinned state on scroll and vehicle updates
+  useEffect(() => {
+    updatePinnedState();
+  }, [updatePinnedState]);
+
+  // Keyboard Escape listener for rail mode expanded overlay
+  useEffect(() => {
+    if (!isRailExpanded) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsRailExpanded(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isRailExpanded]);
+
+  // Click outside to collapse rail overlay
+  useEffect(() => {
+    if (!isRailExpanded) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (overlayRef.current && !overlayRef.current.contains(e.target as Node)) {
+        setIsRailExpanded(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isRailExpanded]);
+
+  const handleRowClick = (slotId: number) => {
+    onSelectSlot?.(slotId);
+    // If pinned row was clicked, scroll driver into view in tbody
+    const targetRow = tableContainerRef.current?.querySelector<HTMLTableRowElement>(
+      `tbody [data-testid="standings-row-${slotId}"]`,
+    );
+    if (typeof targetRow?.scrollIntoView === 'function') {
+      targetRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  };
+
   const dqClass = effectiveDq ? `standings-table--${effectiveDq}` : '';
 
+  // Empty / Not Connected State
   if (!scoring || scoring.vehicles.length === 0) {
     return (
       <div className="standings-tower" data-testid="timing-tower">
@@ -226,10 +347,187 @@ export function TimingTower({ scoring, selectedSlotId, onSelectSlot, dq }: Timin
     );
   }
 
+  // Helper to render table row cells for full / compact variants
+  const renderRowCells = (v: CompetitorEntryDto, idx: number, isPinned = false) => {
+    const isDriver = v.is_player;
+    const posDisplay = isFiltered ? (v.class_place ?? idx + 1) : (v.place ?? NO_VALUE);
+    const carNum = extractCarNumber(v.vehicle_name);
+    const classCode = vehicleClassCode(v.class_name);
+    const classColor = classColorVar(v.class_name);
+    const gapVal = gaps[idx] ?? NO_VALUE;
+    const intVal = intervals[idx] ?? NO_VALUE;
+
+    return (
+      <>
+        <td
+          className="standings-col-pos"
+          style={isDriver ? undefined : { borderLeft: `3px solid ${classColor}` }}
+        >
+          {posDisplay}
+        </td>
+        <td className="standings-col-class">
+          <span
+            className="class-chip"
+            data-class={parseVehicleClass(v.class_name)}
+            style={{ color: classColor, borderColor: classColor }}
+          >
+            {classCode}
+          </span>
+        </td>
+        <td className="standings-col-num" title={v.vehicle_name ?? undefined}>
+          {carNum}
+        </td>
+        <td className="standings-col-driver">
+          <div className="standings-driver-cell" title={v.driver ?? 'Unknown'}>
+            <span className="standings-driver-name">{v.driver ?? 'Unknown'}</span>
+            {isDriver && <span className="driver-pill" data-testid="driver-pill">DRIVER</span>}
+            {isPinned && <span className="pinned-badge" title="Pinned driver row">📌</span>}
+            {v.in_pits && <span className="pit-badge pit-badge-in">PIT</span>}
+            {v.in_garage_stall && <span className="pit-badge pit-badge-garage">GAR</span>}
+          </div>
+        </td>
+        <td className="standings-col-gap">
+          {intVal === 'LDR' ? <span className="gap-ldr">LDR</span> : intVal}
+        </td>
+        <td className="standings-col-gap">
+          {gapVal === 'LDR' ? <span className="gap-ldr">LDR</span> : gapVal}
+        </td>
+        {showLastAndPit && (
+          <>
+            <td className="standings-col-last standings-col-time">{formatLapTime(v.last_lap_s)}</td>
+            <td className="standings-col-pit">
+              {v.in_pits ? (
+                <span className="pit-badge pit-badge-in">PIT</span>
+              ) : v.in_garage_stall ? (
+                <span className="pit-badge pit-badge-garage">GAR</span>
+              ) : (
+                <span className="pit-stops-count">{v.num_pitstops ?? NO_VALUE}</span>
+              )}
+            </td>
+          </>
+        )}
+      </>
+    );
+  };
+
+  // Rail Mode: Collapsed 56px Rail
+  if (isRail && !isRailExpanded) {
+    return (
+      <div
+        className="standings-tower standings-tower--rail"
+        data-testid="timing-tower-rail"
+        onClick={() => {
+          setIsRailExpanded(true);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setIsRailExpanded(true);
+          }
+        }}
+        tabIndex={0}
+        role="region"
+        aria-label="Timing Tower (Rail Mode, press Enter or click to expand)"
+      >
+        <div className="standings-header standings-header--rail">
+          <button
+            type="button"
+            className="standings-rail-expand-btn"
+            aria-label="Expand standings tower"
+            title="Expand standings tower"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsRailExpanded(true);
+            }}
+          >
+            <span className="standings-rail-glyph">▶</span>
+            <span className="standings-rail-hdr-title">POS</span>
+          </button>
+        </div>
+
+        <div className="standings-table-container">
+          <table className={`standings-table standings-table--rail ${dqClass}`}>
+            <thead>
+              <tr>
+                <th className="standings-col-pos" title="Position">P</th>
+                <th className="standings-col-num" title="Car Number">#</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredVehicles.map((v, idx) => {
+                const isSelected = selectedSlotId === v.slot_id;
+                const isDriver = v.is_player;
+                const rowClass = [
+                  'standings-row',
+                  isDriver ? 'standings-row-driver' : '',
+                  isSelected ? 'standings-row-selected' : '',
+                  effectiveDq === 'stale' ? 'standings-row--stale' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ');
+                const posDisplay = isFiltered ? (v.class_place ?? idx + 1) : (v.place ?? NO_VALUE);
+                const carNum = extractCarNumber(v.vehicle_name);
+                const classColor = classColorVar(v.class_name);
+
+                return (
+                  <tr
+                    key={v.slot_id}
+                    className={rowClass}
+                    data-testid={`standings-row-${v.slot_id}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectSlot?.(v.slot_id);
+                    }}
+                  >
+                    <td
+                      className="standings-col-pos"
+                      style={isDriver ? undefined : { borderLeft: `3px solid ${classColor}` }}
+                    >
+                      {posDisplay}
+                    </td>
+                    <td className="standings-col-num" title={v.vehicle_name ?? undefined}>
+                      {carNum}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  // Full or Compact or Rail-Expanded Tower
+  const towerClassNames = [
+    'standings-tower',
+    variant === 'compact' ? 'standings-tower--compact' : '',
+    isRailExpanded ? 'standings-tower--rail-expanded' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
   return (
-    <div className="standings-tower" data-testid="timing-tower">
+    <div
+      className={towerClassNames}
+      data-testid={isRailExpanded ? 'timing-tower-rail-expanded' : 'timing-tower'}
+      ref={isRailExpanded ? overlayRef : undefined}
+    >
       <div className="standings-header">
         <div className="standings-title-row">
+          {isRailExpanded && (
+            <button
+              type="button"
+              className="standings-rail-collapse-btn"
+              onClick={() => {
+                setIsRailExpanded(false);
+              }}
+              aria-label="Collapse tower"
+              title="Collapse tower"
+            >
+              ◀
+            </button>
+          )}
           <span className="card-header-title">STANDINGS TOWER</span>
           {effectiveDq === 'stale' && (
             <span className="status-badge-stale" data-testid="tower-stale-badge">STALE</span>
@@ -245,7 +543,7 @@ export function TimingTower({ scoring, selectedSlotId, onSelectSlot, dq }: Timin
           <div className="standings-class-filter" role="group" aria-label="Class Filter">
             <button
               type="button"
-              className={`btn btn-xs ${selectedClass === 'ALL' ? 'btn-primary' : ''}`}
+              className={`standings-filter-chip btn btn-xs ${selectedClass === 'ALL' ? 'standings-filter-chip--active btn-primary' : ''}`}
               aria-pressed={selectedClass === 'ALL'}
               onClick={() => {
                 setSelectedClass('ALL');
@@ -253,24 +551,32 @@ export function TimingTower({ scoring, selectedSlotId, onSelectSlot, dq }: Timin
             >
               ALL
             </button>
-            {classes.map((cls) => (
-              <button
-                key={cls}
-                type="button"
-                className={`btn btn-xs ${selectedClass === cls ? 'btn-primary' : ''}`}
-                aria-pressed={selectedClass === cls}
-                onClick={() => {
-                  setSelectedClass(cls);
-                }}
-              >
-                {vehicleClassCode(cls)}
-              </button>
-            ))}
+            {classes.map((cls) => {
+              const code = vehicleClassCode(cls);
+              const isActive = selectedClass === cls;
+              return (
+                <button
+                  key={cls}
+                  type="button"
+                  className={`standings-filter-chip btn btn-xs ${isActive ? 'standings-filter-chip--active btn-primary' : ''}`}
+                  aria-pressed={isActive}
+                  onClick={() => {
+                    setSelectedClass(cls);
+                  }}
+                >
+                  {code}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
 
-      <div className="standings-table-container">
+      <div
+        className="standings-table-container"
+        ref={tableContainerRef}
+        onScroll={updatePinnedState}
+      >
         <table className={`standings-table ${dqClass}`}>
           <thead>
             <tr>
@@ -280,10 +586,30 @@ export function TimingTower({ scoring, selectedSlotId, onSelectSlot, dq }: Timin
               <th className="standings-col-driver">DRIVER</th>
               <th className="standings-col-gap" title="Interval to car ahead">INT</th>
               <th className="standings-col-gap" title="Gap to leader">GAP</th>
-              <th className="standings-col-last standings-col-time" title="Last lap time">LAST</th>
-              <th className="standings-col-pit" title="Pit status">PIT</th>
+              {showLastAndPit && (
+                <>
+                  <th className="standings-col-last standings-col-time" title="Last lap time">LAST</th>
+                  <th className="standings-col-pit" title="Pit status">PIT</th>
+                </>
+              )}
             </tr>
+
+            {/* Pinned driver row at top when scrolled below player */}
+            {effectivePinned === 'top' && playerVehicle && (
+              <tr
+                className="standings-row standings-row-driver standings-row-pinned standings-row-pinned--top"
+                data-testid="standings-pinned-driver-top"
+                data-pinned="top"
+                title="Driver (pinned to top) — Click to jump"
+                onClick={() => {
+                  handleRowClick(playerVehicle.slot_id);
+                }}
+              >
+                {renderRowCells(playerVehicle, playerIndex, true)}
+              </tr>
+            )}
           </thead>
+
           <tbody>
             {filteredVehicles.map((v, idx) => {
               const isSelected = selectedSlotId === v.slot_id;
@@ -297,74 +623,37 @@ export function TimingTower({ scoring, selectedSlotId, onSelectSlot, dq }: Timin
                 .filter(Boolean)
                 .join(' ');
 
-              const posDisplay = isFiltered ? (v.class_place ?? idx + 1) : (v.place ?? NO_VALUE);
-              const carNum = extractCarNumber(v.vehicle_name);
-              const classCode = vehicleClassCode(v.class_name);
-              const classColor = classColorVar(v.class_name);
-              const gapVal = gaps[idx] ?? NO_VALUE;
-              const intVal = intervals[idx] ?? NO_VALUE;
-
               return (
                 <tr
                   key={v.slot_id}
                   className={rowClass}
                   data-testid={`standings-row-${v.slot_id}`}
-                  onClick={() => onSelectSlot?.(v.slot_id)}
+                  onClick={() => {
+                    onSelectSlot?.(v.slot_id);
+                  }}
                 >
-                  <td
-                    className="standings-col-pos"
-                    style={{ borderLeft: `3px solid ${classColor}` }}
-                  >
-                    {posDisplay}
-                  </td>
-                  <td className="standings-col-class">
-                    <span
-                      className="class-chip"
-                      data-class={parseVehicleClass(v.class_name)}
-                      style={{ color: classColor, borderColor: classColor }}
-                    >
-                      {classCode}
-                    </span>
-                  </td>
-                  <td className="standings-col-num" title={v.vehicle_name ?? undefined}>
-                    {carNum}
-                  </td>
-                  <td className="standings-col-driver">
-                    <div className="standings-driver-cell" title={v.driver ?? 'Unknown'}>
-                      <span className="standings-driver-name">{v.driver ?? 'Unknown'}</span>
-                      {isDriver && <span className="driver-pill" data-testid="driver-pill">DRIVER</span>}
-                      {v.in_pits && <span className="pit-badge pit-badge-in">PIT</span>}
-                      {v.in_garage_stall && <span className="pit-badge pit-badge-garage">GAR</span>}
-                    </div>
-                  </td>
-                  <td className="standings-col-gap">
-                    {intVal === 'LDR' ? (
-                      <span className="gap-ldr">LDR</span>
-                    ) : (
-                      intVal
-                    )}
-                  </td>
-                  <td className="standings-col-gap">
-                    {gapVal === 'LDR' ? (
-                      <span className="gap-ldr">LDR</span>
-                    ) : (
-                      gapVal
-                    )}
-                  </td>
-                  <td className="standings-col-last standings-col-time">{formatLapTime(v.last_lap_s)}</td>
-                  <td className="standings-col-pit">
-                    {v.in_pits ? (
-                      <span className="pit-badge pit-badge-in">PIT</span>
-                    ) : v.in_garage_stall ? (
-                      <span className="pit-badge pit-badge-garage">GAR</span>
-                    ) : (
-                      <span className="pit-stops-count">{v.num_pitstops ?? NO_VALUE}</span>
-                    )}
-                  </td>
+                  {renderRowCells(v, idx, false)}
                 </tr>
               );
             })}
           </tbody>
+
+          {/* Pinned driver row at bottom when scrolled above player */}
+          {effectivePinned === 'bottom' && playerVehicle && (
+            <tfoot>
+              <tr
+                className="standings-row standings-row-driver standings-row-pinned standings-row-pinned--bottom"
+                data-testid="standings-pinned-driver-bottom"
+                data-pinned="bottom"
+                title="Driver (pinned to bottom) — Click to jump"
+                onClick={() => {
+                  handleRowClick(playerVehicle.slot_id);
+                }}
+              >
+                {renderRowCells(playerVehicle, playerIndex, true)}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>

@@ -1,58 +1,175 @@
 /*
  * Timing tower / standings (TimingTower). Owned by W1.6 / W3.3.
  * Pro pitwall: dark, dense, data-first.
+ * REDESIGN.md §3.2, §3.3, §4 W3.3.
  */
 
 /* Container */
 .standings-tower {
   display: flex;
   flex-direction: column;
-  background-color: var(--color-surface, #12151a);
-  border: 1px solid var(--color-border, #272c34);
-  border-radius: 4px;
+  background-color: var(--surface-panel, #0f1216);
+  border: 1px solid var(--border-subtle, #1e242b);
+  border-radius: var(--radius-1, 2px);
   overflow: hidden;
   height: 100%;
   min-height: 0;
   container-type: inline-size;
   container-name: standings;
+  position: relative;
+  box-sizing: border-box;
 }
 
+/* Rail Mode (< 1280 collapsed 56px rail per §3.3) */
+.standings-tower--rail {
+  width: 56px;
+  min-width: 56px;
+  max-width: 56px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.standings-tower--rail:focus-visible {
+  outline: 2px solid var(--border-focus, #ffd34d);
+  outline-offset: -2px;
+}
+
+.standings-tower--rail-expanded {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 320px;
+  z-index: 1000;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.75);
+  background-color: var(--surface-panel, #0f1216);
+  border: 1px solid var(--border-control, #5a6372);
+}
+
+/* Header (28px per §3.2 hdr 28: class seg chips) */
 .standings-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 10px;
-  background-color: var(--color-surface-raised, #181c23);
-  border-bottom: 1px solid var(--color-border, #272c34);
-  flex-wrap: wrap;
+  height: 28px;
+  min-height: 28px;
+  max-height: 28px;
+  padding: 0 8px;
+  background-color: var(--surface-panel-header, #13171c);
+  border-bottom: 1px solid var(--border-subtle, #1e242b);
   gap: 6px;
-  min-height: 32px;
+  flex-shrink: 0;
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.standings-header--rail {
+  padding: 0 4px;
+  justify-content: center;
 }
 
 .standings-title-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
 }
 
+.standings-title-row .card-header-title {
+  font-family: var(--font-ui, sans-serif);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary, #a9b2be);
+  text-transform: uppercase;
+}
+
+/* Rail toggle / expand / collapse */
+.standings-rail-expand-btn,
+.standings-rail-collapse-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary, #a9b2be);
+  font-family: var(--font-data, monospace);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 2px 4px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  border-radius: 2px;
+}
+
+.standings-rail-expand-btn:hover,
+.standings-rail-collapse-btn:hover {
+  color: var(--text-primary, #eef1f4);
+  background-color: var(--surface-hover, #181c23);
+}
+
+.standings-rail-glyph {
+  font-size: 8px;
+  color: var(--text-tertiary, #8b95a3);
+}
+
+.standings-rail-hdr-title {
+  letter-spacing: 0.06em;
+}
+
+/* Class filter segmented chips in header */
 .standings-class-filter {
   display: flex;
-  gap: 3px;
+  align-items: center;
+  gap: 2px;
+  background-color: var(--surface-inset, #07090b);
+  border-radius: 2px;
+  padding: 1px;
+  flex-shrink: 0;
+}
+
+.standings-filter-chip {
+  padding: 1px 5px !important;
+  font-size: 10px !important;
+  font-weight: 700 !important;
+  font-family: var(--font-data, monospace) !important;
+  background: transparent !important;
+  color: var(--text-secondary, #a9b2be) !important;
+  border: 1px solid transparent !important;
+  border-radius: 2px !important;
+  cursor: pointer;
+  line-height: 16px !important;
+  height: 18px !important;
+  min-height: 18px !important;
+  transition: all 0.1s ease;
+  box-sizing: border-box;
+}
+
+.standings-filter-chip:hover {
+  color: var(--text-primary, #eef1f4) !important;
+  background-color: var(--surface-hover, #181c23) !important;
+}
+
+.standings-filter-chip--active {
+  background-color: var(--surface-selected, #1e242b) !important;
+  color: var(--text-primary, #eef1f4) !important;
+  border-color: var(--border-control, #5a6372) !important;
 }
 
 .standings-empty {
   padding: 24px;
   text-align: center;
-  color: var(--color-text-dim, #8b95a3);
-  font-family: var(--font-mono, monospace);
-  font-size: var(--font-size-xs, 11px);
+  color: var(--text-tertiary, #8b95a3);
+  font-family: var(--font-data, monospace);
+  font-size: 11px;
 }
 
+/* Scroll Container */
 .standings-table-container {
   overflow-y: auto;
   overflow-x: auto;
   flex: 1;
   min-height: 0;
+  position: relative;
 }
 
 /* Standings Table */
@@ -60,29 +177,51 @@
   width: 100%;
   table-layout: fixed;
   border-collapse: collapse;
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  font-family: var(--font-data, monospace);
+}
+
+/* Sticky thead (24px col hdr per §3.2) */
+.standings-table thead {
+  position: sticky;
+  top: 0;
+  z-index: 5;
 }
 
 .standings-table th {
-  background-color: var(--color-surface-raised, #181c23);
-  color: var(--color-text-dim, #8b95a3);
+  background-color: var(--surface-panel-header, #13171c);
+  color: var(--text-secondary, #a9b2be);
   text-align: left;
-  padding: 3px 2px;
-  border-bottom: 1px solid var(--color-border, #272c34);
+  padding: 0 4px;
+  height: 24px;
+  line-height: 24px;
+  border-bottom: 1px solid var(--border-subtle, #1e242b);
+  font-family: var(--font-ui, sans-serif);
   font-weight: 700;
   font-size: 10px;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
   white-space: nowrap;
   user-select: none;
+  box-sizing: border-box;
 }
 
+/* Sticky tfoot for pinned bottom driver row */
+.standings-table tfoot {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+}
+
+/* Rows (22px at 1920 per §3.2) */
 .standings-table td {
-  padding: 2px 2px;
-  border-bottom: 1px solid var(--color-border, #272c34);
-  color: var(--color-text, #e6edf3);
+  padding: 0 4px;
+  height: 22px;
+  line-height: 22px;
+  border-bottom: 1px solid var(--border-subtle, #1e242b);
+  color: var(--text-primary, #eef1f4);
   vertical-align: middle;
   white-space: nowrap;
+  font-size: 11px;
+  box-sizing: border-box;
 }
 
 /* Row states */
@@ -92,11 +231,22 @@
 }
 
 .standings-row:hover {
-  background-color: rgba(255, 255, 255, 0.03);
+  background-color: var(--surface-hover, #181c23);
 }
 
+.standings-row-selected {
+  background-color: rgba(255, 255, 255, 0.07);
+  outline: 1px solid var(--border-control, #5a6372);
+}
+
+/* Driver car highlight per C2: --surface-selected + 2px white left rule + DRIVER chip */
 .standings-row-driver {
-  background-color: rgba(255, 255, 255, 0.05);
+  background-color: var(--surface-selected, #1e242b) !important;
+}
+
+.standings-row-driver td.standings-col-pos {
+  border-left: 2px solid var(--player-highlight, #ffffff) !important;
+  color: var(--player-highlight, #ffffff);
 }
 
 .standings-row-driver td.standings-col-driver {
@@ -104,36 +254,47 @@
   color: var(--player-highlight, #ffffff);
 }
 
-.standings-row-selected {
-  background-color: rgba(255, 255, 255, 0.09);
-  outline: 1px solid var(--color-border-strong, #475569);
+/* Own-row pinned styling (top / bottom) */
+.standings-row-pinned {
+  cursor: pointer;
+  background-color: var(--surface-selected, #1e242b) !important;
+}
+
+.standings-row-pinned--top td {
+  border-bottom: 2px solid var(--player-highlight, #ffffff) !important;
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.45);
+}
+
+.standings-row-pinned--bottom td {
+  border-top: 2px solid var(--player-highlight, #ffffff) !important;
+  box-shadow: 0 -3px 6px rgba(0, 0, 0, 0.45);
 }
 
 /* Columns */
 .standings-col-pos {
-  width: 18px;
+  width: 22px;
   text-align: center;
   font-weight: 700;
-  color: var(--color-text-dim, #8b95a3);
+  color: var(--text-secondary, #a9b2be);
 }
 
 .standings-col-class {
-  width: 24px;
+  width: 26px;
   text-align: center;
-  padding: 2px 1px !important;
+  padding: 1px !important;
 }
 
 .standings-col-num {
-  width: 18px;
+  width: 22px;
   text-align: right;
-  color: var(--color-text-dim, #8b95a3);
+  color: var(--text-secondary, #a9b2be);
   font-weight: 600;
 }
 
 .standings-col-driver {
   min-width: 0;
   text-align: left;
-  padding-left: 3px !important;
+  padding-left: 4px !important;
 }
 
 .standings-driver-cell {
@@ -150,22 +311,23 @@
   text-overflow: ellipsis;
   min-width: 0;
   flex: 1;
+  font-family: var(--font-ui, sans-serif);
 }
 
 .standings-col-gap {
-  width: 40px;
+  width: 44px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
 .standings-col-time {
-  width: 48px;
+  width: 50px;
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
 .standings-col-pit {
-  width: 20px;
+  width: 22px;
   text-align: center;
 }
 
@@ -195,6 +357,12 @@
   flex-shrink: 0;
 }
 
+.pinned-badge {
+  font-size: 9px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
 .pit-badge {
   font-size: 8px;
   font-weight: 700;
@@ -205,19 +373,19 @@
 }
 
 .pit-badge-in {
-  background-color: rgba(234, 179, 8, 0.15);
-  color: var(--color-warn, #eab308);
-  border: 1px solid var(--color-warn, #eab308);
+  background-color: var(--status-warn-bg, rgba(234, 179, 8, 0.15));
+  color: var(--status-warn, #f5c542);
+  border: 1px solid var(--status-warn, #f5c542);
 }
 
 .pit-badge-garage {
-  background-color: rgba(239, 68, 68, 0.15);
-  color: var(--color-error, #ff4d4d);
-  border: 1px solid var(--color-error, #ff4d4d);
+  background-color: var(--status-critical-bg, rgba(239, 68, 68, 0.15));
+  color: var(--status-critical, #ff4d4d);
+  border: 1px solid var(--status-critical, #ff4d4d);
 }
 
 .pit-stops-count {
-  color: var(--color-text-dim, #8b95a3);
+  color: var(--text-tertiary, #8b95a3);
   font-size: 10px;
 }
 
@@ -249,8 +417,8 @@
 .status-badge-stale {
   font-size: 9px;
   font-weight: 700;
-  color: var(--color-quality-stale, #a78bfa);
-  border: 1px solid var(--color-quality-stale, #a78bfa);
+  color: var(--dq-stale, #b49cff);
+  border: 1px solid var(--dq-stale, #b49cff);
   padding: 1px 4px;
   border-radius: 2px;
   line-height: 1;
@@ -259,8 +427,8 @@
 .status-badge-ended {
   font-size: 9px;
   font-weight: 700;
-  color: var(--color-text-dim, #8b95a3);
-  border: 1px solid var(--color-border, #272c34);
+  color: var(--text-tertiary, #8b95a3);
+  border: 1px solid var(--border-subtle, #1e242b);
   padding: 1px 4px;
   border-radius: 2px;
   line-height: 1;
@@ -269,22 +437,49 @@
 .status-badge-untrusted {
   font-size: 9px;
   font-weight: 700;
-  color: var(--color-error, #ff4d4d);
-  border: 1px solid var(--color-error, #ff4d4d);
+  color: var(--status-critical, #ff4d4d);
+  border: 1px solid var(--status-critical, #ff4d4d);
   padding: 1px 4px;
   border-radius: 2px;
   line-height: 1;
 }
 
-/* Narrow mode (current 290px left column): drop Last and Pit count per C8 */
-.standings-col-last,
-.standings-col-pit {
-  display: none;
+/* Compact variant (explicit or container-query < 350px, e.g. 1366 272px tower) */
+.standings-tower--compact .standings-col-last,
+.standings-tower--compact .standings-col-pit {
+  display: none !important;
 }
 
-@container standings (min-width: 380px) {
+.standings-tower--compact .standings-table td {
+  height: 20px;
+  line-height: 20px;
+  font-size: 10px;
+  padding: 0 2px;
+}
+
+@container standings (max-width: 349px) {
   .standings-col-last,
   .standings-col-pit {
-    display: table-cell;
+    display: none !important;
   }
+
+  .standings-table td {
+    height: 20px;
+    line-height: 20px;
+    font-size: 10px;
+    padding: 0 2px;
+  }
+
+  .standings-col-gap {
+    width: 42px;
+  }
+}
+
+/* Rail Table */
+.standings-table--rail .standings-col-pos {
+  width: 26px;
+}
+
+.standings-table--rail .standings-col-num {
+  width: 26px;
 }

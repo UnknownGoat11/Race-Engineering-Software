@@ -251,4 +251,203 @@ describe('TimingTower Component', () => {
     rerender(<TimingTower scoring={makeScoring([])} />);
     expect(screen.getByText('Awaiting live scoring data...')).toBeInTheDocument();
   });
+
+  describe('W3.3 Column sets per variant', () => {
+    it('renders all 8 columns in full variant (1920)', () => {
+      const v = makeVehicle({ slot_id: 1, last_lap_s: 98.5, num_pitstops: 2 });
+      render(<TimingTower scoring={makeScoring([v])} variant="full" />);
+
+      const headers = screen.getAllByRole('columnheader');
+      const headerTexts = headers.map((h) => h.textContent.trim());
+      expect(headerTexts).toEqual(['P', 'CLS', '#', 'DRIVER', 'INT', 'GAP', 'LAST', 'PIT']);
+
+      const row = screen.getByTestId('standings-row-1');
+      expect(row.querySelector('.standings-col-last')).toBeInTheDocument();
+      expect(row.querySelector('.standings-col-pit')).toBeInTheDocument();
+      expect(row.querySelector('.standings-col-last')?.textContent).toBe('1:38.500');
+      expect(row.querySelector('.standings-col-pit')?.textContent).toBe('2');
+    });
+
+    it('drops Last and Pit columns in compact variant (1366)', () => {
+      const v = makeVehicle({ slot_id: 1, last_lap_s: 98.5, num_pitstops: 2 });
+      render(<TimingTower scoring={makeScoring([v])} variant="compact" />);
+
+      const headers = screen.getAllByRole('columnheader');
+      const headerTexts = headers.map((h) => h.textContent.trim());
+      expect(headerTexts).toEqual(['P', 'CLS', '#', 'DRIVER', 'INT', 'GAP']);
+
+      const row = screen.getByTestId('standings-row-1');
+      expect(row.querySelector('.standings-col-last')).toBeNull();
+      expect(row.querySelector('.standings-col-pit')).toBeNull();
+    });
+
+    it('renders 56px rail mode with only P and # columns (rail)', () => {
+      const v1 = makeVehicle({ slot_id: 1, place: 1, vehicle_name: '#51 Ferrari' });
+      const v2 = makeVehicle({ slot_id: 2, place: 2, vehicle_name: '#83 Ferrari' });
+      render(<TimingTower scoring={makeScoring([v1, v2])} variant="rail" />);
+
+      expect(screen.getByTestId('timing-tower-rail')).toBeInTheDocument();
+      const headers = screen.getAllByRole('columnheader');
+      const headerTexts = headers.map((h) => h.textContent.trim());
+      expect(headerTexts).toEqual(['P', '#']);
+
+      const row = screen.getByTestId('standings-row-1');
+      const cells = row.querySelectorAll('td');
+      expect(cells).toHaveLength(2);
+      expect(cells[0]?.textContent).toBe('1');
+      expect(cells[1]?.textContent).toBe('51');
+    });
+
+    it('expands rail mode on click or Enter, and collapses on Escape or collapse button', () => {
+      const v = makeVehicle({ slot_id: 1, driver: 'A. Pier Guidi' });
+      render(<TimingTower scoring={makeScoring([v])} variant="rail" />);
+
+      // Initially in collapsed rail mode
+      expect(screen.getByTestId('timing-tower-rail')).toBeInTheDocument();
+      expect(screen.queryByTestId('timing-tower-rail-expanded')).toBeNull();
+
+      // Click rail to expand
+      fireEvent.click(screen.getByTestId('timing-tower-rail'));
+      expect(screen.getByTestId('timing-tower-rail-expanded')).toBeInTheDocument();
+      expect(screen.getByText('A. Pier Guidi')).toBeInTheDocument();
+
+      // Press Escape to collapse
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.getByTestId('timing-tower-rail')).toBeInTheDocument();
+      expect(screen.queryByTestId('timing-tower-rail-expanded')).toBeNull();
+
+      // Expand again using Enter key
+      fireEvent.keyDown(screen.getByTestId('timing-tower-rail'), { key: 'Enter' });
+      expect(screen.getByTestId('timing-tower-rail-expanded')).toBeInTheDocument();
+
+      // Collapse using collapse button
+      const collapseBtn = screen.getByRole('button', { name: 'Collapse tower' });
+      fireEvent.click(collapseBtn);
+      expect(screen.getByTestId('timing-tower-rail')).toBeInTheDocument();
+    });
+  });
+
+  describe('W3.3 Own-row pinning mechanism', () => {
+    it('pins driver row at the top when driver is scrolled above viewport (pinnedOverride="top")', () => {
+      const p1 = makeVehicle({ slot_id: 1, place: 1, driver: 'Leader' });
+      const player = makeVehicle({ slot_id: 2, place: 2, driver: 'P. Driver', is_player: true });
+      const onSelect = vi.fn();
+
+      render(
+        <TimingTower
+          scoring={makeScoring([p1, player])}
+          pinnedOverride="top"
+          onSelectSlot={onSelect}
+        />,
+      );
+
+      const pinnedRow = screen.getByTestId('standings-pinned-driver-top');
+      expect(pinnedRow).toBeInTheDocument();
+      expect(pinnedRow).toHaveAttribute('data-pinned', 'top');
+      expect(pinnedRow).toHaveClass('standings-row-pinned--top');
+      expect(pinnedRow.querySelector('.standings-driver-name')?.textContent).toBe('P. Driver');
+      expect(pinnedRow.querySelector('.driver-pill')).toHaveTextContent('DRIVER');
+
+      // Clicking pinned row triggers slot selection
+      fireEvent.click(pinnedRow);
+      expect(onSelect).toHaveBeenCalledWith(2);
+    });
+
+    it('pins driver row at the bottom when driver is scrolled below viewport (pinnedOverride="bottom")', () => {
+      const p1 = makeVehicle({ slot_id: 1, place: 1, driver: 'Leader' });
+      const player = makeVehicle({ slot_id: 2, place: 20, driver: 'P. Driver', is_player: true });
+
+      render(
+        <TimingTower
+          scoring={makeScoring([p1, player])}
+          pinnedOverride="bottom"
+        />,
+      );
+
+      const pinnedRow = screen.getByTestId('standings-pinned-driver-bottom');
+      expect(pinnedRow).toBeInTheDocument();
+      expect(pinnedRow).toHaveAttribute('data-pinned', 'bottom');
+      expect(pinnedRow).toHaveClass('standings-row-pinned--bottom');
+      expect(pinnedRow.querySelector('.standings-driver-name')?.textContent).toBe('P. Driver');
+    });
+
+    it('does not render pinned row when driver is within viewport (pinnedOverride="none")', () => {
+      const player = makeVehicle({ slot_id: 1, place: 1, driver: 'P. Driver', is_player: true });
+
+      render(
+        <TimingTower
+          scoring={makeScoring([player])}
+          pinnedOverride="none"
+        />,
+      );
+
+      expect(screen.queryByTestId('standings-pinned-driver-top')).toBeNull();
+      expect(screen.queryByTestId('standings-pinned-driver-bottom')).toBeNull();
+      // Regular row is still present in tbody
+      expect(screen.getByTestId('standings-row-1')).toBeInTheDocument();
+    });
+
+    it('computes pinning dynamically on scroll events', () => {
+      // Create a 20-car grid where player is at position 15
+      const vehicles = Array.from({ length: 20 }, (_, i) =>
+        makeVehicle({
+          slot_id: i + 1,
+          place: i + 1,
+          driver: `Driver ${i + 1}`,
+          is_player: i === 14, // P15
+        }),
+      );
+
+      const { container } = render(<TimingTower scoring={makeScoring(vehicles)} />);
+      const tableContainer = container.querySelector('.standings-table-container');
+      expect(tableContainer).not.toBeNull();
+
+      if (tableContainer) {
+        // Mock scrollHeight = 800, clientHeight = 200, scrollTop = 0 (player at P15 is below viewport)
+        Object.defineProperty(tableContainer, 'scrollHeight', { value: 800, configurable: true });
+        Object.defineProperty(tableContainer, 'clientHeight', { value: 200, configurable: true });
+        Object.defineProperty(tableContainer, 'scrollTop', { value: 0, configurable: true, writable: true });
+
+        const playerRow = screen.getByTestId('standings-row-15');
+        Object.defineProperty(playerRow, 'offsetTop', { value: 330, configurable: true, writable: true });
+        Object.defineProperty(playerRow, 'offsetHeight', { value: 22, configurable: true });
+
+        fireEvent.scroll(tableContainer);
+        expect(screen.getByTestId('standings-pinned-driver-bottom')).toBeInTheDocument();
+
+        // Scroll down so player is in view (scrollTop = 250, rowTop = 330 is within [250, 450])
+        tableContainer.scrollTop = 250;
+        fireEvent.scroll(tableContainer);
+        expect(screen.queryByTestId('standings-pinned-driver-bottom')).toBeNull();
+        expect(screen.queryByTestId('standings-pinned-driver-top')).toBeNull();
+
+        // Scroll further down so player is scrolled above viewport (scrollTop = 400)
+        tableContainer.scrollTop = 400;
+        fireEvent.scroll(tableContainer);
+        expect(screen.getByTestId('standings-pinned-driver-top')).toBeInTheDocument();
+      }
+    });
+  });
+
+  describe('W3.3 Class filter segmented chips', () => {
+    it('sets aria-pressed correctly on segmented filter buttons', () => {
+      const hy = makeVehicle({ slot_id: 1, class_name: 'Hypercar' });
+      const lmp = makeVehicle({ slot_id: 2, class_name: 'LMP2' });
+
+      render(<TimingTower scoring={makeScoring([hy, lmp])} />);
+
+      const allBtn = screen.getByRole('button', { name: 'ALL' });
+      const hyBtn = screen.getByRole('button', { name: 'HY' });
+      const p2Btn = screen.getByRole('button', { name: 'P2' });
+
+      expect(allBtn).toHaveAttribute('aria-pressed', 'true');
+      expect(hyBtn).toHaveAttribute('aria-pressed', 'false');
+      expect(p2Btn).toHaveAttribute('aria-pressed', 'false');
+
+      fireEvent.click(hyBtn);
+      expect(allBtn).toHaveAttribute('aria-pressed', 'false');
+      expect(hyBtn).toHaveAttribute('aria-pressed', 'true');
+      expect(p2Btn).toHaveAttribute('aria-pressed', 'false');
+    });
+  });
 });
