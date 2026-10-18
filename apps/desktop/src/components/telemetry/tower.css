@@ -1,173 +1,290 @@
 /*
  * Timing tower / standings (TimingTower). Owned by W1.6 / W3.3.
- * Moved verbatim from screens.css (REDESIGN W1.1).
+ * Pro pitwall: dark, dense, data-first.
  */
 
-
-/* Standings Table */
-.standings-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-}
-
-.standings-table th {
-  background-color: var(--color-surface-raised);
-  color: var(--color-text-dim);
-  text-align: left;
-  padding: 4px 6px;
-  border-bottom: 1px solid var(--color-border);
-  font-weight: 700;
-}
-
-.standings-table td {
-  padding: 4px 6px;
-  border-bottom: 1px solid var(--color-border);
-  color: var(--color-text);
-}
-
-.standings-row-driver {
-  background-color: var(--color-selected-bg);
-}
-
-.standings-row-driver td {
-  font-weight: 700;
-  color: var(--color-accent-strong);
-}
-
-/* Standings Tower & Details */
+/* Container */
 .standings-tower {
   display: flex;
   flex-direction: column;
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
+  background-color: var(--color-surface, #12151a);
+  border: 1px solid var(--color-border, #272c34);
   border-radius: 4px;
   overflow: hidden;
   height: 100%;
   min-height: 0;
+  container-type: inline-size;
+  container-name: standings;
 }
 
 .standings-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  background-color: var(--color-surface-raised);
-  border-bottom: 1px solid var(--color-border);
+  padding: 6px 10px;
+  background-color: var(--color-surface-raised, #181c23);
+  border-bottom: 1px solid var(--color-border, #272c34);
   flex-wrap: wrap;
+  gap: 6px;
+  min-height: 32px;
+}
+
+.standings-title-row {
+  display: flex;
+  align-items: center;
   gap: 6px;
 }
 
 .standings-class-filter {
   display: flex;
-  gap: 4px;
+  gap: 3px;
 }
 
 .standings-empty {
   padding: 24px;
   text-align: center;
+  color: var(--color-text-dim, #8b95a3);
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-size-xs, 11px);
 }
 
 .standings-table-container {
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: auto;
   flex: 1;
   min-height: 0;
 }
 
-.standings-col-pos,
-.standings-col-cpos {
-  width: 28px;
+/* Standings Table */
+.standings-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+}
+
+.standings-table th {
+  background-color: var(--color-surface-raised, #181c23);
+  color: var(--color-text-dim, #8b95a3);
+  text-align: left;
+  padding: 3px 2px;
+  border-bottom: 1px solid var(--color-border, #272c34);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.standings-table td {
+  padding: 2px 2px;
+  border-bottom: 1px solid var(--color-border, #272c34);
+  color: var(--color-text, #e6edf3);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+/* Row states */
+.standings-row {
+  cursor: pointer;
+  transition: background-color 0.1s ease;
+}
+
+.standings-row:hover {
+  background-color: rgba(255, 255, 255, 0.03);
+}
+
+.standings-row-driver {
+  background-color: rgba(255, 255, 255, 0.05);
+}
+
+.standings-row-driver td.standings-col-driver {
+  font-weight: 700;
+  color: var(--player-highlight, #ffffff);
+}
+
+.standings-row-selected {
+  background-color: rgba(255, 255, 255, 0.09);
+  outline: 1px solid var(--color-border-strong, #475569);
+}
+
+/* Columns */
+.standings-col-pos {
+  width: 18px;
   text-align: center;
   font-weight: 700;
+  color: var(--color-text-dim, #8b95a3);
+}
+
+.standings-col-class {
+  width: 24px;
+  text-align: center;
+  padding: 2px 1px !important;
+}
+
+.standings-col-num {
+  width: 18px;
+  text-align: right;
+  color: var(--color-text-dim, #8b95a3);
+  font-weight: 600;
 }
 
 .standings-col-driver {
-  max-width: 140px;
-  min-width: 90px;
-  overflow: hidden;
+  min-width: 0;
+  text-align: left;
+  padding-left: 3px !important;
+}
+
+.standings-driver-cell {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  width: 100%;
 }
 
 .standings-driver-name {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.standings-driver-name-text {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
   flex: 1;
 }
 
-.standings-sub-info {
-  font-size: 10px;
-  color: var(--color-text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.standings-col-gap {
+  width: 40px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
-.driver-pill {
-  background-color: var(--color-accent);
-  color: #000;
+.standings-col-time {
+  width: 48px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.standings-col-pit {
+  width: 20px;
+  text-align: center;
+}
+
+/* Badges & Chips */
+.class-chip {
+  display: inline-block;
   font-size: 9px;
   font-weight: 800;
   padding: 1px 3px;
   border-radius: 2px;
-}
-
-.standings-col-class {
-  width: 50px;
-}
-
-.class-badge {
-  font-size: 10px;
-  padding: 1px 4px;
-  border-radius: 2px;
-  font-weight: 600;
-  background-color: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
-}
-
-.standings-col-gap,
-.standings-col-time {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.standings-col-pit {
-  width: 32px;
+  line-height: 1;
   text-align: center;
+  background-color: rgba(0, 0, 0, 0.35);
+  border: 1px solid currentColor;
+  letter-spacing: 0.02em;
+}
+
+.driver-pill {
+  background-color: var(--player-highlight, #ffffff);
+  color: #0b0e14;
+  font-size: 8px;
+  font-weight: 800;
+  padding: 1px 3px;
+  border-radius: 2px;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  flex-shrink: 0;
 }
 
 .pit-badge {
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 700;
-  padding: 1px 4px;
+  padding: 1px 3px;
   border-radius: 2px;
+  line-height: 1;
+  flex-shrink: 0;
 }
 
 .pit-badge-in {
-  background-color: var(--color-warn-bg);
-  color: var(--color-warn);
-  border: 1px solid var(--color-warn);
+  background-color: rgba(234, 179, 8, 0.15);
+  color: var(--color-warn, #eab308);
+  border: 1px solid var(--color-warn, #eab308);
 }
 
 .pit-badge-garage {
-  background-color: var(--color-error-bg);
-  color: var(--color-error);
-  border: 1px solid var(--color-error);
+  background-color: rgba(239, 68, 68, 0.15);
+  color: var(--color-error, #ff4d4d);
+  border: 1px solid var(--color-error, #ff4d4d);
 }
 
 .pit-stops-count {
-  color: var(--color-text-dim);
-  font-size: 11px;
+  color: var(--color-text-dim, #8b95a3);
+  font-size: 10px;
+}
+
+.gap-ldr {
+  color: var(--text-tertiary, #8b95a3);
+}
+
+/* Scope DQ States */
+.standings-table--stale td {
+  color: var(--dq-stale-value, #8b95a3) !important;
+}
+
+.standings-table--stale .class-chip {
+  opacity: 0.4;
+}
+
+.standings-row--stale {
+  border-left-color: rgba(139, 149, 163, 0.4) !important;
+}
+
+.standings-table--ended {
+  opacity: 0.6;
+}
+
+.standings-table--untrusted {
+  opacity: 0.7;
+}
+
+.status-badge-stale {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--color-quality-stale, #a78bfa);
+  border: 1px solid var(--color-quality-stale, #a78bfa);
+  padding: 1px 4px;
+  border-radius: 2px;
+  line-height: 1;
+}
+
+.status-badge-ended {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--color-text-dim, #8b95a3);
+  border: 1px solid var(--color-border, #272c34);
+  padding: 1px 4px;
+  border-radius: 2px;
+  line-height: 1;
+}
+
+.status-badge-untrusted {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--color-error, #ff4d4d);
+  border: 1px solid var(--color-error, #ff4d4d);
+  padding: 1px 4px;
+  border-radius: 2px;
+  line-height: 1;
+}
+
+/* Narrow mode (current 290px left column): drop Last and Pit count per C8 */
+.standings-col-last,
+.standings-col-pit {
+  display: none;
+}
+
+@container standings (min-width: 380px) {
+  .standings-col-last,
+  .standings-col-pit {
+    display: table-cell;
+  }
 }
