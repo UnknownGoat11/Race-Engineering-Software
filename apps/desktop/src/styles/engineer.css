@@ -1,70 +1,632 @@
 /*
- * Engineer Mode pitwall layout (EngineerScreen). Owned by W1.3 / W3.2.
- * Moved verbatim from screens.css (REDESIGN W1.1).
+ * Engineer Mode Pitwall stylesheet (EngineerScreen, PitwallBar, StrategyStrip, StateBanner, EventsLog, RightColumnTabs).
+ * Owned by UI W3.2 per REDESIGN.md §3.2–§3.4 & §4 W3.2, EN05–EN12, LY01–LY04, C10, C15.
+ * Strictly tokenized, zero hardcoded hex/px styling in components.
  */
 
-
-/* Engineer Multicolumn Workspace */
-.engineer-workspace {
+/* -------------------------------------------------------------------------
+ * Layout & Workspace Grid (§3.2, §3.3, §3.4)
+ * ------------------------------------------------------------------------- */
+.pitwall {
   display: grid;
-  grid-template-columns: 290px minmax(360px, 1fr) 340px;
-  grid-template-rows: 1fr;
-  gap: 12px;
+  grid-template-rows: 36px 32px auto 1fr;
+  height: 100%;
   min-height: 0;
-  flex: 1;
-  width: 100%;
+  background-color: var(--surface-app);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
-.engineer-col {
+/* 1920x1080 4-column primary pitwall grid */
+.pitwall-grid {
+  display: grid;
+  grid-template-columns: 384px minmax(720px, 1fr) 280px 272px;
+  column-gap: 8px;
+  padding: 8px 12px 12px;
+  min-height: 0;
+  height: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.pitwall-tower-col {
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+}
+
+.pitwall-centre {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.pitwall-centre-top {
+  display: grid;
+  grid-template-columns: 584px 1fr;
+  column-gap: 8px;
+  height: 340px;
+  min-height: 340px;
+  flex-shrink: 0;
+}
+
+.pitwall-right-a {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.pitwall-right-b {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.pitwall-right-a > .panel,
+.pitwall-right-b > .panel,
+.tab-panel-content > .panel {
+  flex-shrink: 0;
+  min-height: min-content;
+  overflow: visible;
+}
+
+.pitwall .panel-header-left {
+  flex-shrink: 0;
+}
+
+.pitwall-map-body .trackmap-container {
+  min-height: 0;
+  border: none;
+}
+
+.pitwall-right-compact {
+  display: none;
+}
+
+/* 1366x768 3-column responsive pitwall grid (§3.3) */
+@media (max-width: 1799px) {
+  .pitwall {
+    grid-template-rows: 32px 28px auto 1fr;
+  }
+
+  .pitwall-grid {
+    grid-template-columns: 272px minmax(560px, 1fr) 300px;
+    column-gap: 6px;
+    padding: 6px 8px 8px;
+  }
+
+  .pitwall-centre {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-height: 0;
+    height: 100%;
+  }
+
+  .pitwall-centre-top {
+    display: flex;
+    flex-direction: column;
+    height: 240px;
+    min-height: 240px;
+    flex-shrink: 0;
+  }
+
+  .pitwall-centre-top .events-log-panel {
+    display: none; /* Events fold into +N chip on 1366 */
+  }
+
+  .pitwall-right-a,
+  .pitwall-right-b {
+    display: none;
+  }
+
+  .pitwall-right-compact {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    height: 100%;
+    overflow-y: auto;
+  }
+}
+
+/* 2560x1440 scaled grid (§3.4) */
+@media (min-width: 2400px) {
+  .pitwall {
+    grid-template-rows: 48px 43px auto 1fr;
+  }
+
+  .pitwall-grid {
+    grid-template-columns: 512px minmax(960px, 1fr) 373px 363px;
+    column-gap: 11px;
+    padding: 11px 16px 16px;
+  }
+
+  .pitwall-centre {
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+    min-height: 0;
+    height: 100%;
+  }
+
+  .pitwall-centre-top {
+    grid-template-columns: 780px 1fr;
+    column-gap: 11px;
+    height: 450px;
+    min-height: 450px;
+    flex-shrink: 0;
+  }
+
+  .pitwall-right-a,
+  .pitwall-right-b {
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+  }
+}
+
+.pitwall-right-b .panel-header-right .status-badge-off {
+  display: none;
+}
+
+/* -------------------------------------------------------------------------
+ * Pitwall Bar (36px, y0)
+ * ------------------------------------------------------------------------- */
+.pitwall-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  background-color: var(--surface-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  height: 100%;
+  min-height: 36px;
+  box-sizing: border-box;
+  font-size: var(--type-body-size);
+  gap: 12px;
+}
+
+@media (max-width: 1799px) {
+  .pitwall-bar {
+    min-height: 32px;
+    padding: 0 8px;
+    gap: 8px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .pitwall-bar {
+    min-height: 48px;
+    padding: 0 16px;
+  }
+}
+
+.pitwall-bar-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.pitwall-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pitwall-meta-item {
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: var(--type-label-size);
+}
+
+.pitwall-meta-driver {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.pitwall-sep {
+  color: var(--text-disabled);
+  font-size: 10px;
+}
+
+.pitwall-flag-pill {
+  animation: pulse-border 1.5s infinite ease-in-out;
+}
+
+.pitwall-network-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border-subtle);
+  font-size: var(--type-caption-size);
+}
+
+.pitwall-meta-sub {
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+.pitwall-rtt-value,
+.pitwall-age-value {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+}
+
+.pitwall-settings-btn {
+  font-size: 14px;
+  padding: 0 6px;
+}
+
+/* -------------------------------------------------------------------------
+ * Strategy Strip (32px, y36)
+ * ------------------------------------------------------------------------- */
+.strategy-strip {
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  background-color: var(--surface-app);
+  border-bottom: 1px solid var(--border-subtle);
+  height: 100%;
+  min-height: 32px;
+  box-sizing: border-box;
+  font-size: var(--type-label-size);
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  gap: 8px;
+}
+
+@media (max-width: 1799px) {
+  .strategy-strip {
+    min-height: 28px;
+    padding: 0 8px;
+    gap: 6px;
+  }
+}
+
+@media (min-width: 2400px) {
+  .strategy-strip {
+    min-height: 43px;
+    padding: 0 16px;
+  }
+}
+
+.strategy-item-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.strategy-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.strategy-label {
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.strategy-value {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.strategy-limit {
+  color: var(--status-warn);
+  font-weight: 700;
+  margin-left: 2px;
+}
+
+.strategy-sep {
+  color: var(--text-disabled);
+  font-size: 10px;
+}
+
+/* -------------------------------------------------------------------------
+ * State Banner (28px, y68)
+ * ------------------------------------------------------------------------- */
+.pitwall-state-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 12px;
+  min-height: 28px;
+  box-sizing: border-box;
+  font-size: var(--type-label-size);
+  gap: 8px;
+}
+
+.pitwall-state-banner-incompatible,
+.pitwall-state-banner-ended {
+  background-color: var(--status-critical-bg, #2e1214);
+  border-bottom: 1px solid var(--status-critical);
+}
+
+.pitwall-state-banner-away,
+.pitwall-state-banner-stale,
+.pitwall-state-banner-caution {
+  background-color: var(--status-warn-bg, #2e2412);
+  border-bottom: 1px solid var(--status-warn);
+}
+
+.state-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.state-banner-text {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.state-banner-action {
+  flex-shrink: 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Alert Strip (28px each, max 2 + N)
+ * ------------------------------------------------------------------------- */
+.pitwall-alert-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 28px;
+  box-sizing: border-box;
+}
+
+.alert-strip-items {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
   min-width: 0;
-  width: 100%;
 }
 
-.engineer-col-left {
-  grid-column: 1;
+.alert-strip-row {
+  display: flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 8px;
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
+  gap: 8px;
+  box-sizing: border-box;
 }
 
-.engineer-col-center {
-  grid-column: 2;
+.alert-strip-row-critical {
+  border-color: var(--status-critical);
+  background-color: var(--status-critical-bg, #2e1214);
 }
 
-.engineer-col-right {
-  grid-column: 3;
+.alert-strip-row-warning {
+  border-color: var(--status-warn);
+  background-color: var(--status-warn-bg, #2e2412);
 }
 
-@media (max-width: 1280px) {
-  .engineer-workspace {
-    grid-template-columns: 280px 1fr;
-    grid-template-rows: auto auto;
-  }
-  .engineer-col-left {
-    grid-column: 1;
-  }
-  .engineer-col-center {
-    grid-column: 2;
-  }
-  .engineer-col-right {
-    grid-column: 1 / -1;
+.alert-strip-badge {
+  flex-shrink: 0;
+}
+
+.alert-strip-message {
+  font-size: var(--type-label-size);
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.alert-dismiss-btn {
+  font-size: 11px;
+}
+
+.alert-overflow-badge {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+/* -------------------------------------------------------------------------
+ * Track Map & Events Log in Centre Top (340px)
+ * ------------------------------------------------------------------------- */
+.pitwall-map-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.events-log-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.events-log-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px 8px;
+}
+
+.events-log-empty {
+  font-size: var(--type-caption-size);
+  color: var(--text-tertiary);
+  padding: 16px 8px;
+  text-align: center;
+}
+
+.events-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.events-log-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: var(--radius-1, 2px);
+  background-color: var(--surface-hover);
+}
+
+.events-log-time {
+  font-family: var(--font-mono);
+  color: var(--text-tertiary);
+  font-size: 10px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.events-log-badge {
+  font-size: 9px;
+  padding: 1px 4px;
+  flex-shrink: 0;
+  line-height: 1.4;
+}
+
+.events-log-msg {
+  color: var(--text-secondary);
+  word-break: break-word;
+  line-height: 1.4;
+  flex: 1;
+  min-width: 0;
+}
+
+/* -------------------------------------------------------------------------
+ * Telemetry Graph Container
+ * ------------------------------------------------------------------------- */
+.pitwall-graph-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 1799px) {
+  .pitwall-graph-panel {
+    min-height: 0;
   }
 }
 
-@media (max-width: 850px) {
-  .engineer-workspace {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto auto auto;
-  }
-  .engineer-col-left,
-  .engineer-col-center,
-  .engineer-col-right {
-    grid-column: 1;
-  }
+/* -------------------------------------------------------------------------
+ * RightColumnTabs (Responsive < 1800px)
+ * ------------------------------------------------------------------------- */
+.right-column-tabs-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  height: 100%;
+  min-height: 0;
 }
 
-/* Centred Not-Connected State (EN01, C14, §3.2) */
+.pinned-mini-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  height: 24px;
+  min-height: 24px;
+  padding: 0 8px;
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
+  font-size: 11px;
+  box-sizing: border-box;
+}
+
+.mini-row-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mini-row-label {
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+.mini-row-value {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.mini-row-sep {
+  color: var(--text-disabled);
+  font-size: 10px;
+}
+
+.segmented-tablist {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  min-height: 28px;
+  background-color: var(--surface-panel);
+  padding: 2px 4px;
+  border-radius: var(--radius-1, 2px);
+  border: 1px solid var(--border-subtle);
+  box-sizing: border-box;
+}
+
+.segmented-tab-btn {
+  flex: 1;
+  text-align: center;
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.tab-panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* -------------------------------------------------------------------------
+ * Not-Connected Centred Panel (EN01, C14, §3.2)
+ * ------------------------------------------------------------------------- */
 .not-connected-container {
   display: flex;
   align-items: center;
@@ -73,6 +635,7 @@
   width: 100%;
   min-height: 480px;
   padding: 32px 16px;
+  box-sizing: border-box;
 }
 
 .not-connected-card {
@@ -84,7 +647,9 @@
   flex-direction: column;
   align-items: center;
   gap: 16px;
-  border: 1px solid var(--color-border);
+  border: 1px solid var(--border-subtle);
+  background-color: var(--surface-panel);
+  border-radius: var(--radius-2, 4px);
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
 }
 
@@ -99,98 +664,49 @@
   font-size: 13px;
   color: var(--text-secondary);
   margin: 0;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
-/* Pitwall State Banners (§2.7, T05, T06, T07, T08) */
-.pitwall-state-banner {
+.pitwall-card-header {
+  padding: 6px 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 12px;
-  min-height: 28px;
-  font-size: 12px;
-  font-weight: 600;
-  border-bottom: 1px solid var(--color-border);
-  width: 100%;
 }
 
-.pitwall-state-banner-incompatible {
-  background-color: rgba(239, 68, 68, 0.15);
-  color: var(--color-error);
-  border-left: 4px solid var(--color-error);
+.pitwall-map-body {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
 }
 
-.pitwall-state-banner-ended {
-  background-color: rgba(148, 163, 184, 0.1);
-  color: var(--text-secondary);
-  border-left: 4px solid var(--text-tertiary);
+.pitwall-graph-body {
+  flex: 1;
+  min-height: 260px;
+  padding: 8px;
 }
 
-.pitwall-state-banner-away {
-  background-color: rgba(245, 158, 11, 0.15);
-  color: var(--color-warn);
-  border-left: 4px solid var(--color-warn);
+.pitwall-graph-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.pitwall-state-banner-stale {
-  background-color: rgba(168, 85, 247, 0.15);
-  color: #c084fc;
-  border-left: 4px solid #c084fc;
-}
-
-.pitwall-state-banner-fcy {
-  background-color: rgba(245, 158, 11, 0.2);
-  color: var(--color-warn);
-  border-left: 4px solid var(--color-warn);
-}
-
-.state-banner-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  border-radius: 2px;
-  letter-spacing: 0.5px;
-  background-color: rgba(255, 255, 255, 0.1);
-}
-
-/* Right-column Tab buttons (B08: short non-wrapping labels) */
-.engineer-tabs-container {
+.pitwall-graph-header-actions {
   display: flex;
   gap: 4px;
-  width: 100%;
+  align-items: center;
 }
 
-.engineer-tab-btn {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 11px;
-  padding: 4px 6px;
+.pitwall-custom-badge {
+  font-size: 9px;
+  padding: 1px 5px;
 }
 
-/* Screen reader only utility class */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-/* Stale Alerts Banner styling (T07) */
-.alerts-container-stale {
-  opacity: 0.7;
-}
-
-.alert-item-stale {
-  border-color: var(--color-border);
+.pitwall-channel-select-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 

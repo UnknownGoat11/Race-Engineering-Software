@@ -1,6 +1,7 @@
 import { useState, type JSX } from 'react';
 import { ConfigIssueBanner } from '../components/ConfigIssueBanner';
 import { PanelErrorBoundary } from '../components/ErrorBoundary';
+import { useCoreStatus } from '../hooks/useCoreStatus';
 import { logout, type AppInfo, type ConfigSnapshot, type LoginStateDto, type Mode } from '../lib/ipc';
 import { COPY, environmentLabel, modeLabel } from '../lib/labels';
 import { DriverScreen } from './DriverScreen';
@@ -60,14 +61,19 @@ export function ShellScreen({
 
   const accountDisplayName =
     loginState?.account?.display_name ?? loginState?.account?.username ?? null;
+  const { status } = useCoreStatus();
+  const isEngineerConnected =
+    status?.engineer?.phase === 'monitoring' || status?.engineer?.phase === 'ended';
+  const hideShellHeader = mode === 'engineer' && page === 'pitwall' && isEngineerConnected;
 
   return (
     <div className="shell">
-      <header className="shell-header">
-        <span className="shell-title">LMU RACE ENGINEERING</span>
-        <span className="badge badge-mode" data-testid="header-mode">
-          {modeLabel(mode)}
-        </span>
+      {!hideShellHeader && (
+        <header className="shell-header">
+          <span className="shell-title">LMU RACE ENGINEERING</span>
+          <span className="badge badge-mode" data-testid="header-mode">
+            {modeLabel(mode)}
+          </span>
         <nav className="shell-nav" aria-label="Main">
           {pages.map((entry) => (
             <button
@@ -110,6 +116,7 @@ export function ShellScreen({
           </span>
         </div>
       </header>
+      )}
 
       <div className="shell-banner">{snapshot.issue !== null && <ConfigIssueBanner issue={snapshot.issue} />}</div>
 
@@ -124,7 +131,7 @@ export function ShellScreen({
           </PanelErrorBoundary>
         ) : (
           <PanelErrorBoundary name="Engineer Screen">
-            <EngineerScreen />
+            <EngineerScreen onOpenSettings={() => { setPage('settings'); }} />
           </PanelErrorBoundary>
         )}
       </main>

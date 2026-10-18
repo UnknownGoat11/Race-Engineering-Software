@@ -1,4 +1,4 @@
-import { type JSX } from 'react';
+import { useState, type JSX } from 'react';
 import type { AlertDto } from '../../lib/ipc';
 import { useScopeDq } from './presentation';
 
@@ -10,56 +10,48 @@ export interface AlertsBannerProps {
 
 export function AlertsBanner({ alerts, onDismiss, onClearAll }: AlertsBannerProps): JSX.Element | null {
   const scopeDq = useScopeDq();
+  const [expanded, setExpanded] = useState(false);
 
   // On ended session or when there are no alerts, don't show active alerts
   if (alerts.length === 0 || scopeDq === 'ended') return null;
 
   const isStale = scopeDq === 'stale';
+  const visibleAlerts = expanded ? alerts : alerts.slice(0, 2);
+  const overflowCount = alerts.length - 2;
 
   return (
     <div
-      className={`alerts-container ${isStale ? 'alerts-container-stale' : ''}`}
+      className={`pitwall-alert-strip ${isStale ? 'alert-strip-stale' : ''}`}
       data-testid="alerts-banner"
-      style={{ marginBottom: '12px' }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '6px' }}>
-        <span
-          className="card-row-label"
-          style={{ fontWeight: 600, color: isStale ? 'var(--text-tertiary)' : 'var(--color-warn)' }}
-        >
-          ACTIVE ALERTS ({alerts.length}){isStale ? ' · STALE' : ''}
-        </span>
-        {onClearAll && alerts.length > 1 && (
-          <button type="button" className="btn btn-xs" onClick={onClearAll}>
-            Clear All
-          </button>
-        )}
-      </div>
-      <div className="alerts-list">
-        {alerts.map((alert) => {
+      <div className="alert-strip-items">
+        {visibleAlerts.map((alert) => {
           const badgeClass =
             alert.level === 'critical'
-              ? 'status-badge-error'
+              ? 'badge-status-critical'
               : alert.level === 'warning'
-                ? 'status-badge-warn'
-                : 'status-badge-info';
+                ? 'badge-status-warn'
+                : 'badge-subtle';
+
+          const glyph =
+            alert.level === 'critical' ? '■' : alert.level === 'warning' ? '◆' : '●';
 
           return (
             <div
               key={alert.id}
-              className={`alert-item alert-item-${alert.level} ${isStale ? 'alert-item-stale' : ''}`}
+              className={`alert-strip-row alert-strip-row-${alert.level} ${isStale ? 'alert-row-stale' : ''}`}
               data-testid={`alert-${alert.id}`}
               role={alert.level === 'critical' ? 'alert' : 'status'}
             >
-              <span className={`status-badge ${badgeClass}`} style={{ textTransform: 'uppercase' }}>
-                {alert.level}
+              <span className={`badge ${badgeClass} alert-strip-badge`}>
+                {glyph} {alert.level.toUpperCase()}
               </span>
-              <span className="alert-message" style={{ flex: 1, fontSize: '13px' }}>
+              <span className="alert-strip-message">
                 <strong>{alert.name}:</strong> {alert.message}
               </span>
               <button
                 type="button"
-                className="btn btn-xs"
+                className="btn btn-xs alert-dismiss-btn"
                 onClick={() => {
                   onDismiss(alert.id);
                 }}
@@ -71,7 +63,29 @@ export function AlertsBanner({ alerts, onDismiss, onClearAll }: AlertsBannerProp
           );
         })}
       </div>
+
+      {overflowCount > 0 && (
+        <button
+          type="button"
+          className="btn btn-xs alert-overflow-badge"
+          onClick={() => {
+            setExpanded(!expanded);
+          }}
+          data-testid="alert-overflow-btn"
+        >
+          {expanded ? 'Show less' : `+${overflowCount} more`}
+        </button>
+      )}
+
+      {onClearAll && alerts.length > 1 && (
+        <button
+          type="button"
+          className="btn btn-xs alert-clear-all-btn"
+          onClick={onClearAll}
+        >
+          Clear all
+        </button>
+      )}
     </div>
   );
 }
-

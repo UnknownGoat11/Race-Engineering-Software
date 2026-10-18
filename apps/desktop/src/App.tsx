@@ -46,6 +46,29 @@ export function App(): JSX.Element {
     };
   }, [loadAttempt]);
 
+  useEffect(() => {
+    const userScale = state.kind === 'ready' ? state.snapshot.config.ui.scale : 1.0;
+
+    const applyScale = (): void => {
+      if (typeof window === 'undefined' || typeof document === 'undefined') return;
+      const width = window.innerWidth;
+      let baseScale = 1.0;
+      if (width >= 2400) {
+        baseScale = 1.333;
+      } else if (width <= 1440) {
+        baseScale = 0.923;
+      }
+      const effectiveScale = baseScale * userScale;
+      document.documentElement.style.setProperty('--ui-scale', effectiveScale.toFixed(4));
+    };
+
+    applyScale();
+    window.addEventListener('resize', applyScale);
+    return () => {
+      window.removeEventListener('resize', applyScale);
+    };
+  }, [state]);
+
   const changeMode = useCallback(
     async (mode: Mode): Promise<void> => {
       // Errors propagate to the calling screen, which shows them next to the control that failed.
