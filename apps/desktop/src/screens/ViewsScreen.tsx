@@ -43,7 +43,9 @@ export interface ViewsScreenProps {
 }
 
 export function ViewsScreen({ initialViewId = 'driving' }: ViewsScreenProps): JSX.Element {
-  const [activeViewId, setActiveViewId] = useState<ViewId>(initialViewId);
+  const queryParam = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const viewParam = (queryParam?.get('view') as ViewId | null) ?? initialViewId;
+  const [activeViewId, setActiveViewId] = useState<ViewId>(viewParam);
   const activeDef = getViewDefinition(activeViewId);
 
   // Navigate to previous or next view in the catalogue

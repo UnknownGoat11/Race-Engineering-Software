@@ -22,6 +22,7 @@ interface ShellScreenProps {
   readonly loginState?: LoginStateDto | null;
   readonly onLogout?: () => Promise<void> | void;
   readonly onRequireLogin?: () => void;
+  readonly initialPage?: ShellPage;
 }
 
 /** Minimal application shell: header (mode, version, environment, account), page navigation, content. */
@@ -33,11 +34,24 @@ export function ShellScreen({
   loginState,
   onLogout,
   onRequireLogin,
+  initialPage,
 }: ShellScreenProps): JSX.Element {
-  const defaultPage: ShellPage = 'lobby';
+  const queryParam = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const scenarioParam = queryParam?.get('scenario') ?? '';
+  const pageParam = queryParam?.get('page') as ShellPage | null;
+  const viewParam = queryParam?.get('view') as ViewId | null;
+
+  const defaultPage: ShellPage =
+    initialPage ??
+    pageParam ??
+    (scenarioParam.startsWith('driver-')
+      ? 'status'
+      : scenarioParam.startsWith('engineer-')
+        ? 'pitwall'
+        : 'lobby');
   const [page, setPage] = useState<ShellPage>(defaultPage);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [selectedViewId, setSelectedViewId] = useState<ViewId>('driving');
+  const [selectedViewId, setSelectedViewId] = useState<ViewId>(viewParam ?? 'driving');
 
   const pages: readonly { readonly id: ShellPage; readonly label: string }[] = [
     { id: 'lobby', label: 'Lobby' },
