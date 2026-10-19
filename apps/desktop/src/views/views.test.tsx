@@ -8,16 +8,22 @@ import { LapComparisonView } from './components/LapComparisonView';
 import { MulticarRadarCircleView } from './components/MulticarRadarCircleView';
 import { MinisectorTimingView } from './components/MinisectorTimingView';
 import { FieldSpreadChartView } from './components/FieldSpreadChartView';
+import { TractionCircleView } from './components/TractionCircleView';
+import { HypercarHybridView } from './components/HypercarHybridView';
+import { HypercarVetQuickWidget } from './components/HypercarVetQuickWidget';
+import { TyreDegradationView } from './components/TyreDegradationView';
+import { TyreDegQuickSummary } from './components/TyreDegQuickSummary';
 import { ViewsScreen } from '../screens/ViewsScreen';
 
 describe('V1.1 Engineering View Suite', () => {
-  it('contains all 27 views from the user catalogue across 4 categories', () => {
-    expect(ALL_VIEWS.length).toBe(27);
+  it('contains all 30 views in the V1.1 catalogue across 4 categories', () => {
+    expect(ALL_VIEWS.length).toBe(30);
 
-    // Verify presence of all key views from user's image
+    // Verify presence of all key views from user's image + V1.1 additions
     const titles = ALL_VIEWS.map((v) => v.title);
     expect(titles).toContain('Driver DNA');
     expect(titles).toContain('Driving');
+    expect(titles).toContain('Traction Circle (G-G)');
     expect(titles).toContain('Lap Comparison');
     expect(titles).toContain('Laptime Data');
     expect(titles).toContain('Multihistogram');
@@ -28,6 +34,8 @@ describe('V1.1 Engineering View Suite', () => {
     expect(titles).toContain('Statistics Table Graphs');
     expect(titles).toContain('Statistics: RED,BLUE & SES');
     expect(titles).toContain('Stints Data');
+    expect(titles).toContain('Tyre Deg & Flatspot Logger');
+    expect(titles).toContain('Hypercar VET & Hybrid');
     expect(titles).toContain('Telemetry');
     expect(titles).toContain('Time Trial Info');
     expect(titles).toContain('Workspace');
@@ -85,7 +93,7 @@ describe('V1.1 Engineering View Suite', () => {
 
   describe('searchViews', () => {
     it('returns all views when query is empty', () => {
-      expect(searchViews('').length).toBe(27);
+      expect(searchViews('').length).toBe(30);
     });
 
     it('filters correctly by title keyword', () => {
@@ -187,15 +195,16 @@ describe('V1.1 Engineering View Suite', () => {
 
       // Check pressure and wear numbers
       expect(screen.getByText('178.4 kPa')).toBeInTheDocument();
-      expect(screen.getByText('94.2%')).toBeInTheDocument();
+      expect(screen.getAllByText('94.2%').length).toBeGreaterThanOrEqual(1);
     });
   });
 
   describe('DrivingView Component', () => {
-    it('renders the complete cockpit HUD with vertical pedal gauges, gear, friction circle, and aids', () => {
+    it('renders the complete cockpit HUD with vertical pedal gauges, gear, friction circle, aids, and hypercar VET widget', () => {
       render(<DrivingView />);
       expect(screen.getByTestId('driving-view')).toBeInTheDocument();
       expect(screen.getByTestId('friction-circle')).toBeInTheDocument();
+      expect(screen.getByTestId('hypercar-vet-quick-widget')).toBeInTheDocument();
       expect(screen.getByText('ENGINE MAP: #1')).toBeInTheDocument();
       expect(screen.getByText('G-FORCE & FRICTION ENVELOPE')).toBeInTheDocument();
       expect(screen.getByText('DRIVER AIDS & SYSTEMS')).toBeInTheDocument();
@@ -244,6 +253,58 @@ describe('V1.1 Engineering View Suite', () => {
       render(<FieldSpreadChartView />);
       expect(screen.getByTestId('field-spread-view')).toBeInTheDocument();
       expect(screen.getByText(/Multi-Car Race Field Spread/)).toBeInTheDocument();
+    });
+  });
+
+  describe('TractionCircleView Component (V1.1)', () => {
+    it('renders the full G-G diagram with axes, limit envelope, combined load, and peak envelopes', () => {
+      render(<TractionCircleView />);
+      expect(screen.getByTestId('traction-circle-view')).toBeInTheDocument();
+      expect(screen.getByText('Traction Circle (G-G Diagram)')).toBeInTheDocument();
+      expect(screen.getByText('CURRENT CHASSIS LOAD')).toBeInTheDocument();
+      expect(screen.getByText('SESSION PEAK ENVELOPE')).toBeInTheDocument();
+      expect(screen.getByText('TRAIL-BRAKING & TECHNIQUE ANALYSIS')).toBeInTheDocument();
+      expect(screen.getByText('Friction Limit Utilization')).toBeInTheDocument();
+    });
+  });
+
+  describe('Hypercar Hybrid & Virtual Energy Tank (VET) Suite (V1.1)', () => {
+    it('renders HypercarVetQuickWidget with stint energy progress and delta pill', () => {
+      render(<HypercarVetQuickWidget />);
+      expect(screen.getByTestId('hypercar-vet-quick-widget')).toBeInTheDocument();
+      expect(screen.getByText('HYPERCAR VIRTUAL ENERGY (VET)')).toBeInTheDocument();
+      expect(screen.getByText('STINT ENERGY REMAINING')).toBeInTheDocument();
+      expect(screen.getByText('LAP ENERGY DELTA')).toBeInTheDocument();
+      expect(screen.getByText('MGU-K 190 KM/H GATE:')).toBeInTheDocument();
+    });
+
+    it('renders full HypercarHybridView with stint limiter comparison and deployment curve', () => {
+      render(<HypercarHybridView />);
+      expect(screen.getByTestId('hypercar-hybrid-view')).toBeInTheDocument();
+      expect(screen.getByText(/Hypercar Virtual Energy Tank/)).toBeInTheDocument();
+      expect(screen.getByText('STINT LIMITER & LONGEVITY ANALYSIS')).toBeInTheDocument();
+      expect(screen.getByText(/MGU-K ELECTRIC DEPLOYMENT VS SPEED/)).toBeInTheDocument();
+      expect(screen.getByText('BRAKING ZONE REGENERATION HARVEST')).toBeInTheDocument();
+      expect(screen.getByText('LIFT & COAST OPTIMIZATION ADVISOR')).toBeInTheDocument();
+    });
+  });
+
+  describe('Tyre Degradation & Flatspot Logger Suite (V1.1)', () => {
+    it('renders TyreDegQuickSummary with 4 wheels and flatspot alerts', () => {
+      render(<TyreDegQuickSummary />);
+      expect(screen.getByTestId('tyre-deg-quick-summary')).toBeInTheDocument();
+      expect(screen.getByText('TYRE DEGRADATION & FLATSPOT HEALTH')).toBeInTheDocument();
+      expect(screen.getByText('DEGRADATION RATE:')).toBeInTheDocument();
+      expect(screen.getByText('PROJECTED CLIFF:')).toBeInTheDocument();
+    });
+
+    it('renders full TyreDegradationView with wear curves, double-stint card, and lock-up log', () => {
+      render(<TyreDegradationView />);
+      expect(screen.getByTestId('tyre-degradation-view')).toBeInTheDocument();
+      expect(screen.getByText('Tyre Degradation Curves & Wheel Lock-Up Flatspot Logger')).toBeInTheDocument();
+      expect(screen.getByText('TYRE WEAR DEGRADATION VS STINT LAPS')).toBeInTheDocument();
+      expect(screen.getByText('DOUBLE-STINT VIABILITY ASSESSMENT')).toBeInTheDocument();
+      expect(screen.getByText('LOCK-UP & FLATSPOT EVENT LOG')).toBeInTheDocument();
     });
   });
 

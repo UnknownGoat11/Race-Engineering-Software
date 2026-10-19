@@ -25,6 +25,14 @@ export const ALL_VIEWS: readonly ViewDefinition[] = [
     badge: 'CORE',
   },
   {
+    id: 'traction-circle',
+    title: 'Traction Circle (G-G)',
+    category: 'performance',
+    description: 'Dynamic G-G friction ellipse diagram: lateral vs longitudinal G-force scatter, trail-braking grip utilization, and chassis limit envelope.',
+    glyph: '🎯',
+    badge: 'V1.1',
+  },
+  {
     id: 'lap-comparison',
     title: 'Lap Comparison',
     category: 'performance',
@@ -67,6 +75,14 @@ export const ALL_VIEWS: readonly ViewDefinition[] = [
     category: 'timing',
     description: 'Endurance stint ledger: laps completed per tyre set, degradation rates (%/lap), and stationary pit stop times.',
     glyph: '📋',
+  },
+  {
+    id: 'tyre-degradation',
+    title: 'Tyre Deg & Flatspot Logger',
+    category: 'timing',
+    description: 'Multi-lap tyre degradation wear curves, performance cliff predictor, double-stint viability, and chronological wheel lock-up flatspot event log.',
+    glyph: '🛞',
+    badge: 'V1.1',
   },
   {
     id: 'statistics-table',
@@ -190,6 +206,14 @@ export const ALL_VIEWS: readonly ViewDefinition[] = [
     category: 'engineering',
     description: 'MoTeC-style multi-pane synchronous telemetry viewer with cursor inspection, zoom, and channel selection.',
     glyph: '📡',
+  },
+  {
+    id: 'hypercar-hybrid',
+    title: 'Hypercar VET & Hybrid',
+    category: 'engineering',
+    description: 'WEC Hypercar Virtual Energy Tank (MJ/stint), MGU-K electric motor deploy curve, front-axle 190 km/h speed gate, and braking energy regen ledger.',
+    glyph: '⚡',
+    badge: 'HYPERCAR',
   },
   {
     id: 'raw-data',

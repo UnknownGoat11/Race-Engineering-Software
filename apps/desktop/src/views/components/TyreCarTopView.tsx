@@ -1,6 +1,7 @@
 import type { JSX } from 'react';
-import type { TyreSectionTemperatures } from '../types';
+import type { LockupEvent, TyreSectionTemperatures } from '../types';
 import { getBrakeDiscColor, getTyreTempColor } from '../tyreColors';
+import { TyreDegQuickSummary } from './TyreDegQuickSummary';
 
 export interface TyreCarTopViewProps {
   readonly wheels: {
@@ -9,10 +10,12 @@ export interface TyreCarTopViewProps {
     readonly rl: TyreSectionTemperatures;
     readonly rr: TyreSectionTemperatures;
   };
-  readonly engineWaterTempC?: number;
-  readonly engineOilTempC?: number;
-  readonly clutchRpm?: number;
-  readonly className?: string;
+  readonly engineWaterTempC?: number | undefined;
+  readonly engineOilTempC?: number | undefined;
+  readonly clutchRpm?: number | undefined;
+  readonly lockupEvents?: readonly LockupEvent[] | undefined;
+  readonly showQuickSummary?: boolean | undefined;
+  readonly className?: string | undefined;
 }
 
 interface SingleWheelProps {
@@ -33,6 +36,9 @@ function SingleWheelTopView({ position, label, data }: SingleWheelProps): JSX.El
       <div className="tyre-wheel-header">
         <span className="tyre-pos-badge">{label}</span>
         {data.lockupActive && <span className="tyre-lockup-pill">LOCKUP</span>}
+        {(data.flatspotPercent ?? 0) > 0 && (
+          <span className="tyre-flatspot-pill">⚠️ {data.flatspotPercent}% FLATSPOT</span>
+        )}
         {data.slipPercentage > 12 && <span className="tyre-slip-pill">SLIP</span>}
       </div>
 
@@ -121,6 +127,8 @@ export function TyreCarTopView({
   engineWaterTempC = 88,
   engineOilTempC = 96,
   clutchRpm = 0,
+  lockupEvents,
+  showQuickSummary = true,
   className = '',
 }: TyreCarTopViewProps): JSX.Element {
   return (
@@ -183,6 +191,12 @@ export function TyreCarTopView({
           <SingleWheelTopView position="RR" label="Rear Right" data={wheels.rr} />
         </div>
       </div>
+
+      {showQuickSummary && (
+        <div className="tyre-chassis-summary-strip">
+          <TyreDegQuickSummary wheels={wheels} lockupEvents={lockupEvents} compact />
+        </div>
+      )}
     </div>
   );
 }

@@ -20,6 +20,9 @@ import {
 } from '../views/components/StatisticsViews';
 import { RawDataInspectorView } from '../views/components/RawDataInspectorView';
 import { MinimalCockpitHudView } from '../views/components/MinimalCockpitHudView';
+import { TractionCircleView } from '../views/components/TractionCircleView';
+import { HypercarHybridView } from '../views/components/HypercarHybridView';
+import { TyreDegradationView } from '../views/components/TyreDegradationView';
 import {
   LaptimeDataView,
   RaceInfoView,
@@ -62,6 +65,8 @@ export function ViewsScreen({ initialViewId = 'driving' }: ViewsScreenProps): JS
         return <DriverDnaView />;
       case 'driving':
         return <DrivingView />;
+      case 'traction-circle':
+        return <TractionCircleView />;
       case 'lap-comparison':
         return <LapComparisonView />;
       case 'multicar-circle':
@@ -76,12 +81,16 @@ export function ViewsScreen({ initialViewId = 'driving' }: ViewsScreenProps): JS
         return <MultiplotterView />;
       case 'stints-data':
         return <StintsDataView />;
+      case 'tyre-degradation':
+        return <TyreDegradationView />;
       case 'statistics-table':
         return <StatisticsTableView />;
       case 'statistics-table-graphs':
         return <StatisticsTableGraphsView />;
       case 'statistics-red-blue':
         return <StatisticsRedBlueView />;
+      case 'hypercar-hybrid':
+        return <HypercarHybridView />;
       case 'raw-data':
         return <RawDataInspectorView />;
       case 'minimal-ui':

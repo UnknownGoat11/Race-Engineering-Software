@@ -1,6 +1,8 @@
 import type { JSX } from 'react';
 import type { VehicleDynamicsState } from '../types';
 import { TyreCarTopView } from './TyreCarTopView';
+import { HypercarVetQuickWidget, DEFAULT_HYPERCAR_VET } from './HypercarVetQuickWidget';
+import { DEFAULT_LOCKUP_EVENTS } from './TyreDegQuickSummary';
 
 export interface DrivingViewProps {
   readonly state?: VehicleDynamicsState;
@@ -91,6 +93,8 @@ const DEFAULT_STATE: VehicleDynamicsState = {
       lockupActive: false,
     },
   },
+  hypercarVet: DEFAULT_HYPERCAR_VET,
+  lockupEvents: DEFAULT_LOCKUP_EVENTS,
 };
 
 export function DrivingView({
@@ -201,6 +205,15 @@ export function DrivingView({
             </div>
           </div>
 
+          {/* Hypercar Virtual Energy Tank (VET) Quick Glance Widget */}
+          <div className="driving-hypercar-widget-wrap">
+            <HypercarVetQuickWidget
+              state={liveState.hypercarVet ?? DEFAULT_HYPERCAR_VET}
+              speedKmh={liveState.speedKmh}
+              compact
+            />
+          </div>
+
           {/* G-G Friction Circle (Radar Accelerometer) per Image 2 */}
           <div className="friction-circle-card" data-testid="friction-circle">
             <div className="friction-circle-header">
@@ -241,6 +254,7 @@ export function DrivingView({
             engineWaterTempC={liveState.engineWaterTempC}
             engineOilTempC={liveState.engineOilTempC}
             clutchRpm={liveState.clutchRpm}
+            lockupEvents={liveState.lockupEvents}
           />
         </div>
 
