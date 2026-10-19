@@ -30,7 +30,7 @@ vi.mock('../lib/ipc', async () => {
     getCoreStatus: vi.fn(),
     getAppInfo: vi.fn().mockResolvedValue({
       name: 'lmu-race-engineering',
-      version: '0.1.0',
+      version: '1.1.0',
       identifier: 'com.lmu.race-engineering',
       build_profile: 'debug',
       environment: 'development',

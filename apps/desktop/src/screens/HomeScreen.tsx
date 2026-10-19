@@ -7,7 +7,7 @@ import '../styles/home.css';
 export interface HomeScreenProps {
   readonly currentMode: Mode;
   readonly onChangeMode: (mode: Mode) => Promise<void>;
-  readonly onEnterSession: (targetPage?: 'status' | 'pitwall') => void;
+  readonly onEnterSession: (targetPage?: 'status' | 'pitwall' | 'views') => void;
   readonly displayName?: string | null;
 }
 
@@ -294,6 +294,28 @@ export function HomeScreen({
               data-testid="home-join-submit-btn"
             >
               {busy ? 'Connecting…' : 'Connect & Join Lobby'}
+            </button>
+          </div>
+
+          {/* Card 3: V1.1 View Suite */}
+          <div className="home-card" data-testid="home-card-views">
+            <div className="home-card-header">
+              <span className="home-card-badge">V1.1 New</span>
+              <h2 className="home-card-title">Explore Engineering Views</h2>
+              <p className="home-card-desc">
+                27 high-precision analysis views: Driver DNA, Cockpit Driving HUD with 3-part tyres, Polar Circle Radar, Minisectors, and Gap Charts.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              className="home-card-action-btn"
+              onClick={() => {
+                onEnterSession('views');
+              }}
+              data-testid="home-views-submit-btn"
+            >
+              Open V1.1 View Suite (27 Views) →
             </button>
           </div>
         </div>

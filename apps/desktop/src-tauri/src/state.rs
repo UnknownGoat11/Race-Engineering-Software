@@ -311,7 +311,7 @@ pub(crate) mod tests {
 
     pub(crate) fn identity() -> Identity {
         Identity {
-            version: "0.1.0".to_owned(),
+            version: "1.1.0".to_owned(),
             identifier: "com.lmurace.engineering".to_owned(),
             log_dir: None,
         }
@@ -413,7 +413,7 @@ pub(crate) mod tests {
         assert_eq!(info.environment, Environment::Staging);
         assert_eq!(info.build_profile, BuildProfile::current());
         assert_eq!(info.name, "LMU Race Engineering");
-        assert_eq!(info.version, "0.1.0");
+        assert_eq!(info.version, "1.1.0");
     }
 
     #[test]

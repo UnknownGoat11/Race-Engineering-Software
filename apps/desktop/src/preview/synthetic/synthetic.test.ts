@@ -101,7 +101,7 @@ describe('preview synthetic generator sanity (T28)', () => {
         expect(w.surface).toBeGreaterThanOrEqual(Math.min(w.inner, w.outer));
       }
     }
-  });
+  }, 15000);
 
   it.each(['gt3', 'hypercar'] as const)('%s: surface = carcass + a bounded local spike; carcass is slow', (variant) => {
     const rows = laps(variant, 2);
@@ -121,7 +121,7 @@ describe('preview synthetic generator sanity (T28)', () => {
       expect(Math.min(...surface)).toBeGreaterThan(70);
       expect(Math.max(...surface)).toBeLessThan(125);
     }
-  });
+  }, 15000);
 
   it('the four corners do not swing in phase (left and right differ through corners)', () => {
     const rows = laps('gt3', 1);

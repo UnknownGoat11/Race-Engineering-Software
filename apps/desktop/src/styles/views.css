@@ -1,0 +1,1309 @@
+/*
+ * V1.1 Engineering View Suite Stylesheet.
+ * High-contrast, dark-mode motorsport telemetry UI.
+ */
+
+.views-screen-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background-color: var(--surface-app, #090b0e);
+  color: var(--text-primary, #eef1f4);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* Control Bar at Top of Views Screen */
+.views-control-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background-color: var(--surface-panel-header, #10141a);
+  border-bottom: 1px solid var(--border-subtle, #1e2632);
+  gap: 16px;
+  flex-shrink: 0;
+  z-index: 100;
+}
+
+.views-control-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.views-nav-buttons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.views-index-text {
+  font-family: var(--font-data);
+  font-size: 11px;
+  color: var(--text-tertiary, #64748b);
+  padding: 0 4px;
+}
+
+.views-control-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.views-active-title {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #22d3ee;
+}
+
+/* Viewport for Active View */
+.views-viewport {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+/* -------------------------------------------------------------------------
+ * View Switcher Dropdown (Matching Image 1)
+ * ------------------------------------------------------------------------- */
+.view-switcher-dropdown {
+  position: relative;
+  display: inline-block;
+}
+
+.view-switcher-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  background: #141b24;
+  border: 1px solid #22d3ee;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 13px;
+  color: #ffffff;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.view-switcher-trigger:hover {
+  background: #1c2633;
+  box-shadow: 0 0 12px rgba(34, 211, 238, 0.25);
+}
+
+.view-trigger-glyph {
+  font-size: 14px;
+}
+
+.view-trigger-label {
+  font-family: var(--font-ui);
+  letter-spacing: 0.03em;
+}
+
+.view-trigger-badge {
+  background: #0284c7;
+  color: #ffffff;
+  font-size: 9px;
+  font-weight: 800;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.view-trigger-arrow {
+  font-size: 9px;
+  color: #94a3b8;
+  margin-left: 4px;
+}
+
+.view-dropdown-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 380px;
+  max-height: 520px;
+  background: #0d1218;
+  border: 1px solid #22d3ee;
+  border-radius: 6px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.9), 0 0 20px rgba(34, 211, 238, 0.15);
+  display: flex;
+  flex-direction: column;
+  z-index: 9999;
+  overflow: hidden;
+}
+
+.view-search-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #090c10;
+  border-bottom: 1px solid #1e2632;
+}
+
+.view-search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  outline: none;
+}
+
+.view-search-clear {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.view-category-pills {
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px;
+  background: #10141c;
+  border-bottom: 1px solid #1e2632;
+  overflow-x: auto;
+}
+
+.cat-pill {
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cat-pill:hover {
+  background: #1a222e;
+  color: #ffffff;
+}
+
+.cat-pill-active {
+  background: #0284c7;
+  color: #ffffff;
+  border-color: #38bdf8;
+}
+
+.view-items-list {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 380px;
+  display: flex;
+  flex-direction: column;
+}
+
+.view-item-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid #141a22;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+  width: 100%;
+}
+
+.view-item-row:hover {
+  background: #17202c;
+}
+
+.view-item-active {
+  background: #0e2938;
+  border-left: 3px solid #22d3ee;
+}
+
+.view-item-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.view-item-glyph {
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.view-item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.view-item-title {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.view-item-desc {
+  font-size: 10px;
+  color: #8b95a3;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 250px;
+}
+
+.view-item-check {
+  color: #22d3ee;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+/* -------------------------------------------------------------------------
+ * Driving View & Cockpit HUD (Image 2)
+ * ------------------------------------------------------------------------- */
+.driving-view-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 700px;
+  box-sizing: border-box;
+}
+
+.driving-cockpit-grid {
+  display: grid;
+  grid-template-columns: 280px 1fr 280px;
+  gap: 16px;
+  height: 100%;
+}
+
+@media (max-width: 1400px) {
+  .driving-cockpit-grid {
+    grid-template-columns: 240px 1fr 240px;
+    gap: 12px;
+  }
+}
+
+.driving-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Engine Map Banner */
+.engine-map-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #10141a;
+  border: 1px solid #1e293b;
+  border-left: 3px solid #f59e0b;
+  border-radius: 4px;
+}
+
+.engine-map-label {
+  font-family: var(--font-data);
+  font-size: 12px;
+  font-weight: 700;
+  color: #f59e0b;
+}
+
+/* Vertical Pedals & Input Bar */
+.pedals-vertical-row {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 8px;
+  height: 220px;
+  background: #0b0e13;
+  border: 1px solid #1e2632;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.pedal-gauge-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  width: 38px;
+  height: 100%;
+}
+
+.pedal-gauge-title {
+  font-family: var(--font-ui);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.1;
+  text-align: center;
+  color: #94a3b8;
+}
+
+.pedal-meter-bar-track {
+  width: 14px;
+  flex: 1;
+  background: #161e28;
+  border: 1px solid #283548;
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  margin: 4px 0;
+}
+
+.pedal-meter-fill {
+  width: 100%;
+  transition: height 0.05s ease-out;
+}
+
+.brake-fill {
+  background: #ef4444;
+  box-shadow: 0 0 8px #ef4444;
+}
+
+.throt-fill {
+  background: #22c55e;
+  box-shadow: 0 0 8px #22c55e;
+}
+
+.revs-fill {
+  background: #22d3ee;
+}
+
+.revs-shift-light {
+  background: #f59e0b;
+  animation: flash-revs 0.2s infinite;
+}
+
+@keyframes flash-revs {
+  0%, 100% { background: #f59e0b; }
+  50% { background: #ef4444; }
+}
+
+.torque-fill {
+  background: #38bdf8;
+}
+
+.pedal-gauge-value {
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+/* Gear Cluster */
+.pedal-gear-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.gear-digit-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 70px;
+  background: #141a24;
+  border: 2px solid #22d3ee;
+  border-radius: 6px;
+}
+
+.gear-digit {
+  font-family: var(--font-data);
+  font-size: 40px;
+  font-weight: 800;
+  line-height: 1;
+  color: #ffffff;
+}
+
+.speed-sub-label {
+  font-family: var(--font-data);
+  font-size: 10px;
+  color: #22d3ee;
+}
+
+.clutch-indicator {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 8px;
+  background: #141b24;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  font-size: 9px;
+  color: #94a3b8;
+}
+
+.clutch-active {
+  border-color: #f59e0b;
+  color: #f59e0b;
+}
+
+/* Energy Status Panel */
+.energy-status-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  background: #0b0e13;
+  border: 1px solid #1e2632;
+  border-radius: 6px;
+}
+
+.energy-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+}
+
+.energy-label {
+  color: #8b95a3;
+  font-weight: 600;
+}
+
+.energy-val {
+  font-family: var(--font-data);
+  font-weight: 700;
+}
+
+.regen-active {
+  color: #22c55e;
+}
+
+.deploy-active {
+  color: #38bdf8;
+}
+
+/* Friction Circle G-G Radar */
+.friction-circle-card {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  background: #0b0e13;
+  border: 1px solid #1e2632;
+  border-radius: 6px;
+  gap: 8px;
+}
+
+.friction-circle-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.friction-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: 0.05em;
+}
+
+.friction-vals {
+  font-family: var(--font-data);
+  font-size: 10px;
+  color: #22d3ee;
+}
+
+.friction-circle-viewport {
+  width: 100%;
+  aspect-ratio: 1;
+  background: #07090c;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+}
+
+.friction-circle-svg {
+  width: 100%;
+  height: 100%;
+}
+
+.steering-angle-strip {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  padding-top: 4px;
+  border-top: 1px solid #1e2632;
+}
+
+.steer-label {
+  color: #8b95a3;
+}
+
+.steer-value {
+  font-family: var(--font-data);
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+/* -------------------------------------------------------------------------
+ * 4-Wheel Top-View & 3-Part Tyres (User Specification)
+ * ------------------------------------------------------------------------- */
+.tyre-car-topview-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: #090c10;
+  border: 1px solid #1e2632;
+  border-radius: 6px;
+  padding: 14px;
+  box-sizing: border-box;
+  gap: 12px;
+}
+
+.tyre-legend-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #1a222e;
+}
+
+.tyre-legend-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  margin-right: 4px;
+}
+
+.tyre-legend-chip {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.chip-dark-blue { background: #1e3a8a; color: #bfdbfe; }
+.chip-light-blue { background: #0284c7; color: #e0f2fe; }
+.chip-green { background: #16a34a; color: #dcfce7; }
+.chip-light-orange { background: #f97316; color: #ffedd5; }
+.chip-orange { background: #ea580c; color: #fff7ed; }
+.chip-red { background: #dc2626; color: #fee2e2; }
+
+.tyre-chassis-grid {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  flex: 1;
+  gap: 16px;
+}
+
+.tyre-axle-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+/* Single Wheel Card */
+.tyre-wheel-card {
+  display: flex;
+  flex-direction: column;
+  background: #0d1218;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  padding: 8px 10px;
+  width: 160px;
+  box-sizing: border-box;
+  gap: 6px;
+}
+
+.tyre-wheel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.tyre-pos-badge {
+  font-size: 10px;
+  font-weight: 800;
+  color: #22d3ee;
+  letter-spacing: 0.05em;
+}
+
+.tyre-lockup-pill {
+  background: #dc2626;
+  color: #ffffff;
+  font-size: 8px;
+  font-weight: bold;
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.tyre-slip-pill {
+  background: #f59e0b;
+  color: #000000;
+  font-size: 8px;
+  font-weight: bold;
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.tyre-wheel-layout {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* The 3-Part Tyre Top-View Rectangle */
+.tyre-topview-rect {
+  display: flex;
+  width: 72px;
+  height: 96px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 2px solid #000000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+}
+
+.tyre-part {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid rgba(0, 0, 0, 0.4);
+  font-family: var(--font-data);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.tyre-part:last-child {
+  border-right: none;
+}
+
+.tyre-core-label {
+  font-size: 7px;
+  letter-spacing: 0.05em;
+  opacity: 0.8;
+}
+
+/* Brake Disc Graphic next to wheel */
+.brake-disc-widget {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 18px;
+  height: 80px;
+  background: #141b24;
+  border: 1px solid #334155;
+  border-radius: 2px;
+  position: relative;
+  overflow: hidden;
+  justify-content: flex-end;
+}
+
+.brake-disc-bar {
+  width: 100%;
+  transition: height 0.1s ease;
+}
+
+.brake-disc-num {
+  position: absolute;
+  top: 2px;
+  font-family: var(--font-data);
+  font-size: 8px;
+  color: #ffffff;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+/* Tyre Numeric Breakdown */
+.tyre-metrics-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 9px;
+  color: #94a3b8;
+}
+
+.tyre-metric-row {
+  display: flex;
+  justify-content: space-between;
+}
+
+.tyre-metric-val {
+  font-family: var(--font-data);
+  font-weight: 700;
+  color: #e2e8f0;
+}
+
+.num-cyan {
+  color: #22d3ee !important;
+}
+
+.tyre-wear-bar-track {
+  width: 100%;
+  height: 4px;
+  background: #1e293b;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+
+.tyre-wear-bar-fill {
+  height: 100%;
+}
+
+/* Chassis Center Engine Graphic */
+.tyre-center-row {
+  display: flex;
+  justify-content: center;
+}
+
+.engine-thermals-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 18px;
+  background: #101620;
+  border: 2px solid #0284c7;
+  border-radius: 8px;
+  box-shadow: 0 0 16px rgba(2, 132, 199, 0.15);
+  gap: 6px;
+}
+
+.engine-block-title {
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 800;
+  color: #38bdf8;
+  letter-spacing: 0.08em;
+}
+
+.engine-block-body {
+  display: flex;
+  gap: 16px;
+}
+
+.engine-sub-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 10px;
+}
+
+.engine-sub-label {
+  color: #94a3b8;
+}
+
+.engine-sub-val {
+  font-family: var(--font-data);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.temp-ok { color: #22c55e; }
+.temp-warn { color: #f59e0b; }
+
+/* Right Column: Driver Aids */
+.aids-status-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  background: #0b0e13;
+  border: 1px solid #1e2632;
+  border-radius: 6px;
+  gap: 12px;
+}
+
+.aids-panel-header {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #ffffff;
+  border-bottom: 1px solid #1e2632;
+  padding-bottom: 6px;
+}
+
+.aids-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.aids-item {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.aids-item-label {
+  color: #8b95a3;
+  font-weight: 600;
+}
+
+.aids-item-value {
+  font-family: var(--font-data);
+  font-weight: 700;
+}
+
+.brakebias-control-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: #10151c;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+}
+
+.brakebias-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+}
+
+.brakebias-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.brakebias-buttons button {
+  flex: 1;
+}
+
+.systems-toggle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.system-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.system-name {
+  color: #94a3b8;
+}
+
+.system-status-pill {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.pill-deploying { background: #0284c7; color: #ffffff; }
+.pill-ready { background: #16a34a; color: #ffffff; }
+.pill-active { background: #22c55e; color: #000000; }
+.pill-off { background: #475569; color: #cbd5e1; }
+
+.btn-limiter {
+  font-size: 9px;
+}
+
+.limiter-on {
+  background: #ef4444;
+  color: #ffffff;
+  animation: pulse-border 1s infinite;
+}
+
+.limiter-off {
+  background: #1e293b;
+  color: #94a3b8;
+}
+
+.session-events-ticker {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid #1e2632;
+}
+
+.session-events-title {
+  font-size: 9px;
+  font-weight: 800;
+  color: #f59e0b;
+}
+
+.session-events-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 9px;
+  color: #8b95a3;
+  font-family: var(--font-data);
+}
+
+/* -------------------------------------------------------------------------
+ * Driver DNA View Styles
+ * ------------------------------------------------------------------------- */
+.driver-dna-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dna-hero-card {
+  display: grid;
+  grid-template-columns: 1fr 240px;
+  gap: 24px;
+  padding: 20px;
+  background: #0d1218;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+}
+
+.dna-hero-left {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.dna-title {
+  font-size: 22px;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.dna-desc {
+  font-size: 12px;
+  color: #94a3b8;
+  line-height: 1.5;
+}
+
+.dna-rating-cluster {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 8px;
+}
+
+.dna-rating-number {
+  font-size: 48px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.dna-rating-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rating-label {
+  font-size: 11px;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.rating-sub {
+  font-size: 10px;
+  color: #22d3ee;
+}
+
+.dna-radar-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dna-radar-svg {
+  width: 220px;
+  height: 220px;
+}
+
+.dna-traits-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.dna-trait-card {
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  background: #0d1218;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  gap: 8px;
+}
+
+.trait-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.trait-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.trait-score {
+  font-family: var(--font-data);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.trait-progress-track {
+  width: 100%;
+  height: 6px;
+  background: #1e293b;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.trait-progress-fill {
+  height: 100%;
+  background: #22d3ee;
+}
+
+.trait-details {
+  font-size: 10px;
+  color: #8b95a3;
+  line-height: 1.3;
+}
+
+/* -------------------------------------------------------------------------
+ * Lap Comparison & Other Views
+ * ------------------------------------------------------------------------- */
+.lap-comparison-view,
+.multicar-circle-view,
+.minisector-timing-view,
+.field-spread-view,
+.multihistogram-view,
+.multiplotter-view,
+.stints-data-view,
+.statistics-table-view,
+.statistics-graphs-view,
+.statistics-red-blue-view,
+.raw-data-view,
+.minimal-hud-view,
+.view-card-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.comp-header-bar {
+  display: grid;
+  grid-template-columns: 1fr 200px 1fr;
+  gap: 16px;
+  align-items: center;
+}
+
+.comp-lap-card {
+  padding: 14px;
+  background: #0d1218;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.comp-ref-card { border-top: 3px solid #22d3ee; }
+.comp-cmp-card { border-top: 3px solid #a855f7; }
+
+.comp-role-tag {
+  font-size: 10px;
+  font-weight: 800;
+  color: #8b95a3;
+}
+
+.comp-lap-time {
+  font-family: var(--font-data);
+  font-size: 26px;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.comp-delta-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.comp-delta-label {
+  font-size: 10px;
+  font-weight: 800;
+  color: #94a3b8;
+}
+
+.comp-delta-value {
+  font-family: var(--font-data);
+  font-size: 28px;
+  font-weight: 900;
+}
+
+.delta-faster { color: #22c55e; }
+.delta-slower { color: #ef4444; }
+
+.comp-graph-card {
+  padding: 14px;
+  background: #0d1218;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.comp-svg-viewport {
+  width: 100%;
+  height: 120px;
+  background: #07090c;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+}
+
+.comp-delta-svg {
+  width: 100%;
+  height: 100%;
+}
+
+/* Polar Circle Map Layout */
+.circle-radar-workspace {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  gap: 16px;
+}
+
+.circle-svg-card {
+  padding: 14px;
+  background: #0d1218;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.polar-radar-svg {
+  width: 300px;
+  height: 300px;
+}
+
+.circle-traffic-table-card {
+  padding: 14px;
+  background: #0d1218;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+/* Minisector Timing Table */
+.minisector-table-wrapper {
+  overflow-x: auto;
+  background: #0d1218;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.minisector-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.minisector-table th,
+.minisector-table td {
+  padding: 6px 8px;
+  text-align: center;
+  border-bottom: 1px solid #1e293b;
+}
+
+.split-purple { color: #c084fc; background: rgba(192, 132, 252, 0.15); }
+.split-green { color: #22c55e; background: rgba(34, 197, 94, 0.15); }
+.split-yellow { color: #eab308; background: rgba(234, 179, 8, 0.15); }
+
+/* Minimal HUD */
+.minimal-hud-container {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 550px;
+  padding: 30px;
+  background: #040507;
+  border: 2px solid #22d3ee;
+  border-radius: 8px;
+}
+
+.minimal-flag-strip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.flag-green {
+  background: #16a34a;
+  color: #ffffff;
+  font-weight: 800;
+  padding: 6px 14px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.minimal-center-cluster {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+}
+
+.minimal-delta-number {
+  font-family: var(--font-data);
+  font-size: 72px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.minimal-gear {
+  font-family: var(--font-data);
+  font-size: 110px;
+  font-weight: 900;
+  color: #ffffff;
+  line-height: 1;
+}
+
+.minimal-speed {
+  font-family: var(--font-data);
+  font-size: 32px;
+  color: #22d3ee;
+}
+
+.minimal-bottom-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+
+.minimal-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  background: #0d1218;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+}

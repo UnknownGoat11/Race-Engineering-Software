@@ -1,7 +1,7 @@
 {
   "name": "lmu-race-engineering",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "LMU Race Engineering desktop application (Tauri 2 shell, React UI)",
   "type": "module",
   "packageManager": "pnpm@12.3.4",

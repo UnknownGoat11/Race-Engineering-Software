@@ -8,8 +8,11 @@ import { DriverScreen } from './DriverScreen';
 import { EngineerScreen } from './EngineerScreen';
 import { HomeScreen } from './HomeScreen';
 import { SettingsPage } from './SettingsPage';
+import { ViewsScreen } from './ViewsScreen';
+import { ViewSwitcherDropdown } from '../views/ViewSwitcherDropdown';
+import type { ViewId } from '../views/types';
 
-export type ShellPage = 'lobby' | 'status' | 'pitwall' | 'settings';
+export type ShellPage = 'lobby' | 'views' | 'status' | 'pitwall' | 'settings';
 
 interface ShellScreenProps {
   readonly info: AppInfo;
@@ -34,9 +37,11 @@ export function ShellScreen({
   const defaultPage: ShellPage = 'lobby';
   const [page, setPage] = useState<ShellPage>(defaultPage);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [selectedViewId, setSelectedViewId] = useState<ViewId>('driving');
 
   const pages: readonly { readonly id: ShellPage; readonly label: string }[] = [
     { id: 'lobby', label: 'Lobby' },
+    { id: 'views', label: 'Views (V1.1)' },
     {
       id: mode === 'driver' ? 'status' : 'pitwall',
       label: mode === 'driver' ? COPY.status : COPY.pitwall,
@@ -89,6 +94,13 @@ export function ShellScreen({
           ))}
         </nav>
         <div className="shell-meta">
+          <ViewSwitcherDropdown
+            activeViewId={selectedViewId}
+            onSelectView={(id) => {
+              setSelectedViewId(id);
+              setPage('views');
+            }}
+          />
           {accountDisplayName && (
             <span className="badge badge-subtle" data-testid="header-account">
               {accountDisplayName}
@@ -134,6 +146,10 @@ export function ShellScreen({
                 setPage(target ?? (mode === 'driver' ? 'status' : 'pitwall'));
               }}
             />
+          </PanelErrorBoundary>
+        ) : page === 'views' ? (
+          <PanelErrorBoundary name="Engineering Views (V1.1)">
+            <ViewsScreen initialViewId={selectedViewId} />
           </PanelErrorBoundary>
         ) : mode === 'driver' ? (
           <PanelErrorBoundary name="Driver Screen">

@@ -20,7 +20,7 @@ vi.mock('./lib/ipc', async (importOriginal) => {
 
 const INFO: AppInfo = {
   name: 'LMU Race Engineering',
-  version: '0.1.0',
+  version: '1.1.0',
   identifier: 'com.lmurace.engineering',
   build_profile: 'debug',
   environment: 'development',
@@ -112,7 +112,7 @@ describe('App', () => {
 
     expect(await screen.findByTestId('header-mode')).toHaveTextContent('DRIVER');
     expect(ipc.setMode).toHaveBeenCalledWith('driver');
-    expect(screen.getByTestId('header-version')).toHaveTextContent('v0.1.0');
+    expect(screen.getByTestId('header-version')).toHaveTextContent('v1.1.0');
     expect(screen.getByTestId('header-environment')).toHaveTextContent('DEVELOPMENT');
   });
 

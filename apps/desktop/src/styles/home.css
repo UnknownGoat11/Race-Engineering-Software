@@ -209,17 +209,11 @@
   filter: brightness(1.08);
 }
 
-/* Two Interactive Cards (Host vs Join) */
+/* Interactive Action Cards (Host, Join, Views) */
 .home-cards-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 24px;
-}
-
-@media (max-width: 860px) {
-  .home-cards-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 .home-card {
