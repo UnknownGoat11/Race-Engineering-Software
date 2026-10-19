@@ -41,6 +41,8 @@ import { ch, FrequencyClass } from '../generated/channels';
 import { LiveRingSource, type LiveRingSourceOptions } from '../graph/liveSource';
 import { TelemetryGraph } from '../graph/TelemetryGraph';
 import type { GraphSeries, XAxisMode } from '../graph/types';
+import { MotecImportBar } from '../motec/MotecImportBar';
+import { useMotecReferences } from '../motec/useMotecStore';
 import {
   getWorksheet,
   DEFAULT_WORKSHEET_ID,
@@ -148,6 +150,9 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
     }
     return list;
   }, [currentWorksheet]);
+
+  const activeChannelIds = useMemo(() => activeSeries.map((s) => s.channelId), [activeSeries]);
+  const motecReferences = useMotecReferences(activeChannelIds);
 
   const handleApplyCustomChannels = (selectedIds: readonly number[]) => {
     const newSeries: GraphSeries[] = selectedIds.map((channelId, index) => ({
@@ -687,11 +692,13 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                     </div>
                   </div>
                   <div className="pitwall-graph-body">
+                    <MotecImportBar />
                     <PanelErrorBoundary name="Telemetry Graph">
                       <TelemetryGraph
                         source={liveSource}
                         xMode={xMode}
                         worksheet={currentWorksheet}
+                        references={motecReferences}
                       />
                     </PanelErrorBoundary>
                   </div>

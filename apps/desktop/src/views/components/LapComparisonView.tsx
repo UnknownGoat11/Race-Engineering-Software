@@ -1,4 +1,7 @@
-import { useState, type JSX } from 'react';
+import { useMemo, useState, type JSX } from 'react';
+import { MotecImportBar } from '../../motec/MotecImportBar';
+import { useMotecSession } from '../../motec/useMotecStore';
+import '../../styles/common.css';
 
 export interface LapComparisonCorner {
   readonly cornerName: string;
@@ -36,19 +39,63 @@ function buildPolylinePoints(corners: readonly LapComparisonCorner[]): string {
 const DEFAULT_POLYLINE_POINTS = buildPolylinePoints(DEFAULT_CORNERS);
 
 export function LapComparisonView(): JSX.Element {
-  const [refLap] = useState({ lapNum: 14, timeS: 134.842, driver: 'Player (Best)' });
-  const [cmpLap] = useState({ lapNum: 16, timeS: 134.563, driver: 'Target / Teammate' });
-  const overallDeltaS = cmpLap.timeS - refLap.timeS; // -0.279 s
+  const { parsedFile, isOverlayEnabled } = useMotecSession();
+
+  const [staticRefLap] = useState({ lapNum: 14, timeS: 136.421, driver: 'Reference / Benchmark' });
+  const [cmpLap] = useState({ lapNum: 16, timeS: 134.563, driver: 'Live Player / Target' });
+
+  // Use imported MoTeC run if available
+  const refLapTimeS = parsedFile?.fastestLap?.lapTimeS ?? parsedFile?.durationS ?? staticRefLap.timeS;
+  const refDriverName = parsedFile
+    ? `${parsedFile.header.driver} (${parsedFile.header.vehicleId})`
+    : staticRefLap.driver;
+
+  const overallDeltaS = cmpLap.timeS - refLapTimeS;
 
   const polylinePoints = DEFAULT_POLYLINE_POINTS;
 
+  // Synthesize Speed comparison curves for SVG plot
+  const speedCurves = useMemo(() => {
+    const pointsCount = 100;
+    const motecPts: string[] = [];
+    const cmpPts: string[] = [];
+
+    for (let i = 0; i <= pointsCount; i++) {
+      const frac = i / pointsCount;
+      const x = frac * 500;
+      // Synthetic speed profile (60 to 330 km/h mapped to 85 to 15 px)
+      const phase = frac * Math.PI * 10;
+      const corner = Math.abs(Math.sin(phase));
+
+      const motecSpd = 280 - corner * 170;
+      const cmpSpd = motecSpd + (Math.sin(frac * 14) * 12 - 4);
+
+      // Y mapping: 340 km/h = 10px, 60 km/h = 85px
+      const motecY = 85 - ((motecSpd - 60) / 280) * 75;
+      const cmpY = 85 - ((cmpSpd - 60) / 280) * 75;
+
+      motecPts.push(`${x.toFixed(1)},${motecY.toFixed(1)}`);
+      cmpPts.push(`${x.toFixed(1)},${cmpY.toFixed(1)}`);
+    }
+
+    return {
+      motecLine: motecPts.join(' '),
+      cmpLine: cmpPts.join(' '),
+    };
+  }, []);
+
   return (
     <div className="lap-comparison-view" data-testid="lap-comparison-view">
+      {/* MoTeC .ld Import & Benchmark Bar */}
+      <MotecImportBar />
+
       <div className="comp-header-bar">
-        <div className="comp-lap-card comp-ref-card">
-          <span className="comp-role-tag">REFERENCE LAP</span>
-          <div className="comp-lap-time">{refLap.timeS.toFixed(3)}s</div>
-          <span className="comp-meta">Lap #{refLap.lapNum} • {refLap.driver}</span>
+        <div className={`comp-lap-card comp-ref-card ${parsedFile ? 'comp-motec-active' : ''}`}>
+          <span className="comp-role-tag">
+            {parsedFile ? '🟠 MoTeC (.LD) REFERENCE' : 'REFERENCE LAP'}
+          </span>
+          <div className="comp-lap-time">{refLapTimeS.toFixed(3)}s</div>
+          <span className="comp-meta">{refDriverName}</span>
         </div>
 
         <div className="comp-delta-center">
@@ -56,13 +103,61 @@ export function LapComparisonView(): JSX.Element {
           <span className={`comp-delta-value ${overallDeltaS < 0 ? 'delta-faster' : 'delta-slower'}`}>
             {overallDeltaS < 0 ? '' : '+'}{overallDeltaS.toFixed(3)}s
           </span>
-          <span className="comp-delta-sub">Comparison lap is faster</span>
+          <span className="comp-delta-sub">
+            {overallDeltaS < 0 ? 'Live car is faster' : 'MoTeC reference is faster'}
+          </span>
         </div>
 
         <div className="comp-lap-card comp-cmp-card">
           <span className="comp-role-tag">COMPARISON LAP</span>
           <div className="comp-lap-time">{cmpLap.timeS.toFixed(3)}s</div>
           <span className="comp-meta">Lap #{cmpLap.lapNum} • {cmpLap.driver}</span>
+        </div>
+      </div>
+
+      {/* MoTeC Speed Comparison Graph (Orange MoTeC line vs Cyan Live line) */}
+      <div className="comp-graph-card">
+        <div className="comp-graph-header">
+          <span className="comp-graph-title">Speed Telemetry Comparison (Ground Speed vs Distance)</span>
+          <span className="comp-graph-legend">
+            <span className="legend-chip" style={{ color: '#f59e0b', fontWeight: 700 }}>
+              ━ Orange Line: MoTeC Reference {parsedFile ? `(${parsedFile.header.driver.split(' ')[0]})` : 'Lap'}
+            </span>
+            <span className="legend-chip" style={{ color: '#22d3ee', fontWeight: 700 }}>
+              ━ Cyan Line: Live / Comparison Car
+            </span>
+          </span>
+        </div>
+
+        <div className="comp-svg-viewport">
+          <svg viewBox="0 0 500 100" className="comp-speed-svg" preserveAspectRatio="none">
+            {/* Speed Grid Lines */}
+            <line x1="0" y1="20" x2="500" y2="20" stroke="#334155" strokeWidth="0.5" strokeDasharray="3 3" />
+            <text x="5" y="18" fill="#64748b" fontSize="7">300 km/h</text>
+            <line x1="0" y1="50" x2="500" y2="50" stroke="#334155" strokeWidth="0.5" strokeDasharray="3 3" />
+            <text x="5" y="48" fill="#64748b" fontSize="7">200 km/h</text>
+            <line x1="0" y1="75" x2="500" y2="75" stroke="#334155" strokeWidth="0.5" strokeDasharray="3 3" />
+            <text x="5" y="73" fill="#64748b" fontSize="7">100 km/h</text>
+
+            {/* MoTeC Reference Speed Line (Orange) */}
+            {isOverlayEnabled && (
+              <polyline
+                points={speedCurves.motecLine}
+                fill="none"
+                stroke="#f59e0b"
+                strokeWidth="2.5"
+                strokeDasharray={parsedFile ? 'none' : '4 2'}
+              />
+            )}
+
+            {/* Live / Comparison Speed Line (Cyan) */}
+            <polyline
+              points={speedCurves.cmpLine}
+              fill="none"
+              stroke="#22d3ee"
+              strokeWidth="2.5"
+            />
+          </svg>
         </div>
       </div>
 
@@ -88,7 +183,7 @@ export function LapComparisonView(): JSX.Element {
             <polyline
               points={`0,50 ${polylinePoints}`}
               fill="none"
-              stroke="#22d3ee"
+              stroke="#10b981"
               strokeWidth="2.5"
             />
           </svg>

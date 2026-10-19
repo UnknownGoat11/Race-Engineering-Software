@@ -1,0 +1,138 @@
+/* MoTeC Telemetry Import & Comparison Styles */
+
+.motec-bar-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-left: 4px solid #f59e0b; /* MoTeC Orange */
+  border-radius: 6px;
+  padding: 8px 14px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: #e2e8f0;
+}
+
+.motec-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.motec-brand-badge {
+  background: #f59e0b;
+  color: #0b0f19;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+}
+
+.motec-session-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.motec-file-name {
+  font-weight: 600;
+  color: #f8fafc;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.motec-meta-pill {
+  background: #1e293b;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: #cbd5e1;
+  font-size: 11px;
+}
+
+.motec-meta-pill strong {
+  color: #38bdf8;
+}
+
+.motec-line-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(245, 158, 11, 0.12);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.motec-color-swatch {
+  display: inline-block;
+  width: 16px;
+  height: 4px;
+  background-color: #f59e0b;
+  border-radius: 2px;
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.8);
+}
+
+.motec-swatch-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #fbbf24;
+}
+
+.motec-prompt-text {
+  color: #94a3b8;
+  font-style: italic;
+}
+
+.motec-live-delta-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #020617;
+  border: 1px solid #334155;
+  padding: 3px 10px;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+}
+
+.motec-live-delta-pill .delta-label {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.motec-live-delta-pill .delta-val {
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.delta-faster {
+  color: #22c55e;
+}
+
+.delta-slower {
+  color: #ef4444;
+}
+
+.motec-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.motec-error-banner {
+  width: 100%;
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.1);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  margin-top: 4px;
+}
