@@ -19,24 +19,27 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 16px;
+  padding: 6px 12px;
   background-color: var(--surface-panel-header, #10141a);
   border-bottom: 1px solid var(--border-subtle, #1e2632);
-  gap: 16px;
+  gap: 8px;
   flex-shrink: 0;
   z-index: 100;
+  min-width: 0;
 }
 
 .views-control-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  min-width: 0;
+  flex-shrink: 0;
 }
 
 .views-nav-buttons {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .views-index-text {
@@ -49,24 +52,30 @@
 .views-control-right {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  min-width: 0;
+  flex-shrink: 1;
 }
 
 .views-active-title {
   font-family: var(--font-ui);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: #22d3ee;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* Viewport for Active View - zero page scrolling in analysis areas */
+/* Viewport for Active View - flex-contained with overflow-y scroll fallback */
 .views-viewport {
   flex: 1;
   min-height: 0;
   height: 100%;
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 8px 12px;
   box-sizing: border-box;
   display: flex;
@@ -289,7 +298,7 @@
 
 .driving-cockpit-grid {
   display: grid;
-  grid-template-columns: minmax(240px, 280px) 1fr minmax(280px, 330px);
+  grid-template-columns: minmax(210px, 260px) 1fr minmax(220px, 280px);
   gap: 10px;
   height: 100%;
   min-height: 0;
@@ -299,7 +308,7 @@
 
 @media (max-width: 1400px) {
   .driving-cockpit-grid {
-    grid-template-columns: minmax(220px, 250px) 1fr minmax(260px, 300px);
+    grid-template-columns: minmax(190px, 240px) 1fr minmax(200px, 250px);
     gap: 8px;
   }
 }
@@ -1158,7 +1167,6 @@
 .minisector-timing-view,
 .field-spread-view,
 .multihistogram-view,
-.multiplotter-view,
 .stints-data-view,
 .statistics-table-view,
 .statistics-graphs-view,
@@ -1168,6 +1176,134 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* ==========================================================================
+   V1.1 MULTIPLOTTER (CROSS-CORRELATION SCATTER)
+   ========================================================================== */
+.multiplotter-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.plotter-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.plotter-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plotter-title {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  font-weight: 800;
+  color: #f8fafc;
+  margin: 0;
+  letter-spacing: 0.04em;
+}
+
+.plotter-desc {
+  font-size: 11px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.plotter-mode-pills {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.plotter-viewport-card {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  gap: 12px;
+  flex: 1;
+  min-height: 280px;
+  background: #0b0f14;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  padding: 10px;
+  box-sizing: border-box;
+}
+
+@media (max-width: 1000px) {
+  .plotter-viewport-card {
+    grid-template-columns: 1fr;
+  }
+}
+
+.plotter-svg-wrapper {
+  width: 100%;
+  height: 100%;
+  min-height: 240px;
+  background: #07090c;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.plotter-svg {
+  width: 100%;
+  height: 100%;
+  min-height: 220px;
+  max-height: 440px;
+}
+
+.plotter-sidebar-stats {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.plot-stat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px;
+  background: #0d1218;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+}
+
+.plot-stat-card .stat-label {
+  font-size: 10px;
+  font-weight: 700;
+  color: #94a3b8;
+  text-transform: uppercase;
+}
+
+.plot-stat-card .stat-value {
+  font-family: var(--font-data);
+  font-size: 20px;
+  font-weight: 800;
+  color: #ffffff;
+}
+
+.plot-stat-card .stat-note {
+  font-size: 10px;
+  color: #64748b;
+  line-height: 1.3;
+}
+
+.text-amber {
+  color: #f59e0b !important;
 }
 
 .view-card-container {
@@ -1185,8 +1321,7 @@
   gap: 8px;
   height: 100%;
   min-height: 0;
-  max-height: 100%;
-  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .comp-header-bar {
@@ -1532,17 +1667,21 @@
   gap: 8px;
   height: 100%;
   min-height: 0;
-  max-height: 100%;
-  overflow: hidden;
+  box-sizing: border-box;
 }
 
 .traction-circle-content-grid {
   display: grid;
-  grid-template-columns: 1.05fr 0.95fr;
+  grid-template-columns: 1fr 1fr;
   gap: 12px;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .traction-circle-content-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .traction-circle-plot-card {
@@ -1554,15 +1693,14 @@
   border: 1px solid #1e293b;
   border-radius: 8px;
   padding: 10px;
-  height: 100%;
   min-height: 0;
   box-sizing: border-box;
 }
 
 .traction-circle-svg-wrapper {
   width: 100%;
-  max-width: 300px;
-  max-height: 300px;
+  max-width: 250px;
+  max-height: 250px;
   aspect-ratio: 1 / 1;
 }
 
@@ -1570,7 +1708,6 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  height: 100%;
   min-height: 0;
   overflow-y: auto;
 }

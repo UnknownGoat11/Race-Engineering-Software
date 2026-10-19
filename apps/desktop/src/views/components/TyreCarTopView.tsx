@@ -1,7 +1,6 @@
 import type { JSX } from 'react';
 import type { LockupEvent, TyreSectionTemperatures } from '../types';
 import { getBrakeDiscColor, getTyreTempColor } from '../tyreColors';
-import { TyreDegQuickSummary } from './TyreDegQuickSummary';
 
 export interface TyreCarTopViewProps {
   readonly wheels: {
@@ -119,8 +118,6 @@ export function TyreCarTopView({
   engineWaterTempC = 88,
   engineOilTempC = 96,
   clutchRpm = 0,
-  lockupEvents,
-  showQuickSummary = true,
   className = '',
 }: TyreCarTopViewProps): JSX.Element {
   return (
@@ -183,12 +180,6 @@ export function TyreCarTopView({
           <SingleWheelTopView position="RR" label="Rear Right" data={wheels.rr} />
         </div>
       </div>
-
-      {showQuickSummary && (
-        <div className="tyre-chassis-summary-strip">
-          <TyreDegQuickSummary wheels={wheels} lockupEvents={lockupEvents} compact />
-        </div>
-      )}
     </div>
   );
 }

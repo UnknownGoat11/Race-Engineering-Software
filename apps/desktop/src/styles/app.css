@@ -237,10 +237,12 @@ code {
 .shell-header {
   display: flex;
   align-items: center;
-  gap: var(--space-4);
-  padding: 0 var(--space-4);
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
   background: var(--surface-panel);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .shell-title {
@@ -248,12 +250,14 @@ code {
   font-weight: 700;
   letter-spacing: 0.1em;
   white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .shell-nav {
   display: flex;
   gap: var(--space-1);
-  margin-left: var(--space-4);
+  margin-left: var(--space-3);
+  flex-shrink: 0;
 }
 
 .shell-nav .btn {
@@ -276,10 +280,12 @@ code {
 .shell-meta {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   margin-left: auto;
   font-size: var(--type-caption-size);
   color: var(--text-secondary);
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* Badges: min-height + padding (A10: never fixed height) */

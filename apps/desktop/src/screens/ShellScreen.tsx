@@ -9,7 +9,6 @@ import { EngineerScreen } from './EngineerScreen';
 import { HomeScreen } from './HomeScreen';
 import { SettingsPage } from './SettingsPage';
 import { ViewsScreen } from './ViewsScreen';
-import { ViewSwitcherDropdown } from '../views/ViewSwitcherDropdown';
 import type { ViewId } from '../views/types';
 
 export type ShellPage = 'lobby' | 'views' | 'status' | 'pitwall' | 'settings';
@@ -51,7 +50,7 @@ export function ShellScreen({
         : 'lobby');
   const [page, setPage] = useState<ShellPage>(defaultPage);
   const [loggingOut, setLoggingOut] = useState(false);
-  const [selectedViewId, setSelectedViewId] = useState<ViewId>(viewParam ?? 'driving');
+  const [selectedViewId] = useState<ViewId>(viewParam ?? 'driving');
 
   const pages: readonly { readonly id: ShellPage; readonly label: string }[] = [
     { id: 'lobby', label: 'Lobby' },
@@ -108,13 +107,6 @@ export function ShellScreen({
           ))}
         </nav>
         <div className="shell-meta">
-          <ViewSwitcherDropdown
-            activeViewId={selectedViewId}
-            onSelectView={(id) => {
-              setSelectedViewId(id);
-              setPage('views');
-            }}
-          />
           {accountDisplayName && (
             <span className="badge badge-subtle" data-testid="header-account">
               {accountDisplayName}

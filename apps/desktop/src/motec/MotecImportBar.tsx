@@ -95,7 +95,7 @@ export function MotecImportBar({
           </div>
         ) : (
           <div className="motec-prompt-text">
-            <span>No MoTeC (.ld) file loaded. Import any MoTeC telemetry log to compare laps.</span>
+            <span>No MoTeC (.ld) file loaded. Click &quot;Add MoTeC File (.ld)&quot; to choose a MoTeC telemetry log from your PC.</span>
           </div>
         )}
       </div>
@@ -131,9 +131,9 @@ export function MotecImportBar({
               onClick={() => {
                 fileInputRef.current?.click();
               }}
-              title="Import a different MoTeC .ld file"
+              title="Choose a different MoTeC .ld file from your PC"
             >
-              📁 Replace .ld
+              📁 Add Another .ld
             </button>
             <button
               type="button"
@@ -156,17 +156,17 @@ export function MotecImportBar({
               disabled={isLoading}
               data-testid="motec-import-button"
             >
-              📁 Import MoTeC (.ld)
+              📁 Add MoTeC File (.ld)
             </button>
             <button
               type="button"
               className="btn btn-xs btn-secondary"
               onClick={loadBenchmarkLap}
               disabled={isLoading}
-              title="Load Spa-Francorchamps Ferrari 499P Pole Lap (2:16.421) MoTeC reference"
+              title="Load Spa-Francorchamps Ferrari 499P Pole Lap (2:16.421) MoTeC demo reference"
               data-testid="motec-benchmark-button"
             >
-              ⚡ Load MoTeC Benchmark Lap
+              ⚡ Try Demo Benchmark Lap
             </button>
           </>
         )}

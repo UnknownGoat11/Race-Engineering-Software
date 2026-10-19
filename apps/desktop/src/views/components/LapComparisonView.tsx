@@ -42,16 +42,18 @@ const DEFAULT_POLYLINE_POINTS = buildPolylinePoints(DEFAULT_CORNERS);
 export function LapComparisonView(): JSX.Element {
   const { parsedFile, isOverlayEnabled } = useMotecSession();
 
-  const [staticRefLap] = useState({ lapNum: 14, timeS: 136.421, driver: 'Reference / Benchmark' });
   const [cmpLap] = useState({ lapNum: 16, timeS: 134.563, driver: 'Live Player / Target' });
 
   // Use imported MoTeC run if available
-  const refLapTimeS = parsedFile?.fastestLap?.lapTimeS ?? parsedFile?.durationS ?? staticRefLap.timeS;
-  const refDriverName = parsedFile
+  const hasMotecFile = parsedFile !== null;
+  const refLapTimeS = hasMotecFile
+    ? (parsedFile.fastestLap?.lapTimeS ?? parsedFile.durationS)
+    : null;
+  const refDriverName = hasMotecFile
     ? `${parsedFile.header.driver} (${parsedFile.header.vehicleId})`
-    : staticRefLap.driver;
+    : 'No .ld file selected • Use button above';
 
-  const overallDeltaS = cmpLap.timeS - refLapTimeS;
+  const overallDeltaS = hasMotecFile && refLapTimeS !== null ? cmpLap.timeS - refLapTimeS : null;
 
   const polylinePoints = DEFAULT_POLYLINE_POINTS;
 
@@ -91,21 +93,31 @@ export function LapComparisonView(): JSX.Element {
       <MotecImportBar />
 
       <div className="comp-header-bar">
-        <div className={`comp-lap-card comp-ref-card ${parsedFile ? 'comp-motec-active' : ''}`}>
+        <div className={`comp-lap-card comp-ref-card ${hasMotecFile ? 'comp-motec-active' : ''}`}>
           <span className="comp-role-tag">
-            {parsedFile ? '🟠 MoTeC (.LD) REFERENCE' : 'REFERENCE LAP'}
+            {hasMotecFile ? '🟠 MoTeC (.LD) REFERENCE' : 'REFERENCE LAP'}
           </span>
-          <div className="comp-lap-time">{formatLapTime(refLapTimeS)}</div>
+          <div className="comp-lap-time">
+            {refLapTimeS !== null ? formatLapTime(refLapTimeS) : '--:--.---'}
+          </div>
           <span className="comp-meta">{refDriverName}</span>
         </div>
 
         <div className="comp-delta-center">
           <span className="comp-delta-label">TOTAL TIME DELTA (Δt)</span>
-          <span className={`comp-delta-value ${overallDeltaS < 0 ? 'delta-faster' : 'delta-slower'}`}>
-            {overallDeltaS < 0 ? '' : '+'}{overallDeltaS.toFixed(3)}s
+          <span
+            className={`comp-delta-value ${
+              overallDeltaS === null ? '' : overallDeltaS < 0 ? 'delta-faster' : 'delta-slower'
+            }`}
+          >
+            {overallDeltaS === null ? '--.---s' : `${overallDeltaS < 0 ? '' : '+'}${overallDeltaS.toFixed(3)}s`}
           </span>
           <span className="comp-delta-sub">
-            {overallDeltaS < 0 ? 'Live car is faster' : 'MoTeC reference is faster'}
+            {overallDeltaS === null
+              ? 'Add a MoTeC (.ld) file above to compare with live telemetry'
+              : overallDeltaS < 0
+                ? 'Live car is faster'
+                : 'MoTeC reference is faster'}
           </span>
         </div>
 
@@ -124,9 +136,16 @@ export function LapComparisonView(): JSX.Element {
             <div className="comp-graph-header">
               <span className="comp-graph-title">Speed Comparison (Speed vs Distance)</span>
               <span className="comp-graph-legend">
-                <span className="legend-chip" style={{ color: '#f59e0b', fontWeight: 700 }}>
-                  ━ Orange: MoTeC {parsedFile ? `(${parsedFile.header.driver.split(' ')[0]})` : 'Ref'}
-                </span>
+                {hasMotecFile && (
+                  <span className="legend-chip" style={{ color: '#f59e0b', fontWeight: 700 }}>
+                    ━ Orange: MoTeC ({parsedFile.header.driver.split(' ')[0]})
+                  </span>
+                )}
+                {!hasMotecFile && (
+                  <span className="legend-chip" style={{ color: '#94a3b8' }}>
+                    (MoTeC file not loaded)
+                  </span>
+                )}
                 <span className="legend-chip" style={{ color: '#22d3ee', fontWeight: 700 }}>
                   ━ Cyan: Live
                 </span>
@@ -143,14 +162,13 @@ export function LapComparisonView(): JSX.Element {
                 <line x1="0" y1="75" x2="500" y2="75" stroke="#334155" strokeWidth="0.5" strokeDasharray="3 3" />
                 <text x="5" y="73" fill="#64748b" fontSize="7">100 km/h</text>
 
-                {/* MoTeC Reference Speed Line (Orange) */}
-                {isOverlayEnabled && (
+                {/* MoTeC Reference Speed Line (Orange) - only when a file is explicitly loaded and overlay enabled */}
+                {hasMotecFile && isOverlayEnabled && (
                   <polyline
                     points={speedCurves.motecLine}
                     fill="none"
                     stroke="#f59e0b"
                     strokeWidth="2.5"
-                    strokeDasharray={parsedFile ? 'none' : '4 2'}
                   />
                 )}
 
@@ -183,13 +201,15 @@ export function LapComparisonView(): JSX.Element {
                 <text x="5" y="20" fill="#22c55e" fontSize="8">-0.500s</text>
                 <text x="5" y="85" fill="#ef4444" fontSize="8">+0.500s</text>
 
-                {/* Delta line */}
-                <polyline
-                  points={`0,50 ${polylinePoints}`}
-                  fill="none"
-                  stroke="#10b981"
-                  strokeWidth="2.5"
-                />
+                {/* Delta line - only when a file is loaded and overlay enabled */}
+                {hasMotecFile && isOverlayEnabled && (
+                  <polyline
+                    points={`0,50 ${polylinePoints}`}
+                    fill="none"
+                    stroke="#10b981"
+                    strokeWidth="2.5"
+                  />
+                )}
               </svg>
             </div>
           </div>
@@ -214,24 +234,32 @@ export function LapComparisonView(): JSX.Element {
                 </tr>
               </thead>
               <tbody>
-                {DEFAULT_CORNERS.map((c) => {
-                  const speedDiff = c.cmpSpeedKmh - c.refSpeedKmh;
-                  return (
-                    <tr key={c.cornerName}>
-                      <td className="corner-name-cell">{c.cornerName}</td>
-                      <td>{c.distM}m</td>
-                      <td>{c.refSpeedKmh.toFixed(0)}</td>
-                      <td>{c.cmpSpeedKmh.toFixed(0)}</td>
-                      <td className={speedDiff >= 0 ? 'text-green' : 'text-red'}>
-                        {speedDiff >= 0 ? '+' : ''}{speedDiff.toFixed(1)}
-                      </td>
-                      <td className={c.deltaS < 0 ? 'text-green font-bold' : 'text-red font-bold'}>
-                        {c.deltaS < 0 ? '' : '+'}{c.deltaS.toFixed(3)}s
-                      </td>
-                      <td>{c.apexDeltaM < 0 ? `${Math.abs(c.apexDeltaM)}m late` : `${c.apexDeltaM}m early`}</td>
-                    </tr>
-                  );
-                })}
+                {!hasMotecFile ? (
+                  <tr>
+                    <td colSpan={7} style={{ textAlign: 'center', color: '#94a3b8', padding: '24px' }}>
+                      No MoTeC (.ld) file selected. Click &quot;Add MoTeC File (.ld)&quot; above to view turn-by-turn corner telemetry breakdown.
+                    </td>
+                  </tr>
+                ) : (
+                  DEFAULT_CORNERS.map((c) => {
+                    const speedDiff = c.cmpSpeedKmh - c.refSpeedKmh;
+                    return (
+                      <tr key={c.cornerName}>
+                        <td className="corner-name-cell">{c.cornerName}</td>
+                        <td>{c.distM}m</td>
+                        <td>{c.refSpeedKmh.toFixed(0)}</td>
+                        <td>{c.cmpSpeedKmh.toFixed(0)}</td>
+                        <td className={speedDiff >= 0 ? 'text-green' : 'text-red'}>
+                          {speedDiff >= 0 ? '+' : ''}{speedDiff.toFixed(1)}
+                        </td>
+                        <td className={c.deltaS < 0 ? 'text-green font-bold' : 'text-red font-bold'}>
+                          {c.deltaS < 0 ? '' : '+'}{c.deltaS.toFixed(3)}s
+                        </td>
+                        <td>{c.apexDeltaM < 0 ? `${Math.abs(c.apexDeltaM)}m late` : `${c.apexDeltaM}m early`}</td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>

@@ -200,11 +200,11 @@ describe('V1.1 Engineering View Suite', () => {
   });
 
   describe('DrivingView Component', () => {
-    it('renders the complete cockpit HUD with vertical pedal gauges, gear, friction circle, aids, and hypercar VET widget', () => {
+    it('renders the complete cockpit HUD with vertical pedal gauges, gear, friction circle, aids, and tyre car view', () => {
       render(<DrivingView />);
       expect(screen.getByTestId('driving-view')).toBeInTheDocument();
       expect(screen.getByTestId('friction-circle')).toBeInTheDocument();
-      expect(screen.getByTestId('hypercar-vet-quick-widget')).toBeInTheDocument();
+      expect(screen.getByTestId('tyre-car-topview')).toBeInTheDocument();
       expect(screen.getByText('ENGINE MAP: #1')).toBeInTheDocument();
       expect(screen.getByText('G-FORCE & FRICTION ENVELOPE')).toBeInTheDocument();
       expect(screen.getByText('DRIVER AIDS & SYSTEMS')).toBeInTheDocument();

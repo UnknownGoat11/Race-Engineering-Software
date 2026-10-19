@@ -1,8 +1,6 @@
 import type { JSX } from 'react';
 import type { VehicleDynamicsState } from '../types';
 import { TyreCarTopView } from './TyreCarTopView';
-import { HypercarVetQuickWidget, DEFAULT_HYPERCAR_VET } from './HypercarVetQuickWidget';
-import { DEFAULT_LOCKUP_EVENTS } from './TyreDegQuickSummary';
 
 export interface DrivingViewProps {
   readonly state?: VehicleDynamicsState;
@@ -93,8 +91,6 @@ const DEFAULT_STATE: VehicleDynamicsState = {
       lockupActive: false,
     },
   },
-  hypercarVet: DEFAULT_HYPERCAR_VET,
-  lockupEvents: DEFAULT_LOCKUP_EVENTS,
 };
 
 export function DrivingView({
@@ -205,15 +201,6 @@ export function DrivingView({
             </div>
           </div>
 
-          {/* Hypercar Virtual Energy Tank (VET) Quick Glance Widget */}
-          <div className="driving-hypercar-widget-wrap">
-            <HypercarVetQuickWidget
-              state={liveState.hypercarVet ?? DEFAULT_HYPERCAR_VET}
-              speedKmh={liveState.speedKmh}
-              compact
-            />
-          </div>
-
           {/* G-G Friction Circle (Radar Accelerometer) per Image 2 */}
           <div className="friction-circle-card" data-testid="friction-circle">
             <div className="friction-circle-header">
@@ -267,23 +254,19 @@ export function DrivingView({
 
             <div className="aids-grid">
               <div className="aids-item">
-                <span className="aids-item-label">TRACTION CONTROL:</span>
-                <span className="aids-item-value num-cyan">TC: {liveState.tcLevel}</span>
-              </div>
-              <div className="aids-item">
-                <span className="aids-item-label">ABS LEVEL:</span>
-                <span className="aids-item-value num-cyan">ABS: {liveState.absLevel}</span>
+                <span className="aids-item-label">TC / ABS:</span>
+                <span className="aids-item-value num-cyan">TC: {liveState.tcLevel} | ABS: {liveState.absLevel}</span>
               </div>
               <div className="aids-item">
                 <span className="aids-item-label">TC CUT / SLIP:</span>
                 <span className="aids-item-value">CUT: {liveState.tcCut} | Slip: {liveState.tcSlip}%</span>
               </div>
               <div className="aids-item">
-                <span className="aids-item-label">AI / AGGRESSION:</span>
+                <span className="aids-item-label">AI / AGGR:</span>
                 <span className="aids-item-value">AI: 0 | Aggr: 0</span>
               </div>
               <div className="aids-item">
-                <span className="aids-item-label">FUEL & TYRE MODES:</span>
+                <span className="aids-item-label">FUEL / TYRE:</span>
                 <span className="aids-item-value">Fuel: X1 | Tyre: X1</span>
               </div>
             </div>
@@ -332,7 +315,7 @@ export function DrivingView({
                   className={`btn btn-xs btn-limiter ${liveState.pitLimiterActive ? 'limiter-on' : 'limiter-off'}`}
                   onClick={onToggleLimiter}
                 >
-                  {liveState.pitLimiterActive ? 'LIMITER ON (60 KM/H)' : 'NO PIT-LIMITER'}
+                  {liveState.pitLimiterActive ? 'LIMITER ON' : 'LIMITER OFF'}
                 </button>
               </div>
 
