@@ -90,23 +90,15 @@ function SingleWheelTopView({ position, label, data }: SingleWheelProps): JSX.El
         )}
       </div>
 
-      {/* Numeric Telemetry Breakdown */}
+      {/* Numeric Telemetry Breakdown (Compact 2x2 Grid) */}
       <div className="tyre-metrics-grid">
-        <div className="tyre-metric-row">
-          <span className="tyre-metric-label">Carcass:</span>
-          <span className="tyre-metric-val">{data.carcassC.toFixed(1)}°C</span>
+        <div className="tyre-metric-compact-row">
+          <span className="tyre-metric-item" title="Carcass Temperature">C: <strong>{data.carcassC.toFixed(0)}°</strong></span>
+          <span className="tyre-metric-item" title="Surface Temperature">S: <strong>{data.surfaceC.toFixed(0)}°</strong></span>
         </div>
-        <div className="tyre-metric-row">
-          <span className="tyre-metric-label">Surface:</span>
-          <span className="tyre-metric-val">{data.surfaceC.toFixed(1)}°C</span>
-        </div>
-        <div className="tyre-metric-row">
-          <span className="tyre-metric-label">Pressure:</span>
-          <span className="tyre-metric-val num-cyan">{data.pressureKpa.toFixed(1)} kPa</span>
-        </div>
-        <div className="tyre-metric-row">
-          <span className="tyre-metric-label">Wear:</span>
-          <span className="tyre-metric-val">{(data.wearFraction * 100).toFixed(1)}%</span>
+        <div className="tyre-metric-compact-row">
+          <span className="tyre-metric-item num-cyan" title="Tyre Pressure">{data.pressureKpa.toFixed(1)} kPa</span>
+          <span className="tyre-metric-item" title="Tyre Tread Remaining">{(data.wearFraction * 100).toFixed(1)}%</span>
         </div>
         <div className="tyre-wear-bar-track">
           <div

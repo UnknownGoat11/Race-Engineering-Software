@@ -1,6 +1,7 @@
 import { useMemo, useState, type JSX } from 'react';
 import { MotecImportBar } from '../../motec/MotecImportBar';
 import { useMotecSession } from '../../motec/useMotecStore';
+import { formatLapTime } from '../../lib/units';
 import '../../styles/common.css';
 
 export interface LapComparisonCorner {
@@ -94,7 +95,7 @@ export function LapComparisonView(): JSX.Element {
           <span className="comp-role-tag">
             {parsedFile ? '🟠 MoTeC (.LD) REFERENCE' : 'REFERENCE LAP'}
           </span>
-          <div className="comp-lap-time">{refLapTimeS.toFixed(3)}s</div>
+          <div className="comp-lap-time">{formatLapTime(refLapTimeS)}</div>
           <span className="comp-meta">{refDriverName}</span>
         </div>
 
@@ -110,124 +111,131 @@ export function LapComparisonView(): JSX.Element {
 
         <div className="comp-lap-card comp-cmp-card">
           <span className="comp-role-tag">COMPARISON LAP</span>
-          <div className="comp-lap-time">{cmpLap.timeS.toFixed(3)}s</div>
+          <div className="comp-lap-time">{formatLapTime(cmpLap.timeS)}</div>
           <span className="comp-meta">Lap #{cmpLap.lapNum} • {cmpLap.driver}</span>
         </div>
       </div>
 
-      {/* MoTeC Speed Comparison Graph (Orange MoTeC line vs Cyan Live line) */}
-      <div className="comp-graph-card">
-        <div className="comp-graph-header">
-          <span className="comp-graph-title">Speed Telemetry Comparison (Ground Speed vs Distance)</span>
-          <span className="comp-graph-legend">
-            <span className="legend-chip" style={{ color: '#f59e0b', fontWeight: 700 }}>
-              ━ Orange Line: MoTeC Reference {parsedFile ? `(${parsedFile.header.driver.split(' ')[0]})` : 'Lap'}
-            </span>
-            <span className="legend-chip" style={{ color: '#22d3ee', fontWeight: 700 }}>
-              ━ Cyan Line: Live / Comparison Car
-            </span>
-          </span>
+      {/* Comparison Content Grid: Left Column has Speed & Delta graphs; Right Column has Corner Breakdown Table */}
+      <div className="comp-content-grid">
+        <div className="comp-graphs-col">
+          {/* MoTeC Speed Comparison Graph (Orange MoTeC line vs Cyan Live line) */}
+          <div className="comp-graph-card">
+            <div className="comp-graph-header">
+              <span className="comp-graph-title">Speed Comparison (Speed vs Distance)</span>
+              <span className="comp-graph-legend">
+                <span className="legend-chip" style={{ color: '#f59e0b', fontWeight: 700 }}>
+                  ━ Orange: MoTeC {parsedFile ? `(${parsedFile.header.driver.split(' ')[0]})` : 'Ref'}
+                </span>
+                <span className="legend-chip" style={{ color: '#22d3ee', fontWeight: 700 }}>
+                  ━ Cyan: Live
+                </span>
+              </span>
+            </div>
+
+            <div className="comp-svg-viewport">
+              <svg viewBox="0 0 500 100" className="comp-speed-svg" preserveAspectRatio="none">
+                {/* Speed Grid Lines */}
+                <line x1="0" y1="20" x2="500" y2="20" stroke="#334155" strokeWidth="0.5" strokeDasharray="3 3" />
+                <text x="5" y="18" fill="#64748b" fontSize="7">300 km/h</text>
+                <line x1="0" y1="50" x2="500" y2="50" stroke="#334155" strokeWidth="0.5" strokeDasharray="3 3" />
+                <text x="5" y="48" fill="#64748b" fontSize="7">200 km/h</text>
+                <line x1="0" y1="75" x2="500" y2="75" stroke="#334155" strokeWidth="0.5" strokeDasharray="3 3" />
+                <text x="5" y="73" fill="#64748b" fontSize="7">100 km/h</text>
+
+                {/* MoTeC Reference Speed Line (Orange) */}
+                {isOverlayEnabled && (
+                  <polyline
+                    points={speedCurves.motecLine}
+                    fill="none"
+                    stroke="#f59e0b"
+                    strokeWidth="2.5"
+                    strokeDasharray={parsedFile ? 'none' : '4 2'}
+                  />
+                )}
+
+                {/* Live / Comparison Speed Line (Cyan) */}
+                <polyline
+                  points={speedCurves.cmpLine}
+                  fill="none"
+                  stroke="#22d3ee"
+                  strokeWidth="2.5"
+                />
+              </svg>
+            </div>
+          </div>
+
+          {/* Synchronous Delta-t Waveform Graph */}
+          <div className="comp-graph-card">
+            <div className="comp-graph-header">
+              <span className="comp-graph-title">Continuous Time Delta (Δt vs Metres)</span>
+              <span className="comp-graph-legend">
+                <span className="legend-chip legend-faster">Green: Gaining</span>
+                <span className="legend-chip legend-slower">Red: Losing</span>
+              </span>
+            </div>
+
+            <div className="comp-svg-viewport">
+              <svg viewBox="0 0 500 100" className="comp-delta-svg" preserveAspectRatio="none">
+                {/* Zero line */}
+                <line x1="0" y1="50" x2="500" y2="50" stroke="#64748b" strokeWidth="1" strokeDasharray="4 4" />
+                <text x="5" y="46" fill="#94a3b8" fontSize="8">±0.000s</text>
+                <text x="5" y="20" fill="#22c55e" fontSize="8">-0.500s</text>
+                <text x="5" y="85" fill="#ef4444" fontSize="8">+0.500s</text>
+
+                {/* Delta line */}
+                <polyline
+                  points={`0,50 ${polylinePoints}`}
+                  fill="none"
+                  stroke="#10b981"
+                  strokeWidth="2.5"
+                />
+              </svg>
+            </div>
+          </div>
         </div>
 
-        <div className="comp-svg-viewport">
-          <svg viewBox="0 0 500 100" className="comp-speed-svg" preserveAspectRatio="none">
-            {/* Speed Grid Lines */}
-            <line x1="0" y1="20" x2="500" y2="20" stroke="#334155" strokeWidth="0.5" strokeDasharray="3 3" />
-            <text x="5" y="18" fill="#64748b" fontSize="7">300 km/h</text>
-            <line x1="0" y1="50" x2="500" y2="50" stroke="#334155" strokeWidth="0.5" strokeDasharray="3 3" />
-            <text x="5" y="48" fill="#64748b" fontSize="7">200 km/h</text>
-            <line x1="0" y1="75" x2="500" y2="75" stroke="#334155" strokeWidth="0.5" strokeDasharray="3 3" />
-            <text x="5" y="73" fill="#64748b" fontSize="7">100 km/h</text>
-
-            {/* MoTeC Reference Speed Line (Orange) */}
-            {isOverlayEnabled && (
-              <polyline
-                points={speedCurves.motecLine}
-                fill="none"
-                stroke="#f59e0b"
-                strokeWidth="2.5"
-                strokeDasharray={parsedFile ? 'none' : '4 2'}
-              />
-            )}
-
-            {/* Live / Comparison Speed Line (Cyan) */}
-            <polyline
-              points={speedCurves.cmpLine}
-              fill="none"
-              stroke="#22d3ee"
-              strokeWidth="2.5"
-            />
-          </svg>
-        </div>
-      </div>
-
-      {/* Synchronous Delta-t Waveform Graph */}
-      <div className="comp-graph-card">
-        <div className="comp-graph-header">
-          <span className="comp-graph-title">Continuous Time Delta Over Lap Distance (Δt vs Metres)</span>
-          <span className="comp-graph-legend">
-            <span className="legend-chip legend-faster">Green: Gaining Time</span>
-            <span className="legend-chip legend-slower">Red: Losing Time</span>
-          </span>
-        </div>
-
-        <div className="comp-svg-viewport">
-          <svg viewBox="0 0 500 100" className="comp-delta-svg" preserveAspectRatio="none">
-            {/* Zero line */}
-            <line x1="0" y1="50" x2="500" y2="50" stroke="#64748b" strokeWidth="1" strokeDasharray="4 4" />
-            <text x="5" y="46" fill="#94a3b8" fontSize="8">±0.000s</text>
-            <text x="5" y="20" fill="#22c55e" fontSize="8">-0.500s (Faster)</text>
-            <text x="5" y="85" fill="#ef4444" fontSize="8">+0.500s (Slower)</text>
-
-            {/* Delta line */}
-            <polyline
-              points={`0,50 ${polylinePoints}`}
-              fill="none"
-              stroke="#10b981"
-              strokeWidth="2.5"
-            />
-          </svg>
-        </div>
-      </div>
-
-      {/* Corner by Corner Breakdown Table */}
-      <div className="comp-corners-panel">
-        <div className="comp-corners-header">
-          <span className="corners-title">CORNER-BY-CORNER TELEMETRY BREAKDOWN</span>
-        </div>
-        <table className="comp-table">
-          <thead>
-            <tr>
-              <th>Sector / Corner</th>
-              <th>Track Distance</th>
-              <th>Ref Apex Vmin</th>
-              <th>Cmp Apex Vmin</th>
-              <th>Speed Delta</th>
-              <th>Time Delta (Δt)</th>
-              <th>Braking Point</th>
-            </tr>
-          </thead>
-          <tbody>
-            {DEFAULT_CORNERS.map((c) => {
-              const speedDiff = c.cmpSpeedKmh - c.refSpeedKmh;
-              return (
-                <tr key={c.cornerName}>
-                  <td className="corner-name-cell">{c.cornerName}</td>
-                  <td>{c.distM} m</td>
-                  <td>{c.refSpeedKmh.toFixed(1)} km/h</td>
-                  <td>{c.cmpSpeedKmh.toFixed(1)} km/h</td>
-                  <td className={speedDiff >= 0 ? 'text-green' : 'text-red'}>
-                    {speedDiff >= 0 ? '+' : ''}{speedDiff.toFixed(1)} km/h
-                  </td>
-                  <td className={c.deltaS < 0 ? 'text-green font-bold' : 'text-red font-bold'}>
-                    {c.deltaS < 0 ? '' : '+'}{c.deltaS.toFixed(3)}s
-                  </td>
-                  <td>{c.apexDeltaM < 0 ? `${Math.abs(c.apexDeltaM)}m later` : `${c.apexDeltaM}m earlier`}</td>
+        {/* Corner by Corner Breakdown Table */}
+        <div className="comp-corners-panel">
+          <div className="comp-corners-header">
+            <span className="corners-title">CORNER-BY-CORNER TELEMETRY BREAKDOWN</span>
+          </div>
+          <div className="comp-table-scroll">
+            <table className="comp-table">
+              <thead>
+                <tr>
+                  <th>Corner</th>
+                  <th>Dist</th>
+                  <th>Ref Vmin</th>
+                  <th>Cmp Vmin</th>
+                  <th>ΔSpeed</th>
+                  <th>Δt</th>
+                  <th>Braking</th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
+              </thead>
+              <tbody>
+                {DEFAULT_CORNERS.map((c) => {
+                  const speedDiff = c.cmpSpeedKmh - c.refSpeedKmh;
+                  return (
+                    <tr key={c.cornerName}>
+                      <td className="corner-name-cell">{c.cornerName}</td>
+                      <td>{c.distM}m</td>
+                      <td>{c.refSpeedKmh.toFixed(0)}</td>
+                      <td>{c.cmpSpeedKmh.toFixed(0)}</td>
+                      <td className={speedDiff >= 0 ? 'text-green' : 'text-red'}>
+                        {speedDiff >= 0 ? '+' : ''}{speedDiff.toFixed(1)}
+                      </td>
+                      <td className={c.deltaS < 0 ? 'text-green font-bold' : 'text-red font-bold'}>
+                        {c.deltaS < 0 ? '' : '+'}{c.deltaS.toFixed(3)}s
+                      </td>
+                      <td>{c.apexDeltaM < 0 ? `${Math.abs(c.apexDeltaM)}m late` : `${c.apexDeltaM}m early`}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   );

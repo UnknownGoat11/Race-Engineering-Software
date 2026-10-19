@@ -267,7 +267,7 @@
 .telemetry-graph__plot {
   position: relative;
   flex: 1 1 auto;
-  min-height: 140px;
+  min-height: 48px;
   overflow: hidden;
 }
 

@@ -319,14 +319,14 @@ export function DrivingView({
             {/* E-Boost & Pit Limiter */}
             <div className="systems-toggle-list">
               <div className="system-toggle-row">
-                <span className="system-name">E-Boost Hybrid:</span>
+                <span className="system-name">Hybrid:</span>
                 <span className={`system-status-pill pill-${liveState.eBoostState.toLowerCase()}`}>
                   {liveState.eBoostState}
                 </span>
               </div>
 
               <div className="system-toggle-row">
-                <span className="system-name">Pit Lane Limiter:</span>
+                <span className="system-name">Pit Limiter:</span>
                 <button
                   type="button"
                   className={`btn btn-xs btn-limiter ${liveState.pitLimiterActive ? 'limiter-on' : 'limiter-off'}`}
@@ -337,7 +337,7 @@ export function DrivingView({
               </div>
 
               <div className="system-toggle-row">
-                <span className="system-name">Ignition / Starter:</span>
+                <span className="system-name">Starter:</span>
                 <span className={`system-status-pill ${liveState.ignitionActive ? 'pill-active' : 'pill-off'}`}>
                   {liveState.ignitionActive ? 'IGNI: ON' : 'IGNI: OFF'}
                 </span>

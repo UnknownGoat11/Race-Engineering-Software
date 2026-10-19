@@ -701,9 +701,12 @@
 }
 
 .pitwall-graph-body {
+  display: flex;
+  flex-direction: column;
   flex: 1;
-  min-height: 260px;
-  padding: 8px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 4px 8px;
 }
 
 .pitwall-graph-header-left {
