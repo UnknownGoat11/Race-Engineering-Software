@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX } from 'react';
 import { PanelErrorBoundary } from '../components/ErrorBoundary';
 import { EventsLog } from '../components/engineer/EventsLog';
+import { MinisectorRibbon } from '../components/engineer/MinisectorRibbon';
 import { PitwallBar } from '../components/engineer/PitwallBar';
 import { RightColumnTabs, type RightTab } from '../components/engineer/RightColumnTabs';
 import { StateBanner } from '../components/engineer/StateBanner';
@@ -31,6 +32,7 @@ import { DriverInputsPanel } from '../components/telemetry/DriverInputsPanel';
 import { EnergyPanel } from '../components/telemetry/EnergyPanel';
 import { FuelPanel } from '../components/telemetry/FuelPanel';
 import { ScopeDqContext, type ScopeDq } from '../components/telemetry/presentation';
+import { SuspensionPanel } from '../components/telemetry/SuspensionPanel';
 import { TimingPanel } from '../components/telemetry/TimingPanel';
 import { TimingTower } from '../components/telemetry/TimingTower';
 import { TyrePanel } from '../components/telemetry/TyrePanel';
@@ -543,6 +545,11 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                   <EventsLog alerts={alerts} onDismissAlert={dismissAlert} />
                 </div>
 
+                {/* 12-Minisector Live Delta Ribbon (Telemetry Tool v1509 inspired) */}
+                <PanelErrorBoundary name="Minisector Ribbon">
+                  <MinisectorRibbon />
+                </PanelErrorBoundary>
+
                 {/* Synchronized Telemetry Graph */}
                 <div className="card pitwall-graph-panel">
                   <div className="card-header pitwall-card-header">
@@ -720,13 +727,16 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                     </PanelErrorBoundary>
                   </div>
 
-                  {/* Column 4: Right-B (272px at >= 1800px): Tyres, Brakes, Energy */}
+                  {/* Column 4: Right-B (272px at >= 1800px): Tyres, Brakes, Suspension, Energy */}
                   <div className="pitwall-right-b">
                     <PanelErrorBoundary name="Tyres">
                       <TyrePanel />
                     </PanelErrorBoundary>
                     <PanelErrorBoundary name="Brakes">
                       <BrakePanel />
+                    </PanelErrorBoundary>
+                    <PanelErrorBoundary name="Suspension">
+                      <SuspensionPanel />
                     </PanelErrorBoundary>
                     <PanelErrorBoundary name="Energy">
                       <EnergyPanel />

@@ -6,10 +6,11 @@ import { BrakePanel } from '../telemetry/BrakePanel';
 import { DriverInputsPanel } from '../telemetry/DriverInputsPanel';
 import { EnergyPanel } from '../telemetry/EnergyPanel';
 import { FuelPanel } from '../telemetry/FuelPanel';
+import { SuspensionPanel } from '../telemetry/SuspensionPanel';
 import { TimingPanel } from '../telemetry/TimingPanel';
 import { TyrePanel } from '../telemetry/TyrePanel';
 
-export type RightTab = 'timing_fuel' | 'tyres_brakes' | 'power';
+export type RightTab = 'timing_fuel' | 'tyres_brakes' | 'chassis' | 'power';
 
 export interface RightColumnTabsProps {
   readonly initialTab?: RightTab;
@@ -93,6 +94,16 @@ export function RightColumnTabs({
         <button
           type="button"
           role="tab"
+          aria-selected={tab === 'chassis'}
+          className={`btn btn-xs segmented-tab-btn ${tab === 'chassis' ? 'btn-primary' : ''}`}
+          onClick={() => { handleSelectTab('chassis'); }}
+          data-testid="tab-chassis"
+        >
+          Chassis
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={tab === 'power'}
           className={`btn btn-xs segmented-tab-btn ${tab === 'power' ? 'btn-primary' : ''}`}
           onClick={() => { handleSelectTab('power'); }}
@@ -138,6 +149,9 @@ export function RightColumnTabs({
             <TyrePanel />
             <BrakePanel />
           </>
+        )}
+        {tab === 'chassis' && (
+          <SuspensionPanel />
         )}
         {tab === 'power' && (
           <>

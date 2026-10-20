@@ -749,3 +749,90 @@
   gap: 3px;
 }
 
+/* -------------------------------------------------------------------------
+ * Telemetry Tool Inspired: Live 12-Minisector Track Delta Ribbon
+ * ------------------------------------------------------------------------- */
+.engineer-minisector-ribbon {
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  padding: 4px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.ms-ribbon-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 10px;
+  font-family: var(--font-ui);
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+}
+
+.ms-ribbon-tag {
+  font-weight: 700;
+  color: var(--text-tertiary);
+}
+
+.ms-ribbon-status {
+  font-weight: 600;
+}
+
+.ms-ribbon-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.ms-ribbon-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 0;
+  border-radius: 2px;
+  font-family: var(--font-data);
+  line-height: 1.1;
+  border: 1px solid transparent;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.ms-ribbon-cell.ms-purple {
+  background: rgba(192, 132, 252, 0.15);
+  color: #c084fc;
+  border-color: rgba(192, 132, 252, 0.4);
+}
+
+.ms-ribbon-cell.ms-faster {
+  background: rgba(34, 197, 94, 0.12);
+  color: #22c55e;
+  border-color: rgba(34, 197, 94, 0.35);
+}
+
+.ms-ribbon-cell.ms-slower {
+  background: rgba(239, 68, 68, 0.12);
+  color: #ef4444;
+  border-color: rgba(239, 68, 68, 0.35);
+}
+
+.ms-ribbon-cell.ms-cell-active {
+  border-color: #38bdf8;
+  outline: 1px solid rgba(56, 189, 248, 0.6);
+  font-weight: 700;
+}
+
+.ms-cell-label {
+  font-size: 9px;
+  opacity: 0.85;
+}
+
+.ms-cell-delta {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+

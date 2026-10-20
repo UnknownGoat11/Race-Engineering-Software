@@ -320,72 +320,40 @@
   flex-shrink: 0;
 }
 
-.driving-minisector-strip {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-}
-
-.minisector-strip-header {
+.driving-lap-status {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 9px;
+  gap: 12px;
+  background: #0d1219;
+  border: 1px solid #1e293b;
+  padding: 4px 12px;
+  border-radius: 4px;
 }
 
-.minisector-title {
-  color: #94a3b8;
-  font-weight: 700;
-  font-size: 9px;
-}
-
-.minisector-delta-badge {
+.lap-status-best {
   font-family: var(--font-data);
   font-size: 11px;
-  font-weight: 900;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.lap-status-delta {
+  font-family: var(--font-data);
+  font-size: 13px;
+  font-weight: 700;
   padding: 1px 6px;
   border-radius: 3px;
-  background: #0f172a;
 }
 
-.minisector-sub {
-  color: #64748b;
-  font-size: 8px;
+.lap-status-delta.delta-faster {
+  background: rgba(34, 197, 94, 0.15);
+  color: #22c55e;
 }
 
-.minisector-blocks-row {
-  display: flex;
-  gap: 3px;
-  width: 100%;
-  max-width: 480px;
-  height: 14px;
+.lap-status-delta.delta-slower {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
 }
-
-.minisector-block {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 2px;
-  font-family: var(--font-data);
-  font-size: 8px;
-  font-weight: 800;
-  color: #000000;
-  cursor: pointer;
-  transition: transform 0.1s ease;
-}
-
-.minisector-block:hover {
-  transform: scaleY(1.15);
-}
-
-.ms-purple { background: #a855f7; color: #ffffff; }
-.ms-faster { background: #22c55e; color: #000000; }
-.ms-slower { background: #ef4444; color: #ffffff; }
-.ms-num { font-size: 7px; opacity: 0.8; }
 
 .driving-cockpit-grid {
   display: grid;
@@ -538,28 +506,6 @@
   background: #141a24;
   border: 2px solid #22d3ee;
   border-radius: 6px;
-}
-
-.suggested-gear-chip {
-  position: absolute;
-  top: -8px;
-  font-family: var(--font-data);
-  font-size: 8px;
-  font-weight: 800;
-  padding: 1px 4px;
-  border-radius: 2px;
-  letter-spacing: 0.05em;
-  white-space: nowrap;
-}
-
-.suggest-upshift {
-  background: #16a34a;
-  color: #ffffff;
-}
-
-.suggest-downshift {
-  background: #dc2626;
-  color: #ffffff;
 }
 
 .gear-digit {
@@ -1104,79 +1050,6 @@
 .limiter-off {
   background: #1e293b;
   color: #94a3b8;
-}
-
-.corner-telemetry-card,
-.brake-wear-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 8px;
-  background: #10151c;
-  border: 1px solid #1e293b;
-  border-radius: 4px;
-  box-sizing: border-box;
-}
-
-.corner-telemetry-header,
-.brake-wear-header {
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.05em;
-  color: #38bdf8;
-  border-bottom: 1px solid #1e293b;
-  padding-bottom: 3px;
-}
-
-.corner-telemetry-grid,
-.brake-wear-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  font-size: 9px;
-}
-
-.corner-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.corner-label {
-  color: #94a3b8;
-  font-size: 9px;
-}
-
-.corner-val {
-  font-family: var(--font-data);
-  font-weight: 700;
-  font-size: 9px;
-}
-
-.corner-damage-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 9px;
-  padding-top: 2px;
-  border-top: 1px solid #1e293b;
-}
-
-.damage-label {
-  color: #94a3b8;
-  font-size: 9px;
-}
-
-.damage-val {
-  font-family: var(--font-data);
-  font-weight: 700;
-  font-size: 9px;
-}
-
-.brake-wear-item {
-  font-family: var(--font-data);
-  font-size: 9px;
-  color: #cbd5e1;
 }
 
 /* -------------------------------------------------------------------------

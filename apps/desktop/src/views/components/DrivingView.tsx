@@ -1,4 +1,4 @@
-import { useMemo, type JSX } from 'react';
+import { type JSX } from 'react';
 import type { VehicleDynamicsState } from '../types';
 import { TyreCarTopView } from './TyreCarTopView';
 
@@ -93,12 +93,6 @@ const DEFAULT_STATE: VehicleDynamicsState = {
   },
 };
 
-// 12 Minisectors for current lap delta inspired by Telemetry Tool v1509
-const MINISECTOR_DELTAS = [
-  -0.035, -0.062, 0.015, -0.048, 0.008, -0.024,
-  -0.018, 0.032, -0.012, -0.054, 0.018, -0.026,
-];
-
 export function DrivingView({
   state = DEFAULT_STATE,
   onToggleLimiter,
@@ -111,28 +105,13 @@ export function DrivingView({
   const socPct = (liveState.batterySocFrac * 100).toFixed(0);
   const rpmPct = Math.min(100, (liveState.rpm / liveState.rpmMax) * 100);
 
-  // Suggested gear logic inspired by Telemetry Tool v1509:
-  // If upshift recommended -> green, if downshift recommended -> red
-  const suggestedGear = useMemo(() => {
-    if (liveState.gear > 0 && liveState.gear < 7 && liveState.rpm > 8400 && liveState.throttleFrac > 0.7) {
-      return liveState.gear + 1;
-    }
-    if (liveState.gear > 1 && (liveState.rpm < 4600 || liveState.brakeFrac > 0.4)) {
-      return liveState.gear - 1;
-    }
-    return liveState.gear;
-  }, [liveState.gear, liveState.rpm, liveState.throttleFrac, liveState.brakeFrac]);
-
   // G-G circle coordinate mapping (-2.5G to +2.5G mapped to 10..90 within SVG viewBox)
   const dotX = Math.max(10, Math.min(90, 50 + (liveState.latG / 2.5) * 40));
   const dotY = Math.max(10, Math.min(90, 50 - (liveState.longG / 2.5) * 40));
 
-  // Cumulative lap delta from minisectors
-  const totalLapDeltaS = MINISECTOR_DELTAS.reduce((acc, v) => acc + v, 0);
-
   return (
     <div className="driving-view-container" data-testid="driving-view">
-      {/* Top Banner: Minisector timing bar & delta display inspired by Telemetry Tool v1509 */}
+      {/* Top Banner: Engine Map, Lap Status, Pit Limiter */}
       <div className="driving-header-bar">
         <div className="driving-header-left">
           <div className="engine-map-banner">
@@ -150,30 +129,9 @@ export function DrivingView({
           </div>
         </div>
 
-        {/* Minisector Timing Bar (12 sectors with live delta to session reference) */}
-        <div className="driving-minisector-strip" title="12 Minisectors delta vs reference lap (Telemetry Tool specification)">
-          <div className="minisector-strip-header">
-            <span className="minisector-title">LAP DELTA (Δt):</span>
-            <span className={`minisector-delta-badge ${totalLapDeltaS < 0 ? 'delta-faster' : 'delta-slower'}`}>
-              {totalLapDeltaS < 0 ? '' : '+'}{totalLapDeltaS.toFixed(3)}s
-            </span>
-            <span className="minisector-sub">BEST: 1:34.563</span>
-          </div>
-          <div className="minisector-blocks-row">
-            {MINISECTOR_DELTAS.map((delta, idx) => {
-              const isFaster = delta < 0;
-              const isPurple = idx === 1 || idx === 9;
-              return (
-                <div
-                  key={idx}
-                  className={`minisector-block ${isPurple ? 'ms-purple' : isFaster ? 'ms-faster' : 'ms-slower'}`}
-                  title={`Sector ${idx + 1}: ${delta < 0 ? '' : '+'}${delta.toFixed(3)}s`}
-                >
-                  <span className="ms-num">{idx + 1}</span>
-                </div>
-              );
-            })}
-          </div>
+        <div className="driving-lap-status">
+          <span className="lap-status-best">BEST: 1:34.563</span>
+          <span className="lap-status-delta delta-faster">-0.248s</span>
         </div>
 
         <div className="driving-header-right">
@@ -215,14 +173,6 @@ export function DrivingView({
             {/* Gear & Center Display with Suggested Gear (Telemetry Tool style) */}
             <div className="pedal-gear-cluster">
               <div className="gear-digit-box">
-                {suggestedGear !== liveState.gear && (
-                  <span
-                    className={`suggested-gear-chip ${suggestedGear > liveState.gear ? 'suggest-upshift' : 'suggest-downshift'}`}
-                    title={suggestedGear > liveState.gear ? `Shift up to Gear ${suggestedGear}` : `Shift down to Gear ${suggestedGear}`}
-                  >
-                    {suggestedGear > liveState.gear ? `▲ ${suggestedGear}` : `▼ ${suggestedGear}`}
-                  </span>
-                )}
                 <span className="gear-digit">{liveState.gear === 0 ? 'N' : liveState.gear === -1 ? 'R' : liveState.gear}</span>
                 <span className="speed-sub-label">{liveState.speedKmh.toFixed(0)} km/h</span>
               </div>
@@ -384,48 +334,6 @@ export function DrivingView({
                 <span className={`system-status-pill ${liveState.ignitionActive ? 'pill-active' : 'pill-off'}`}>
                   {liveState.ignitionActive ? 'IGNI: ON' : 'IGNI: OFF'}
                 </span>
-              </div>
-            </div>
-
-            {/* Corner Ride Heights & Damper Travel (Telemetry Tool v1509 feature) */}
-            <div className="corner-telemetry-card">
-              <div className="corner-telemetry-header">
-                <span className="corner-telemetry-title">CORNER RIDE HEIGHTS & DAMAGE</span>
-              </div>
-              <div className="corner-telemetry-grid">
-                <div className="corner-item">
-                  <span className="corner-label">FL HEIGHT:</span>
-                  <span className="corner-val num-cyan">48.2 mm</span>
-                </div>
-                <div className="corner-item">
-                  <span className="corner-label">FR HEIGHT:</span>
-                  <span className="corner-val num-cyan">48.8 mm</span>
-                </div>
-                <div className="corner-item">
-                  <span className="corner-label">RL HEIGHT:</span>
-                  <span className="corner-val num-cyan">62.4 mm</span>
-                </div>
-                <div className="corner-item">
-                  <span className="corner-label">RR HEIGHT:</span>
-                  <span className="corner-val num-cyan">62.1 mm</span>
-                </div>
-              </div>
-              <div className="corner-damage-row">
-                <span className="damage-label">SUSPENSION DAMAGE:</span>
-                <span className="damage-val text-green">0.0% (INTACT)</span>
-              </div>
-            </div>
-
-            {/* Brake Wear & Peak Temperatures */}
-            <div className="brake-wear-card">
-              <div className="brake-wear-header">
-                <span className="brake-wear-title">BRAKE DISC WEAR (REST API)</span>
-              </div>
-              <div className="brake-wear-grid">
-                <div className="brake-wear-item">FL: <strong>1.2%</strong> (560°C peak)</div>
-                <div className="brake-wear-item">FR: <strong>1.1%</strong> (554°C peak)</div>
-                <div className="brake-wear-item">RL: <strong>0.8%</strong> (490°C peak)</div>
-                <div className="brake-wear-item">RR: <strong>0.8%</strong> (482°C peak)</div>
               </div>
             </div>
           </div>

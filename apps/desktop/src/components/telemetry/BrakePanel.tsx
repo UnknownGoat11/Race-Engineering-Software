@@ -19,6 +19,18 @@ const BRAKE_CHANNELS = [
   ch.BRAKE_BIAS_FRONT,
   ch.BRAKE_BIAS_REAR,
   ch.BRAKE_TEMP_FRONT_REAR,
+  ch.BRAKE_WEAR_FL,
+  ch.BRAKE_WEAR_FR,
+  ch.BRAKE_WEAR_RL,
+  ch.BRAKE_WEAR_RR,
+  ch.BRAKE_THICKNESS_FL,
+  ch.BRAKE_THICKNESS_FR,
+  ch.BRAKE_THICKNESS_RL,
+  ch.BRAKE_THICKNESS_RR,
+  ch.BRAKE_CORE_TEMP_FL,
+  ch.BRAKE_CORE_TEMP_FR,
+  ch.BRAKE_CORE_TEMP_RL,
+  ch.BRAKE_CORE_TEMP_RR,
 ] as const;
 
 export function BrakePanel(): JSX.Element {
@@ -61,6 +73,16 @@ function BrakePanelContent(): JSX.Element {
   const pRL = num(ch.BRAKE_TEMP_PEAK_RL);
   const pRR = num(ch.BRAKE_TEMP_PEAK_RR);
 
+  const wFL = num(ch.BRAKE_WEAR_FL);
+  const wFR = num(ch.BRAKE_WEAR_FR);
+  const wRL = num(ch.BRAKE_WEAR_RL);
+  const wRR = num(ch.BRAKE_WEAR_RR);
+
+  const thFL = num(ch.BRAKE_THICKNESS_FL);
+  const thFR = num(ch.BRAKE_THICKNESS_FR);
+  const thRL = num(ch.BRAKE_THICKNESS_RL);
+  const thRR = num(ch.BRAKE_THICKNESS_RR);
+
   const biasFront = num(ch.BRAKE_BIAS_FRONT);
   const tempDiffFR = num(ch.BRAKE_TEMP_FRONT_REAR);
 
@@ -89,6 +111,14 @@ function BrakePanelContent(): JSX.Element {
           <div className="brake-temp-value">
             {formatTemperature(tFL, { withUnit: true })}
           </div>
+          <div className="brake-sub-metrics">
+            <span className="brake-sub-wear">
+              Wear: {wFL != null ? `${(wFL * 100).toFixed(1)}%` : '0.0%'}
+            </span>
+            {thFL != null && (
+              <span className="brake-sub-thick">{(thFL * 1000).toFixed(1)} mm</span>
+            )}
+          </div>
         </div>
 
         {/* FR */}
@@ -99,6 +129,14 @@ function BrakePanelContent(): JSX.Element {
           </div>
           <div className="brake-temp-value">
             {formatTemperature(tFR, { withUnit: true })}
+          </div>
+          <div className="brake-sub-metrics">
+            <span className="brake-sub-wear">
+              Wear: {wFR != null ? `${(wFR * 100).toFixed(1)}%` : '0.0%'}
+            </span>
+            {thFR != null && (
+              <span className="brake-sub-thick">{(thFR * 1000).toFixed(1)} mm</span>
+            )}
           </div>
         </div>
 
@@ -111,6 +149,14 @@ function BrakePanelContent(): JSX.Element {
           <div className="brake-temp-value">
             {formatTemperature(tRL, { withUnit: true })}
           </div>
+          <div className="brake-sub-metrics">
+            <span className="brake-sub-wear">
+              Wear: {wRL != null ? `${(wRL * 100).toFixed(1)}%` : '0.0%'}
+            </span>
+            {thRL != null && (
+              <span className="brake-sub-thick">{(thRL * 1000).toFixed(1)} mm</span>
+            )}
+          </div>
         </div>
 
         {/* RR */}
@@ -121,6 +167,14 @@ function BrakePanelContent(): JSX.Element {
           </div>
           <div className="brake-temp-value">
             {formatTemperature(tRR, { withUnit: true })}
+          </div>
+          <div className="brake-sub-metrics">
+            <span className="brake-sub-wear">
+              Wear: {wRR != null ? `${(wRR * 100).toFixed(1)}%` : '0.0%'}
+            </span>
+            {thRR != null && (
+              <span className="brake-sub-thick">{(thRR * 1000).toFixed(1)} mm</span>
+            )}
           </div>
         </div>
       </div>
