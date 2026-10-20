@@ -203,7 +203,11 @@ export function LapComparisonView(): JSX.Element {
       <div className="comp-header-bar">
         <div className={`comp-lap-card comp-ref-card ${hasMotecFile ? 'comp-motec-active' : ''}`}>
           <span className="comp-role-tag">
-            {hasMotecFile ? '🟠 MoTeC (.LD) REFERENCE' : 'REFERENCE LAP'}
+            {hasMotecFile
+              ? parsedFile.laps.length > 1
+                ? `🟠 MoTeC QUICKEST LAP (Lap ${parsedFile.fastestLap?.lapNumber ?? 1})`
+                : '🟠 MoTeC (.LD) REFERENCE'
+              : 'REFERENCE LAP'}
           </span>
           <div className="comp-lap-time">{formatLapTime(refLapTimeS)}</div>
           <span className="comp-meta">{refDriverName}</span>

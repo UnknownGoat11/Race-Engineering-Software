@@ -46,12 +46,18 @@ export const motecStore = {
     };
   },
 
-  async loadFile(file: File): Promise<void> {
+  async loadFile(file: File, ldxFile?: File | string): Promise<void> {
     state = { ...state, isLoading: true, error: null };
     emit();
     try {
       const buffer = await file.arrayBuffer();
-      const parsed = parseMotecLd(buffer, file.name);
+      let ldxText: string | undefined;
+      if (typeof ldxFile === 'string') {
+        ldxText = ldxFile;
+      } else if (ldxFile instanceof File) {
+        ldxText = await ldxFile.text();
+      }
+      const parsed = parseMotecLd(buffer, file.name, ldxText);
       const graphSource = createMotecGraphSource(parsed, 'distance');
       state = {
         parsedFile: parsed,
@@ -68,9 +74,23 @@ export const motecStore = {
     }
   },
 
-  loadBuffer(buffer: ArrayBuffer | Uint8Array, filename = 'motec_log.ld'): void {
+  async loadFiles(files: FileList | readonly File[]): Promise<void> {
+    const fileArray = Array.from(files);
+    const ldFile = fileArray.find((f) => f.name.toLowerCase().endsWith('.ld'));
+    const ldxFile = fileArray.find((f) => f.name.toLowerCase().endsWith('.ldx'));
+
+    if (!ldFile) {
+      state = { ...state, error: 'No .ld file found in the selected files.' };
+      emit();
+      return;
+    }
+
+    await motecStore.loadFile(ldFile, ldxFile);
+  },
+
+  loadBuffer(buffer: ArrayBuffer | Uint8Array, filename = 'motec_log.ld', ldxContent?: string): void {
     try {
-      const parsed = parseMotecLd(buffer, filename);
+      const parsed = parseMotecLd(buffer, filename, ldxContent);
       const graphSource = createMotecGraphSource(parsed, 'distance');
       state = {
         parsedFile: parsed,

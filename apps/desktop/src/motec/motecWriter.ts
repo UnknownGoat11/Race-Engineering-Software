@@ -225,3 +225,74 @@ export function generateSpaBenchmarkMotecBuffer(): Uint8Array {
     },
   );
 }
+
+/**
+ * Generates a realistic 3-lap MoTeC .ld binary containing:
+ * - Lap 1 (Out-Lap): ~160 seconds
+ * - Lap 2 (Flying Lap 1): ~140 seconds
+ * - Lap 3 (Quickest Lap): ~134.5 seconds
+ * With explicit 'Lap Number' and 'Lap Distance' channels.
+ */
+export function generateMultiLapMotecBuffer(): Uint8Array {
+  const freq = 10; // 10Hz
+  const dt = 1 / freq;
+
+  const lapConfigs = [
+    { lapNum: 1, durationS: 160, baseSpeed: 240 },
+    { lapNum: 2, durationS: 140, baseSpeed: 270 },
+    { lapNum: 3, durationS: 134.5, baseSpeed: 285 }, // Quickest
+  ];
+
+  const totalSamples = lapConfigs.reduce((acc, l) => acc + Math.round(l.durationS * freq), 0);
+
+  const speedKmh = new Float32Array(totalSamples);
+  const throttleFrac = new Float32Array(totalSamples);
+  const brakeFrac = new Float32Array(totalSamples);
+  const lapNumber = new Float32Array(totalSamples);
+  const lapDistanceM = new Float32Array(totalSamples);
+
+  let globalIdx = 0;
+  for (const config of lapConfigs) {
+    const lapSampleCount = Math.round(config.durationS * freq);
+    let currentLapDist = 0;
+
+    for (let i = 0; i < lapSampleCount; i++) {
+      const frac = i / lapSampleCount;
+      const phase = frac * Math.PI * 10;
+      const corner = Math.abs(Math.sin(phase));
+
+      const spd = Math.max(65, config.baseSpeed - corner * 140);
+      const throt = spd > 160 ? 100 : 30;
+      const brk = spd < 120 ? 80 : 0;
+
+      currentLapDist += (spd / 3.6) * dt;
+
+      speedKmh[globalIdx] = spd;
+      throttleFrac[globalIdx] = throt;
+      brakeFrac[globalIdx] = brk;
+      lapNumber[globalIdx] = config.lapNum;
+      lapDistanceM[globalIdx] = currentLapDist;
+
+      globalIdx++;
+    }
+  }
+
+  return createMotecLdBuffer(
+    [
+      { name: 'Ground Speed', shortName: 'Speed', unit: 'km/h', frequencyHz: freq, samples: speedKmh },
+      { name: 'Throttle Pos', shortName: 'Throt', unit: '%', frequencyHz: freq, samples: throttleFrac },
+      { name: 'Brake Pos', shortName: 'Brake', unit: '%', frequencyHz: freq, samples: brakeFrac },
+      { name: 'Lap Number', shortName: 'Lap', unit: '', frequencyHz: freq, samples: lapNumber },
+      { name: 'Lap Distance', shortName: 'LapDist', unit: 'm', frequencyHz: freq, samples: lapDistanceM },
+    ],
+    {
+      driver: 'Antonio Fuoco',
+      vehicleId: 'Ferrari 499P #51',
+      venue: 'Circuit de Spa-Francorchamps',
+      session: 'Qualifying Hyperpole 3 Laps',
+      comment: 'Multi-Lap MoTeC Session with Lap 3 as Quickest Lap',
+      dateStr: '19/10/2026',
+      timeStr: '15:10:00',
+    },
+  );
+}

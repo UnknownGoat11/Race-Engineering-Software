@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { ch } from '../generated/channels';
-import { matchChannelNameToAppId, parseMotecLd } from './motecParser';
+import { matchChannelNameToAppId, parseLdxMarkers, parseMotecLd } from './motecParser';
 import { createMotecGraphSource, createMotecReferenceSeries, sampleMotecAtDistance, computeMotecDelta } from './motecSource';
-import { createMotecLdBuffer, generateSpaBenchmarkMotecBuffer } from './motecWriter';
+import { createMotecLdBuffer, generateMultiLapMotecBuffer, generateSpaBenchmarkMotecBuffer } from './motecWriter';
 
 describe('MoTeC .ld Binary Parser (Stand-Alone Verification)', () => {
   describe('Header & Metadata Decoding', () => {
@@ -251,6 +251,66 @@ describe('MoTeC .ld Binary Parser (Stand-Alone Verification)', () => {
       expect(delta.motecSpeedKmh).toBeGreaterThan(100);
       expect(delta.deltaSpeedKmh).toBeCloseTo(285 - delta.motecSpeedKmh, 2);
       expect(delta.deltaThrottlePct).toBeDefined();
+    });
+  });
+
+  describe('Multi-Lap Session Recognition & Quickest Lap Extraction', () => {
+    it('detects multiple laps and slices dataset to ONLY the quickest lap for comparison', () => {
+      const multiLapBuffer = generateMultiLapMotecBuffer();
+      const parsed = parseMotecLd(multiLapBuffer, 'spa_session_3laps.ld');
+
+      // 1. All 3 session laps detected
+      expect(parsed.laps.length).toBe(3);
+      expect(parsed.laps[0]?.lapNumber).toBe(1);
+      expect(parsed.laps[1]?.lapNumber).toBe(2);
+      expect(parsed.laps[2]?.lapNumber).toBe(3);
+
+      // Lap times: Lap 1 ~160s, Lap 2 ~140s, Lap 3 ~134.5s
+      expect(parsed.laps[0]?.lapTimeS).toBeCloseTo(160, 0);
+      expect(parsed.laps[1]?.lapTimeS).toBeCloseTo(140, 0);
+      expect(parsed.laps[2]?.lapTimeS).toBeCloseTo(134.5, 0);
+
+      // 2. Recognizes Lap 3 as the quickest lap
+      expect(parsed.fastestLap).toBeDefined();
+      expect(parsed.fastestLap?.lapNumber).toBe(3);
+      expect(parsed.fastestLap?.lapTimeS).toBeCloseTo(134.5, 0);
+
+      // 3. Comparison dataset is sliced to ONLY Lap 3 (durationS ~134.5s, NOT the total ~434.5s session!)
+      expect(parsed.durationS).toBeCloseTo(134.5, 0);
+      expect(parsed.rawSessionDurationS).toBeCloseTo(434.5, 0);
+
+      // 4. Distance timeline starts at 0m for the quickest lap
+      expect(parsed.distanceTimelineM[0]).toBe(0);
+      expect(parsed.timeTimelineS[0]).toBe(0);
+
+      // 5. Channel samples are scoped to the quickest lap sample count
+      const quickestSampleCount = Math.round(134.5 * 10); // 10Hz
+      const speedChan = parsed.channelsByAppId.get(ch.SPEED);
+      expect(speedChan).toBeDefined();
+      expect(speedChan?.samples.length).toBe(quickestSampleCount);
+      expect(parsed.distanceTimelineM.length).toBe(quickestSampleCount);
+      expect(parsed.timeTimelineS.length).toBe(quickestSampleCount);
+    });
+
+    it('parses .ldx companion XML markers accurately', () => {
+      const sampleLdxXml = `<?xml version="1.0" encoding="utf-8"?>
+<LDXFile Version="1.6" Creator="MoTeC i2 Pro">
+  <Layers>
+    <Layer>
+      <Marker Index="0" Time="0.000" Distance="0.00" Name="Out Lap" Type="Start" />
+      <Marker Index="1" Time="150.250" Distance="7004.50" Name="Lap 1" Type="Lap" />
+      <Marker Index="2" Time="284.813" Distance="14009.00" Name="Lap 2" Type="Lap" />
+      <Marker Index="3" Time="419.063" Distance="21013.50" Name="Lap 3" Type="Lap" />
+    </Layer>
+  </Layers>
+</LDXFile>`;
+
+      const markers = parseLdxMarkers(sampleLdxXml);
+      expect(markers.length).toBe(4);
+      expect(markers[0]?.timeS).toBe(0.0);
+      expect(markers[1]?.timeS).toBeCloseTo(150.25, 2);
+      expect(markers[2]?.timeS).toBeCloseTo(284.813, 2);
+      expect(markers[3]?.timeS).toBeCloseTo(419.063, 2);
     });
   });
 });

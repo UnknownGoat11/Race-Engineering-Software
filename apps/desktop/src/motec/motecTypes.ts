@@ -53,24 +53,34 @@ export interface MotecLap {
   readonly endTimeS: number;
   readonly startDistM: number;
   readonly endDistM: number;
+  readonly startSampleIdx?: number;
+  readonly endSampleIdx?: number;
   readonly isValid: boolean;
 }
 
 export interface ParsedMotecFile {
   readonly filename: string;
   readonly header: MotecHeader;
+  /** Sliced channel data scoped to the quickest lap for comparison. */
   readonly channels: ReadonlyMap<string, MotecChannelData>;
+  /** Sliced channels mapped by canonical app ID for the quickest lap. */
   readonly channelsByAppId: ReadonlyMap<number, MotecChannelData>;
-  /** Total session duration in seconds. */
+  /** Duration of the quickest lap in seconds (used for comparison). */
   readonly durationS: number;
-  /** Total lap / track distance in meters. */
+  /** Distance of the quickest lap in meters (used for comparison). */
   readonly maxDistanceM: number;
-  /** Timeline of distance (m) sampled at the primary frequency. */
+  /** Timeline of distance (m) for the quickest lap (starts at 0m). */
   readonly distanceTimelineM: Float64Array;
-  /** Timeline of elapsed seconds (s) sampled at the primary frequency. */
+  /** Timeline of elapsed seconds (s) for the quickest lap (starts at 0s). */
   readonly timeTimelineS: Float64Array;
+  /** All laps detected in the session. */
   readonly laps: readonly MotecLap[];
+  /** The quickest lap recognized and used for comparison. */
   readonly fastestLap?: MotecLap | undefined;
+  /** Total raw session duration across all laps in seconds. */
+  readonly rawSessionDurationS?: number;
+  /** Total raw session distance across all laps in meters. */
+  readonly rawSessionDistanceM?: number;
 }
 
 export interface MotecDeltaAtDistance {

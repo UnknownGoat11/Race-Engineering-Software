@@ -21,7 +21,6 @@ export function MotecImportBar({
     isLoading,
     error,
     isOverlayEnabled,
-    loadFile,
     loadBenchmarkLap,
     clear,
     setOverlayEnabled,
@@ -45,9 +44,9 @@ export function MotecImportBar({
   };
 
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      void loadFile(file);
+    const files = e.target.files;
+    if (files && files.length > 0) {
+      void motecStore.loadFiles(files);
     }
   };
 
@@ -59,9 +58,9 @@ export function MotecImportBar({
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      void loadFile(file);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      void motecStore.loadFiles(files);
     }
   };
 
@@ -105,6 +104,7 @@ export function MotecImportBar({
         ref={fileInputRef}
         type="file"
         accept=".ld,.ldx"
+        multiple
         style={{ display: 'none' }}
         onChange={handleFileChange}
         data-testid="motec-file-input"
@@ -121,8 +121,10 @@ export function MotecImportBar({
             <span className="motec-meta-pill">
               🏎️ {parsedFile.header.driver} • {parsedFile.header.vehicleId}
             </span>
-            <span className="motec-meta-pill">
-              ⏱️ Lap: <strong>{parsedFile.fastestLap ? formatLapTime(parsedFile.fastestLap.lapTimeS) : formatLapTime(parsedFile.durationS)}</strong>
+            <span className="motec-meta-pill" title={parsedFile.laps.length > 1 ? `Quickest lap selected from ${parsedFile.laps.length} session laps` : 'Lap duration'}>
+              ⏱️ {parsedFile.laps.length > 1
+                ? <>Quickest: <strong>Lap {parsedFile.fastestLap?.lapNumber ?? 1} ({formatLapTime(parsedFile.fastestLap?.lapTimeS ?? parsedFile.durationS)})</strong> • {parsedFile.laps.length} laps</>
+                : <>Lap: <strong>{formatLapTime(parsedFile.durationS)}</strong></>}
             </span>
             <span className="motec-meta-pill">
               📡 {parsedFile.channels.size} ch @ 100Hz
