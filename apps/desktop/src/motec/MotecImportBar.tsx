@@ -1,5 +1,8 @@
-import { useRef, type ChangeEvent, type JSX } from 'react';
-import { useMotecSession } from './useMotecStore';
+import { useRef, type ChangeEvent, type DragEvent, type JSX } from 'react';
+import { ch } from '../generated/channels';
+import { isTauri, pickMotecFile } from '../lib/ipc';
+import { formatLapTime } from '../lib/units';
+import { motecStore, useMotecSession } from './useMotecStore';
 import './motec.css';
 
 export interface MotecImportBarProps {
@@ -26,8 +29,37 @@ export function MotecImportBar({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const handleOpenFileDialog = async () => {
+    if (isTauri()) {
+      try {
+        const picked = await pickMotecFile();
+        if (picked && picked.bytes && picked.bytes.length > 0) {
+          motecStore.loadBuffer(new Uint8Array(picked.bytes), picked.name);
+          return;
+        }
+      } catch (err) {
+        console.warn('Native dialog failed, falling back to browser file input:', err);
+      }
+    }
+    fileInputRef.current?.click();
+  };
+
   const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
+    if (file) {
+      void loadFile(file);
+    }
+  };
+
+  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const file = e.dataTransfer.files?.[0];
     if (file) {
       void loadFile(file);
     }
@@ -38,7 +70,11 @@ export function MotecImportBar({
   let speedDelta: number | null = null;
 
   if (parsedFile && typeof currentLapDistanceM === 'number' && typeof currentSpeedKmh === 'number') {
-    const speedChan = parsedFile.channels.get('ground speed') || parsedFile.channels.get('speed');
+    const speedChan =
+      parsedFile.channelsByAppId.get(ch.SPEED) ||
+      parsedFile.channels.get('ground speed') ||
+      parsedFile.channels.get('speed') ||
+      parsedFile.channels.get('vcar');
     if (speedChan && parsedFile.distanceTimelineM.length > 0) {
       const xs = parsedFile.distanceTimelineM;
       let lo = 0;
@@ -58,7 +94,12 @@ export function MotecImportBar({
   }
 
   return (
-    <div className={`motec-bar-container ${className}`} data-testid="motec-import-bar">
+    <div
+      className={`motec-bar-container ${className}`}
+      data-testid="motec-import-bar"
+      onDragOver={handleDragOver}
+      onDrop={handleDrop}
+    >
       {/* Hidden file input */}
       <input
         ref={fileInputRef}
@@ -81,7 +122,7 @@ export function MotecImportBar({
               🏎️ {parsedFile.header.driver} • {parsedFile.header.vehicleId}
             </span>
             <span className="motec-meta-pill">
-              ⏱️ Lap: <strong>{parsedFile.fastestLap ? `${parsedFile.fastestLap.lapTimeS.toFixed(3)}s` : `${parsedFile.durationS.toFixed(2)}s`}</strong>
+              ⏱️ Lap: <strong>{parsedFile.fastestLap ? formatLapTime(parsedFile.fastestLap.lapTimeS) : formatLapTime(parsedFile.durationS)}</strong>
             </span>
             <span className="motec-meta-pill">
               📡 {parsedFile.channels.size} ch @ 100Hz
@@ -95,7 +136,7 @@ export function MotecImportBar({
           </div>
         ) : (
           <div className="motec-prompt-text">
-            <span>No MoTeC (.ld) file loaded. Click &quot;Add MoTeC File (.ld)&quot; to choose a MoTeC telemetry log from your PC.</span>
+            <span>No MoTeC (.ld) file loaded. Drag & drop a .ld file here or click &quot;Add MoTeC File (.ld)&quot;.</span>
           </div>
         )}
       </div>
@@ -129,7 +170,7 @@ export function MotecImportBar({
               type="button"
               className="btn btn-xs"
               onClick={() => {
-                fileInputRef.current?.click();
+                void handleOpenFileDialog();
               }}
               title="Choose a different MoTeC .ld file from your PC"
             >
@@ -151,7 +192,7 @@ export function MotecImportBar({
               type="button"
               className="btn btn-xs btn-primary"
               onClick={() => {
-                fileInputRef.current?.click();
+                void handleOpenFileDialog();
               }}
               disabled={isLoading}
               data-testid="motec-import-button"

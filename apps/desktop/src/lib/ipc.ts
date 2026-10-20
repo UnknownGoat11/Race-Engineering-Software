@@ -16,6 +16,8 @@
  */
 import { invoke, isTauri, type Channel } from '@tauri-apps/api/core';
 
+export { isTauri };
+
 // ---------------------------------------------------------------------------------------------------------
 // Configuration (mirror src-tauri/src/config.rs, src-tauri/src/state.rs and src-tauri/src/app_info.rs)
 // ---------------------------------------------------------------------------------------------------------
@@ -415,6 +417,8 @@ export const COMMAND_NAMES = [
   'demo_stop',
   'bridge_subscribe',
   'bridge_unsubscribe',
+  'pick_motec_file',
+  'restart_app',
 ] as const;
 export type CommandName = (typeof COMMAND_NAMES)[number];
 
@@ -553,9 +557,29 @@ export function getCoreStatus(): Promise<CoreStatus> {
   return call<CoreStatus>('get_core_status');
 }
 
-/** Seven-stage connectivity test against the configured relay. */
-export function testRelayConnection(): Promise<ConnectivityReportDto> {
-  return call<ConnectivityReportDto>('test_relay_connection');
+/** Payload of a picked file from native dialog. */
+export interface PickedFileDto {
+  readonly name: string;
+  readonly path: string | null;
+  readonly bytes: number[];
+}
+
+/** Seven-stage connectivity test against the configured (or explicitly targeted) relay. */
+export function testRelayConnection(options?: { host?: string; port?: number }): Promise<ConnectivityReportDto> {
+  return call<ConnectivityReportDto>('test_relay_connection', {
+    host: options?.host,
+    port: options?.port,
+  });
+}
+
+/** Restart the desktop application. */
+export function restartApp(): Promise<void> {
+  return call<void>('restart_app');
+}
+
+/** Pick a MoTeC .ld/.ldx file via native desktop dialog. */
+export function pickMotecFile(): Promise<PickedFileDto | null> {
+  return call<PickedFileDto | null>('pick_motec_file');
 }
 
 /** Write a frontend error to the app log (rate-limited, bounded, redacted on the Rust side). */

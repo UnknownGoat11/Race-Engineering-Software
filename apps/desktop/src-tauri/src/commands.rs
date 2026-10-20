@@ -34,7 +34,7 @@ use crate::state::{AppState, ConfigSnapshot, RelayReadiness};
 
 /// Every command name, in registration order. Must equal `build.rs` `COMMANDS`, the capability allow-list, the
 /// `generate_handler!` list in `lib.rs` and `CommandName` in `src/lib/ipc.ts` (checked by a test).
-pub const COMMAND_NAMES: [&str; 28] = [
+pub const COMMAND_NAMES: [&str; 30] = [
     "get_app_info",
     "get_config",
     "set_mode",
@@ -63,6 +63,8 @@ pub const COMMAND_NAMES: [&str; 28] = [
     "demo_stop",
     "bridge_subscribe",
     "bridge_unsubscribe",
+    "pick_motec_file",
+    "restart_app",
 ];
 
 /// Stable error codes (mirrored as `CommandErrorCode` in `src/lib/ipc.ts`).
@@ -782,23 +784,120 @@ pub fn get_core_status(state: State<'_, AppState>) -> CoreStatus {
     state.core().status()
 }
 
-/// Runs the 7-stage connectivity test against the configured relay.
+/// Runs the 7-stage connectivity test against the configured (or specified) relay.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn test_relay_connection(
     state: State<'_, AppState>,
+    host: Option<String>,
+    port: Option<u16>,
 ) -> Result<ConnectivityReportDto, CommandError> {
-    require_relay(&state).map_err(|e| logged("test_relay_connection", e))?;
     let core = state.core();
-    let config = one_shot_config(core);
     let transport = transport::TcpTlsTelemetryTransport::new();
-    let report = run_connectivity_test(
-        &transport,
-        &config,
-        core.auth_manager(),
-        active_role(&state),
-    )
-    .await;
+
+    // Determine target host and port to test
+    let target = match (host, port) {
+        (Some(h), p) if !h.trim().is_empty() => Some((h.trim().to_owned(), p.unwrap_or(443))),
+        _ => {
+            let cfg = state.snapshot().config;
+            let h = cfg.network.relay_host.trim().to_owned();
+            if h.is_empty() {
+                None
+            } else {
+                Some((h, cfg.network.relay_port))
+            }
+        }
+    };
+
+    let report = if let Some((target_host, target_port)) = target {
+        let endpoint = transport::endpoint::RelayEndpoint::new(
+            &target_host,
+            target_port,
+            "Test",
+            state.environment().to_transport(),
+        )
+        .map_err(|e| logged("test_relay_connection", CommandError::new(codes::RELAY_INCOMPATIBLE, e.to_string())))?;
+
+        let config = transport::ClientConfig::new(
+            endpoint.clone(),
+            env!("CARGO_PKG_VERSION"),
+            ONE_SHOT_CLIENT_ID,
+            core.clock().epoch(),
+        );
+
+        let auth_mgr = Arc::new(transport::auth::AuthManager::new(
+            Arc::clone(core.credential_store()),
+            &endpoint,
+        ));
+
+        run_connectivity_test(
+            &transport,
+            &config,
+            &auth_mgr,
+            active_role(&state),
+        )
+        .await
+    } else {
+        require_relay(&state).map_err(|e| logged("test_relay_connection", e))?;
+        let config = one_shot_config(core);
+        run_connectivity_test(
+            &transport,
+            &config,
+            core.auth_manager(),
+            active_role(&state),
+        )
+        .await
+    };
+
     Ok(ConnectivityReportDto::from(report))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PickedFilePayload {
+    pub name: String,
+    pub path: Option<String>,
+    pub bytes: Vec<u8>,
+}
+
+/// Restart the Tauri desktop application.
+#[tauri::command(rename_all = "snake_case")]
+pub fn restart_app(app: tauri::AppHandle) {
+    app.restart();
+}
+
+/// Native file picker for MoTeC .ld and .ldx log files.
+#[tauri::command(rename_all = "snake_case")]
+pub async fn pick_motec_file(
+    app: tauri::AppHandle,
+) -> Result<Option<PickedFilePayload>, CommandError> {
+    use tauri_plugin_dialog::DialogExt;
+    let file = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .add_filter("MoTeC Log (*.ld, *.ldx)", &["ld", "ldx"])
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| CommandError::new(codes::INVALID_INPUT, e.to_string()))?;
+
+    match file {
+        Some(file_path) => {
+            let path = file_path
+                .into_path()
+                .map_err(|e| CommandError::new(codes::INVALID_INPUT, e.to_string()))?;
+            let name = path
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "motec_log.ld".to_owned());
+            let bytes = std::fs::read(&path)
+                .map_err(|e| CommandError::new(codes::INVALID_INPUT, format!("Failed to read file: {e}")))?;
+            Ok(Some(PickedFilePayload {
+                name,
+                path: Some(path.to_string_lossy().to_string()),
+                bytes,
+            }))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Writes a frontend error to the app log (blueprint §9 item 15): rate-limited, bounded and redacted.

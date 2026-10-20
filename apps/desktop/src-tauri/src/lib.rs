@@ -132,6 +132,8 @@ pub fn run() -> Result<(), tauri::Error> {
             commands::demo_stop,
             commands::bridge_subscribe,
             commands::bridge_unsubscribe,
+            commands::pick_motec_file,
+            commands::restart_app,
         ])
         .build(tauri::generate_context!())?;
 

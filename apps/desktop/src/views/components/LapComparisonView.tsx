@@ -1,4 +1,5 @@
 import { useMemo, useState, type JSX } from 'react';
+import { ch } from '../../generated/channels';
 import { MotecImportBar } from '../../motec/MotecImportBar';
 import { useMotecSession } from '../../motec/useMotecStore';
 import { formatLapTime } from '../../lib/units';
@@ -57,25 +58,51 @@ export function LapComparisonView(): JSX.Element {
 
   const polylinePoints = DEFAULT_POLYLINE_POINTS;
 
-  // Synthesize Speed comparison curves for SVG plot
+  // Speed comparison curves for SVG plot (from real MoTeC samples if loaded)
   const speedCurves = useMemo(() => {
     const pointsCount = 100;
     const motecPts: string[] = [];
     const cmpPts: string[] = [];
 
+    const speedChan = parsedFile
+      ? (parsedFile.channelsByAppId.get(ch.SPEED) ||
+         parsedFile.channels.get('ground speed') ||
+         parsedFile.channels.get('speed') ||
+         parsedFile.channels.get('vcar') ||
+         parsedFile.channels.get('gps speed'))
+      : null;
+
+    const maxDist = parsedFile?.maxDistanceM || 7004;
+
     for (let i = 0; i <= pointsCount; i++) {
       const frac = i / pointsCount;
       const x = frac * 500;
-      // Synthetic speed profile (60 to 330 km/h mapped to 85 to 15 px)
-      const phase = frac * Math.PI * 10;
-      const corner = Math.abs(Math.sin(phase));
+      const dist = frac * maxDist;
 
-      const motecSpd = 280 - corner * 170;
+      let motecSpd = 200;
+      if (speedChan && parsedFile && parsedFile.distanceTimelineM.length > 0) {
+        // Binary search for closest distance sample in MoTeC run
+        const xs = parsedFile.distanceTimelineM;
+        let lo = 0;
+        let hi = xs.length - 1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if ((xs[mid] ?? 0) < dist) lo = mid + 1;
+          else hi = mid - 1;
+        }
+        const idx = Math.min(xs.length - 1, Math.max(0, lo));
+        motecSpd = speedChan.samples[idx] ?? 200;
+      } else {
+        const phase = frac * Math.PI * 10;
+        const corner = Math.abs(Math.sin(phase));
+        motecSpd = 280 - corner * 170;
+      }
+
       const cmpSpd = motecSpd + (Math.sin(frac * 14) * 12 - 4);
 
       // Y mapping: 340 km/h = 10px, 60 km/h = 85px
-      const motecY = 85 - ((motecSpd - 60) / 280) * 75;
-      const cmpY = 85 - ((cmpSpd - 60) / 280) * 75;
+      const motecY = Math.max(10, Math.min(88, 85 - ((motecSpd - 60) / 280) * 75));
+      const cmpY = Math.max(10, Math.min(88, 85 - ((cmpSpd - 60) / 280) * 75));
 
       motecPts.push(`${x.toFixed(1)},${motecY.toFixed(1)}`);
       cmpPts.push(`${x.toFixed(1)},${cmpY.toFixed(1)}`);
@@ -85,7 +112,7 @@ export function LapComparisonView(): JSX.Element {
       motecLine: motecPts.join(' '),
       cmpLine: cmpPts.join(' '),
     };
-  }, []);
+  }, [parsedFile]);
 
   return (
     <div className="lap-comparison-view" data-testid="lap-comparison-view">

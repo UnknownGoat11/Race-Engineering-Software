@@ -57,31 +57,55 @@ const MOTEC_NAME_TO_CH_ID: Readonly<Record<string, number>> = {
   'car speed': ch.SPEED,
   'gps speed': ch.SPEED,
   'vcar': ch.SPEED,
+  'v car': ch.SPEED,
+  'corr speed': ch.SPEED,
+  'wheel speed': ch.SPEED,
+  'vehicle speed': ch.SPEED,
+  'speed kmh': ch.SPEED,
+  'speed ms': ch.SPEED,
+  'velocity': ch.SPEED,
+  'wspeed': ch.SPEED,
 
   // Throttle
   'throttle pos': ch.THROTTLE,
   'throttle': ch.THROTTLE,
   'throt': ch.THROTTLE,
   'rthrottle': ch.THROTTLE,
+  'athrottle': ch.THROTTLE,
+  'pedal': ch.THROTTLE,
+  'gas': ch.THROTTLE,
+  'accel': ch.THROTTLE,
+  'accel pos': ch.THROTTLE,
+  'pedal pos': ch.THROTTLE,
   'throttle filtered': ch.THROTTLE_FILTERED,
 
   // Brake
   'brake pos': ch.BRAKE,
   'brake': ch.BRAKE,
   'brakes force': ch.BRAKE,
+  'brake press': ch.BRAKE,
+  'brake pressure': ch.BRAKE,
+  'press brake': ch.BRAKE,
   'rbrake': ch.BRAKE,
+  'abrake': ch.BRAKE,
+  'brakepos': ch.BRAKE,
   'brake filtered': ch.BRAKE_FILTERED,
 
   // Clutch
   'clutch pos': ch.CLUTCH,
   'clutch': ch.CLUTCH,
   'rclutch': ch.CLUTCH,
+  'aclutch': ch.CLUTCH,
 
   // Steering
   'steering pos': ch.STEERING,
   'steering': ch.STEERING,
   'steer': ch.STEERING,
   'steering angle': ch.STEERING,
+  'steer angle': ch.STEERING,
+  'steered angle': ch.STEERING,
+  'str angle': ch.STEERING,
+  'steering wheel angle': ch.STEERING,
   'asteer': ch.STEERING,
 
   // Engine
@@ -89,20 +113,30 @@ const MOTEC_NAME_TO_CH_ID: Readonly<Record<string, number>> = {
   'rpm': ch.RPM,
   'revs': ch.RPM,
   'nengine': ch.RPM,
+  'engine speed': ch.RPM,
+  'eng rpm': ch.RPM,
   'engine torque': ch.ENGINE_TORQUE,
   'torque': ch.ENGINE_TORQUE,
   'gear': ch.GEAR,
   'ngear': ch.GEAR,
+  'current gear': ch.GEAR,
 
   // Accelerometer G
   'g force lat': ch.G_LAT,
   'g lat': ch.G_LAT,
+  'lat g': ch.G_LAT,
   'lateral accel': ch.G_LAT,
+  'lateral g': ch.G_LAT,
+  'lat accel': ch.G_LAT,
   'alat': ch.G_LAT,
+  'ay': ch.G_LAT,
   'g force long': ch.G_LONG,
   'g long': ch.G_LONG,
+  'long g': ch.G_LONG,
   'longitudinal accel': ch.G_LONG,
+  'longitudinal g': ch.G_LONG,
   'along': ch.G_LONG,
+  'ax': ch.G_LONG,
 
   // Lap / Track Position
   'lap distance': ch.LAP_DISTANCE,
@@ -111,35 +145,81 @@ const MOTEC_NAME_TO_CH_ID: Readonly<Record<string, number>> = {
   'slap': ch.LAP_DISTANCE,
   'lap time': ch.LAP_TIME,
   'time': ch.LAP_TIME,
+  'laptime': ch.LAP_TIME,
 
   // Tyre Pressures (kPa)
   'tyre pressure fl': ch.TYRE_PRESSURE_FL,
   'tyrespressure fl': ch.TYRE_PRESSURE_FL,
+  'tyre press fl': ch.TYRE_PRESSURE_FL,
+  'tire press fl': ch.TYRE_PRESSURE_FL,
+  'fl press': ch.TYRE_PRESSURE_FL,
   'tyre pressure fr': ch.TYRE_PRESSURE_FR,
   'tyrespressure fr': ch.TYRE_PRESSURE_FR,
+  'tyre press fr': ch.TYRE_PRESSURE_FR,
+  'tire press fr': ch.TYRE_PRESSURE_FR,
+  'fr press': ch.TYRE_PRESSURE_FR,
   'tyre pressure rl': ch.TYRE_PRESSURE_RL,
   'tyrespressure rl': ch.TYRE_PRESSURE_RL,
+  'tyre press rl': ch.TYRE_PRESSURE_RL,
+  'tire press rl': ch.TYRE_PRESSURE_RL,
+  'rl press': ch.TYRE_PRESSURE_RL,
   'tyre pressure rr': ch.TYRE_PRESSURE_RR,
   'tyrespressure rr': ch.TYRE_PRESSURE_RR,
+  'tyre press rr': ch.TYRE_PRESSURE_RR,
+  'tire press rr': ch.TYRE_PRESSURE_RR,
+  'rr press': ch.TYRE_PRESSURE_RR,
 
   // Brake Temperatures (°C)
   'brake temp fl': ch.BRAKE_TEMP_FL,
+  'fl brake temp': ch.BRAKE_TEMP_FL,
+  'disc temp fl': ch.BRAKE_TEMP_FL,
   'brake temp fr': ch.BRAKE_TEMP_FR,
+  'fr brake temp': ch.BRAKE_TEMP_FR,
+  'disc temp fr': ch.BRAKE_TEMP_FR,
   'brake temp rl': ch.BRAKE_TEMP_RL,
+  'rl brake temp': ch.BRAKE_TEMP_RL,
+  'disc temp rl': ch.BRAKE_TEMP_RL,
   'brake temp rr': ch.BRAKE_TEMP_RR,
+  'rr brake temp': ch.BRAKE_TEMP_RR,
+  'disc temp rr': ch.BRAKE_TEMP_RR,
 
   // Tyre Temperatures Inner / Core / Outer
   'tyre temp fl inner': ch.TYRE_TEMP_INNER_FL,
   'tyre temp fl core': ch.TYRE_TEMP_MIDDLE_FL,
   'tyre temp fl outer': ch.TYRE_TEMP_OUTER_FL,
+  'tire temp fl inner': ch.TYRE_TEMP_INNER_FL,
+  'tire temp fl core': ch.TYRE_TEMP_MIDDLE_FL,
+  'tire temp fl outer': ch.TYRE_TEMP_OUTER_FL,
   'tyre temp fr inner': ch.TYRE_TEMP_INNER_FR,
   'tyre temp fr core': ch.TYRE_TEMP_MIDDLE_FR,
   'tyre temp fr outer': ch.TYRE_TEMP_OUTER_FR,
+  'tire temp fr inner': ch.TYRE_TEMP_INNER_FR,
+  'tire temp fr core': ch.TYRE_TEMP_MIDDLE_FR,
+  'tire temp fr outer': ch.TYRE_TEMP_OUTER_FR,
+  'tyre temp rl inner': ch.TYRE_TEMP_INNER_RL,
+  'tyre temp rl core': ch.TYRE_TEMP_MIDDLE_RL,
+  'tyre temp rl outer': ch.TYRE_TEMP_OUTER_RL,
+  'tire temp rl inner': ch.TYRE_TEMP_INNER_RL,
+  'tire temp rl core': ch.TYRE_TEMP_MIDDLE_RL,
+  'tire temp rl outer': ch.TYRE_TEMP_OUTER_RL,
+  'tyre temp rr inner': ch.TYRE_TEMP_INNER_RR,
+  'tyre temp rr core': ch.TYRE_TEMP_MIDDLE_RR,
+  'tyre temp rr outer': ch.TYRE_TEMP_OUTER_RR,
+  'tire temp rr inner': ch.TYRE_TEMP_INNER_RR,
+  'tire temp rr core': ch.TYRE_TEMP_MIDDLE_RR,
+  'tire temp rr outer': ch.TYRE_TEMP_OUTER_RR,
 };
 
 export function matchChannelNameToAppId(name: string): number | undefined {
-  const norm = name.trim().toLowerCase().replace(/[_]/g, ' ');
-  return MOTEC_NAME_TO_CH_ID[norm];
+  const norm = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  if (MOTEC_NAME_TO_CH_ID[norm] !== undefined) {
+    return MOTEC_NAME_TO_CH_ID[norm];
+  }
+  const noSpaces = norm.replace(/\s+/g, '');
+  if (MOTEC_NAME_TO_CH_ID[noSpaces] !== undefined) {
+    return MOTEC_NAME_TO_CH_ID[noSpaces];
+  }
+  return undefined;
 }
 
 /**
@@ -313,8 +393,17 @@ export function parseMotecLd(buffer: ArrayBuffer | Uint8Array, filename = 'motec
 
   // Distance timeline: from Lap Distance channel or integrated from Speed
   let distanceTimelineM = new Float64Array(primarySampleCount);
-  const distChan = channels.get('lap distance') || channels.get('distance') || channels.get('slap');
-  const speedChan = channelsByAppId.get(ch.SPEED) || channels.get('ground speed') || channels.get('speed');
+  const distChan =
+    channelsByAppId.get(ch.LAP_DISTANCE) ||
+    channels.get('lap distance') ||
+    channels.get('distance') ||
+    channels.get('slap');
+  const speedChan =
+    channelsByAppId.get(ch.SPEED) ||
+    channels.get('ground speed') ||
+    channels.get('speed') ||
+    channels.get('vcar') ||
+    channels.get('gps speed');
 
   if (distChan && distChan.samples.length === primarySampleCount) {
     distanceTimelineM = new Float64Array(distChan.samples);

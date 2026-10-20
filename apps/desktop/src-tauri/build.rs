@@ -46,6 +46,8 @@ const COMMANDS: &[&str] = &[
     "demo_stop",
     "bridge_subscribe",
     "bridge_unsubscribe",
+    "pick_motec_file",
+    "restart_app",
 ];
 
 fn main() {

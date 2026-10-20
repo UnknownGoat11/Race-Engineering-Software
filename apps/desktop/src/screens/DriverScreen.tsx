@@ -432,7 +432,14 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
         {actionError && (
           <div className="driver-error-banner" role="alert">
             <span className="status-badge status-badge-error">ERROR</span>
-            <span className="driver-error-message">{actionError}</span>
+            <span className="driver-error-message">
+              {actionError}
+              {(actionError.toLowerCase().includes('relay') || actionError.toLowerCase().includes('server')) && (
+                <span style={{ display: 'block', fontSize: '11px', opacity: 0.85, marginTop: '2px' }}>
+                  Tip: Go to Settings → Relay Server Connection to configure your server address.
+                </span>
+              )}
+            </span>
             <button
               type="button"
               className="btn btn-xs driver-error-dismiss"

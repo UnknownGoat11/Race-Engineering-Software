@@ -33,6 +33,8 @@
     "allow-demo-start",
     "allow-demo-stop",
     "allow-bridge-subscribe",
-    "allow-bridge-unsubscribe"
+    "allow-bridge-unsubscribe",
+    "allow-pick-motec-file",
+    "allow-restart-app"
   ]
 }

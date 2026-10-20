@@ -1,7 +1,16 @@
-import { useId, useRef, useState, type JSX, type ChangeEvent, type SyntheticEvent } from 'react';
+import { useEffect, useId, useRef, useState, type JSX, type ChangeEvent, type SyntheticEvent } from 'react';
 import { Modal } from '../components/ui/Modal';
 import { classColorVar } from '../lib/classes';
-import { IpcError, engineerCancel, engineerConfirm, engineerJoin, type IdentityCardDto } from '../lib/ipc';
+import {
+  getConfig,
+  restartApp,
+  updateSettings,
+  IpcError,
+  engineerCancel,
+  engineerConfirm,
+  engineerJoin,
+  type IdentityCardDto,
+} from '../lib/ipc';
 import { COPY, joinErrorCopy, vehicleClassCode, type JoinErrorCopy } from '../lib/labels';
 import { NO_VALUE } from '../lib/units';
 import '../styles/modal.css';
@@ -48,6 +57,66 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
   const [card, setCard] = useState<IdentityCardDto | null>(null);
   const [errorCopy, setErrorCopy] = useState<JoinErrorCopy | null>(null);
   const [rawError, setRawError] = useState<string | null>(null);
+
+  // Relay Server Connection State
+  const [serverHost, setServerHost] = useState('relay.lmuracing.com');
+  const [serverPort, setServerPort] = useState(443);
+  const [configuredHost, setConfiguredHost] = useState<string | null>(null);
+  const [isServerConfigOpen, setIsServerConfigOpen] = useState(false);
+  const [savingServer, setSavingServer] = useState(false);
+
+  useEffect(() => {
+    void getConfig().then((snap) => {
+      const h = snap.config.network.relay_host;
+      setConfiguredHost(h || null);
+      if (h) {
+        setServerHost(h);
+        setServerPort(snap.config.network.relay_port || 443);
+      }
+    }).catch(() => {});
+  }, []);
+
+  const handleQuickConnectGlobal = async () => {
+    setSavingServer(true);
+    try {
+      const snap = await getConfig();
+      const next = {
+        ...snap.config,
+        network: {
+          ...snap.config.network,
+          relay_host: 'relay.lmuracing.com',
+          relay_port: 443,
+        },
+      };
+      await updateSettings(next);
+      await restartApp();
+    } catch (e) {
+      console.error(e);
+      setSavingServer(false);
+    }
+  };
+
+  const handleSaveAndRestart = async () => {
+    const trimmed = serverHost.trim();
+    if (!trimmed) return;
+    setSavingServer(true);
+    try {
+      const snap = await getConfig();
+      const next = {
+        ...snap.config,
+        network: {
+          ...snap.config.network,
+          relay_host: trimmed,
+          relay_port: Number(serverPort) || 443,
+        },
+      };
+      await updateSettings(next);
+      await restartApp();
+    } catch (e) {
+      console.error(e);
+      setSavingServer(false);
+    }
+  };
 
   const titleId = useId();
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -156,6 +225,112 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
           </span>
         </div>
         <div className="card-body">
+          {/* Active Server Connection Indicator */}
+          {!card && (
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '14px',
+                padding: '6px 10px',
+                background: 'var(--surface-sunken)',
+                borderRadius: '4px',
+                fontSize: '11px',
+                border: '1px solid var(--border-subtle)',
+              }}
+            >
+              <span>
+                🌐 Server:{' '}
+                <strong style={{ fontFamily: 'monospace' }}>
+                  {configuredHost ? `${configuredHost}:${serverPort}` : 'None configured'}
+                </strong>
+              </span>
+              <button
+                type="button"
+                className="btn btn-xs"
+                onClick={() => { setIsServerConfigOpen(!isServerConfigOpen); }}
+                style={{ padding: '2px 8px', fontSize: '10px' }}
+              >
+                {isServerConfigOpen ? '✕ Close' : '⚙️ Server Settings'}
+              </button>
+            </div>
+          )}
+
+          {/* Inline Server Configuration Panel */}
+          {isServerConfigOpen && !card && (
+            <div
+              className="card"
+              style={{
+                padding: '12px',
+                marginBottom: '16px',
+                background: 'var(--surface-sunken)',
+                border: '1px solid var(--border-subtle)',
+                borderRadius: '4px',
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                <span style={{ fontWeight: 700, fontSize: '12px' }}>🌐 Global Relay Server Setup</span>
+                <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Connect worldwide</span>
+              </div>
+              <p style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                Drivers and engineers connect over the internet through a Relay Server. Select a preset or enter your custom address:
+              </p>
+              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                <button
+                  type="button"
+                  className={`btn btn-xs ${serverHost === 'relay.lmuracing.com' ? 'btn-primary' : ''}`}
+                  onClick={() => { setServerHost('relay.lmuracing.com'); setServerPort(443); }}
+                >
+                  🌐 Global Cloud (relay.lmuracing.com)
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-xs ${serverHost === '127.0.0.1' ? 'btn-primary' : ''}`}
+                  onClick={() => { setServerHost('127.0.0.1'); setServerPort(443); }}
+                >
+                  💻 Localhost (127.0.0.1)
+                </button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '8px', marginBottom: '10px' }}>
+                <div>
+                  <label htmlFor="modal-server-host" style={{ fontSize: '11px', display: 'block', fontWeight: 600 }}>Host / IP</label>
+                  <input
+                    id="modal-server-host"
+                    type="text"
+                    className="input"
+                    value={serverHost}
+                    onChange={(e) => { setServerHost(e.target.value); }}
+                    placeholder="relay.lmuracing.com"
+                    style={{ width: '100%', fontFamily: 'monospace', fontSize: '12px' }}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="modal-server-port" style={{ fontSize: '11px', display: 'block', fontWeight: 600 }}>Port</label>
+                  <input
+                    id="modal-server-port"
+                    type="number"
+                    className="input"
+                    value={serverPort}
+                    onChange={(e) => { setServerPort(Number(e.target.value) || 443); }}
+                    placeholder="443"
+                    style={{ width: '100%', fontFamily: 'monospace', fontSize: '12px' }}
+                  />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-primary"
+                  disabled={savingServer}
+                  onClick={() => { void handleSaveAndRestart(); }}
+                >
+                  {savingServer ? 'Saving…' : '💾 Save & Restart to Connect'}
+                </button>
+              </div>
+            </div>
+          )}
+
           {errorCopy && (
             <div
               className="status-badge status-badge-error join-error-block"
@@ -182,6 +357,21 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
               </span>
               {rawError && rawError !== errorCopy.title && rawError !== errorCopy.helper && (
                 <span style={{ fontSize: '11px', opacity: 0.8 }}>({rawError})</span>
+              )}
+
+              {/* One-Click Resolution for "No server is set up" */}
+              {errorCopy.title === 'No server is set up' && (
+                <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                  <button
+                    type="button"
+                    className="btn btn-xs btn-primary"
+                    onClick={() => { void handleQuickConnectGlobal(); }}
+                    disabled={savingServer}
+                    style={{ fontWeight: 600 }}
+                  >
+                    {savingServer ? 'Connecting…' : '🌐 One-Click Setup: Connect to Global Cloud Relay (relay.lmuracing.com)'}
+                  </button>
+                </div>
               )}
             </div>
           )}

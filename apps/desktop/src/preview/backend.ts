@@ -378,6 +378,8 @@ export class FakeBackend {
       case 'engineer_request_snapshot':
       case 'demo_start':
       case 'demo_stop':
+      case 'restart_app':
+      case 'pick_motec_file':
         return null;
     }
   }
