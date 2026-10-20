@@ -22,13 +22,14 @@
 /* 1920x1080 4-column primary pitwall grid */
 .pitwall-grid {
   display: grid;
-  grid-template-columns: 384px minmax(720px, 1fr) 280px 272px;
+  grid-template-columns: minmax(280px, 340px) minmax(450px, 1fr) 280px 272px;
   column-gap: 8px;
   padding: 8px 12px 12px;
   min-height: 0;
   height: 100%;
   box-sizing: border-box;
   overflow: hidden;
+  min-width: 0;
 }
 
 .pitwall-tower-col {
@@ -96,16 +97,17 @@
   display: none;
 }
 
-/* 1366x768 3-column responsive pitwall grid (§3.3) */
+/* Responsive 3-column pitwall grid for standard desktop / laptop resolutions */
 @media (max-width: 1799px) {
   .pitwall {
     grid-template-rows: 32px 28px auto 1fr;
   }
 
   .pitwall-grid {
-    grid-template-columns: 272px minmax(560px, 1fr) 300px;
+    grid-template-columns: minmax(220px, 272px) minmax(380px, 1fr) minmax(280px, 320px);
     column-gap: 6px;
     padding: 6px 8px 8px;
+    min-width: 0;
   }
 
   .pitwall-centre {

@@ -3,7 +3,7 @@
 
 fn main() {
     if let Err(error) = lmu_race_engineering_lib::run() {
-        eprintln!("LMU Race Engineering failed to start: {error}");
+        eprintln!("Race Engineering Tool failed to start: {error}");
         std::process::exit(1);
     }
 }

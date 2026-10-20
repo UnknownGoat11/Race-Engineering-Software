@@ -18,7 +18,7 @@ export function ScenarioIndex({ unknownQuery }: { readonly unknownQuery: string 
   return (
     <main className="preview-index">
       <header className="preview-index-header">
-        <h1>LMU Race Engineering — UI preview harness</h1>
+        <h1>Race Engineering Tool — UI preview harness</h1>
         <span className="status-badge status-badge-warn">SYNTHETIC DATA · DEV ONLY</span>
       </header>
       <p className="panel-note">

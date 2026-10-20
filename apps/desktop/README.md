@@ -1,4 +1,4 @@
-# LMU Race Engineering — desktop app
+# Race Engineering Tool — desktop app
 
 One Tauri 2 application for both roles (driver PC and engineer PC); the operating mode is a persisted
 setting chosen on first launch. See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) and

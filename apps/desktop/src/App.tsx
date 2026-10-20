@@ -98,7 +98,7 @@ export function App(): JSX.Element {
             </div>
             <div className="entry-error-panel__body">
               <p className="entry-error-message">
-                The LMU Race Engineering backend process could not be contacted.
+                The Race Engineering Tool backend process could not be contacted.
               </p>
               <pre className="entry-error-details">{state.message}</pre>
               <div className="entry-error-log">

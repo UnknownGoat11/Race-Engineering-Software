@@ -1,6 +1,6 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "LMU Race Engineering",
+  "productName": "Race Engineering Tool",
   "identifier": "com.lmurace.engineering",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "LMU Race Engineering",
+        "title": "Race Engineering Tool",
         "width": 1600,
         "height": 1000,
         "minWidth": 1100,
@@ -31,7 +31,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis", "msi"],
-    "publisher": "LMU Race Engineering",
+    "publisher": "Race Engineering Tool",
     "category": "Utility",
     "shortDescription": "Remote race-engineering telemetry for Le Mans Ultimate",
     "longDescription": "Driver and engineer desktop application for live remote race engineering with Le Mans Ultimate.",
@@ -42,7 +42,7 @@
       },
       "nsis": {
         "installMode": "currentUser",
-        "startMenuFolder": "LMU Race Engineering",
+        "startMenuFolder": "Race Engineering Tool",
         "displayLanguageSelector": false
       }
     }

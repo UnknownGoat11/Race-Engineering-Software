@@ -1,4 +1,4 @@
-# LMU Race Engineering
+# Race Engineering Tool
 
 A Windows race-engineering telemetry platform for **Le Mans Ultimate (LMU)**. One desktop app, two modes:
 

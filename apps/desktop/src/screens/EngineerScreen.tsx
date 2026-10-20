@@ -65,7 +65,7 @@ import '../styles/common.css';
 import '../styles/engineer.css';
 import '../styles/modal.css';
 
-function useIsWide(breakpoint = 1440): boolean {
+function useIsWide(breakpoint = 1800): boolean {
   return useSyncExternalStore(
     (callback) => {
       window.addEventListener('resize', callback);
@@ -73,7 +73,7 @@ function useIsWide(breakpoint = 1440): boolean {
         window.removeEventListener('resize', callback);
       };
     },
-    () => (typeof window !== 'undefined' ? window.innerWidth > breakpoint : true),
+    () => (typeof window !== 'undefined' ? window.innerWidth >= breakpoint : true),
     () => true,
   );
 }

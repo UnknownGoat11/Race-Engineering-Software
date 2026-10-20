@@ -84,7 +84,7 @@ pub fn confirm_text(blockers: &[CloseBlocker]) -> String {
         text.push_str("\n• ");
         text.push_str(blocker.describe());
     }
-    text.push_str("\n\nQuit LMU Race Engineering?");
+    text.push_str("\n\nQuit Race Engineering Tool?");
     text
 }
 
@@ -164,7 +164,7 @@ pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     let mut dialog = app
         .dialog()
         .message(confirm_text(&blockers))
-        .title("Quit LMU Race Engineering?")
+        .title("Quit Race Engineering Tool?")
         .kind(MessageDialogKind::Warning)
         .buttons(MessageDialogButtons::OkCancelCustom(
             "Quit".to_owned(),

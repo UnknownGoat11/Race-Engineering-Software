@@ -1,6 +1,6 @@
 [package]
 name = "lmu-race-engineering"
-description = "LMU Race Engineering desktop application (driver and engineer modes)"
+description = "Race Engineering Tool desktop application (driver and engineer modes)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

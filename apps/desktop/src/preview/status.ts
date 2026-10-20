@@ -24,8 +24,8 @@ import type {
 export const PREVIEW_NOW_UNIX_S = 1_792_312_000;
 
 export const PREVIEW_APP_INFO: AppInfo = {
-  name: 'LMU Race Engineering',
-  version: '1.1.0',
+  name: 'Race Engineering Tool',
+  version: '1.2.0',
   identifier: 'com.lmu-race-engineering.desktop',
   build_profile: 'debug',
   environment: 'development',

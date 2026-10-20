@@ -8,7 +8,7 @@ use crate::config::Environment;
 const BUILD_ENVIRONMENT: &str = env!("LMURE_BUILD_ENV");
 
 /// Human-readable product name (matches `productName` in `tauri.conf.json`).
-pub const PRODUCT_NAME: &str = "LMU Race Engineering";
+pub const PRODUCT_NAME: &str = "Race Engineering Tool";
 
 /// The deployment environment this binary was built for.
 ///

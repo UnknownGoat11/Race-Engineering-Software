@@ -20,7 +20,7 @@ use protocol::messages::Secret;
 use thiserror::Error;
 
 /// Default Windows Credential Manager service name of the app.
-pub const DEFAULT_KEYRING_SERVICE: &str = "LMU Race Engineering";
+pub const DEFAULT_KEYRING_SERVICE: &str = "Race Engineering Tool";
 /// Format tag of a stored driver session (`v1:<session_id>:<resume token>`).
 const DRIVER_SESSION_FORMAT: &str = "v1";
 /// Separator of the stored driver session fields.
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     #[ignore = "touches the real Windows Credential Manager"]
     fn keyring_round_trip_in_windows_credential_manager() {
-        let store = KeyringCredentialStore::new("LMU Race Engineering transport test");
+        let store = KeyringCredentialStore::new("Race Engineering Tool transport test");
         let ns = "development/keyring-test.invalid:1";
         store
             .delete(ns, CredentialKind::RefreshToken)

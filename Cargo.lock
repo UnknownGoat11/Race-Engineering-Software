@@ -105,7 +105,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "app-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arc-swap",
  "bytes",
@@ -1784,7 +1784,7 @@ dependencies = [
 
 [[package]]
 name = "gen-ts"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2686,7 +2686,7 @@ checksum = "47d9d19d1d6efa0109d2f65ff4c85cddd50bd572e5a00127ab10987290bcefae"
 
 [[package]]
 name = "lmu-diag"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "clap",
  "lmu-reader",
@@ -2701,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "lmu-normalizer"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "lmu-reader",
  "serde",
@@ -2711,7 +2711,7 @@ dependencies = [
 
 [[package]]
 name = "lmu-race-engineering"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "app-core",
  "chrono",
@@ -2735,7 +2735,7 @@ dependencies = [
 
 [[package]]
 name = "lmu-reader"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2746,7 +2746,7 @@ dependencies = [
 
 [[package]]
 name = "lmu-relay"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "arc-swap",
  "argon2",
@@ -2781,7 +2781,7 @@ dependencies = [
 
 [[package]]
 name = "lmu-verify"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "clap",
  "lmu-normalizer",
@@ -3630,7 +3630,7 @@ dependencies = [
 
 [[package]]
 name = "protocol"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "bytes",
  "crc32c",
@@ -3681,7 +3681,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "race-engines"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "lmu-normalizer",
  "serde",
@@ -3777,7 +3777,7 @@ dependencies = [
 
 [[package]]
 name = "recorder"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "crc32c",
  "crossbeam-channel",
@@ -4806,7 +4806,7 @@ dependencies = [
 
 [[package]]
 name = "synthetic"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "bytes",
  "protocol",
@@ -5177,7 +5177,7 @@ dependencies = [
 
 [[package]]
 name = "telemetry-model"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "postcard",
  "serde",
@@ -5598,7 +5598,7 @@ dependencies = [
 
 [[package]]
 name = "transport"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "bytes",
  "crc32c",

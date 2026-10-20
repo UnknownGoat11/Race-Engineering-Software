@@ -235,7 +235,7 @@ const SCENARIOS_TO_TEST = [
 
 async function runScenarioTests() {
   console.log('========================================================================');
-  console.log('  LMU RACE ENGINEERING TOOL: 20 SCENARIO LIVE TELEMETRY VERIFICATION  ');
+  console.log('  RACE ENGINEERING TOOL: 20 SCENARIO LIVE TELEMETRY VERIFICATION  ');
   console.log('========================================================================');
   console.log(`Connecting to: ${BASE_URL}`);
   console.log(`Browser: ${CHROME_PATH}\n`);

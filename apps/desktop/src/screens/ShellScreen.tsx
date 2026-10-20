@@ -54,7 +54,7 @@ export function ShellScreen({
 
   const pages: readonly { readonly id: ShellPage; readonly label: string }[] = [
     { id: 'lobby', label: 'Lobby' },
-    { id: 'views', label: 'Views (V1.1)' },
+    { id: 'views', label: 'Views (V1.2)' },
     {
       id: mode === 'driver' ? 'status' : 'pitwall',
       label: mode === 'driver' ? COPY.status : COPY.pitwall,

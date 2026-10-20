@@ -283,7 +283,7 @@
 }
 
 /* -------------------------------------------------------------------------
- * Driving View & Cockpit HUD (Image 2)
+ * Driving View & Cockpit HUD (Telemetry Tool v1509 & MoTeC i2 Pro Inspired)
  * ------------------------------------------------------------------------- */
 .driving-view-container {
   display: flex;
@@ -294,22 +294,114 @@
   max-height: 100%;
   box-sizing: border-box;
   overflow: hidden;
+  gap: 6px;
 }
+
+/* Driving Header Bar: Engine map, 12 minisector timing blocks, lap delta & flags */
+.driving-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 10px;
+  background: #090c10;
+  border: 1px solid #1e293b;
+  border-radius: 5px;
+  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.driving-header-left,
+.driving-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.driving-minisector-strip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.minisector-strip-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9px;
+}
+
+.minisector-title {
+  color: #94a3b8;
+  font-weight: 700;
+  font-size: 9px;
+}
+
+.minisector-delta-badge {
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 900;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #0f172a;
+}
+
+.minisector-sub {
+  color: #64748b;
+  font-size: 8px;
+}
+
+.minisector-blocks-row {
+  display: flex;
+  gap: 3px;
+  width: 100%;
+  max-width: 480px;
+  height: 14px;
+}
+
+.minisector-block {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 800;
+  color: #000000;
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+
+.minisector-block:hover {
+  transform: scaleY(1.15);
+}
+
+.ms-purple { background: #a855f7; color: #ffffff; }
+.ms-faster { background: #22c55e; color: #000000; }
+.ms-slower { background: #ef4444; color: #ffffff; }
+.ms-num { font-size: 7px; opacity: 0.8; }
 
 .driving-cockpit-grid {
   display: grid;
-  grid-template-columns: minmax(210px, 260px) 1fr minmax(220px, 280px);
-  gap: 10px;
+  grid-template-columns: minmax(230px, 280px) minmax(360px, 1fr) minmax(240px, 300px);
+  gap: 8px;
   height: 100%;
+  flex: 1;
   min-height: 0;
   overflow: hidden;
   box-sizing: border-box;
 }
 
-@media (max-width: 1400px) {
+@media (max-width: 1300px) {
   .driving-cockpit-grid {
-    grid-template-columns: minmax(190px, 240px) 1fr minmax(200px, 250px);
-    gap: 8px;
+    grid-template-columns: minmax(210px, 240px) 1fr minmax(220px, 250px);
+    gap: 6px;
   }
 }
 
@@ -319,7 +411,9 @@
   gap: 6px;
   height: 100%;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
 /* Engine Map Banner */
@@ -327,12 +421,13 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 10px;
+  padding: 4px 8px;
   background: #10141a;
   border: 1px solid #1e293b;
   border-left: 3px solid #f59e0b;
   border-radius: 4px;
   flex-shrink: 0;
+  gap: 6px;
 }
 
 .engine-map-label {
@@ -340,6 +435,7 @@
   font-size: 11px;
   font-weight: 700;
   color: #f59e0b;
+  white-space: nowrap;
 }
 
 /* Vertical Pedals & Input Bar */
@@ -396,12 +492,10 @@
 
 .brake-fill {
   background: #ef4444;
-  box-shadow: 0 0 8px #ef4444;
 }
 
 .throt-fill {
   background: #22c55e;
-  box-shadow: 0 0 8px #22c55e;
 }
 
 .revs-fill {
@@ -410,12 +504,6 @@
 
 .revs-shift-light {
   background: #f59e0b;
-  animation: flash-revs 0.2s infinite;
-}
-
-@keyframes flash-revs {
-  0%, 100% { background: #f59e0b; }
-  50% { background: #ef4444; }
 }
 
 .torque-fill {
@@ -435,25 +523,48 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
   padding: 0 4px;
 }
 
 .gear-digit-box {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   width: 56px;
-  height: 70px;
+  height: 68px;
   background: #141a24;
   border: 2px solid #22d3ee;
   border-radius: 6px;
 }
 
+.suggested-gear-chip {
+  position: absolute;
+  top: -8px;
+  font-family: var(--font-data);
+  font-size: 8px;
+  font-weight: 800;
+  padding: 1px 4px;
+  border-radius: 2px;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.suggest-upshift {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.suggest-downshift {
+  background: #dc2626;
+  color: #ffffff;
+}
+
 .gear-digit {
   font-family: var(--font-data);
-  font-size: 40px;
+  font-size: 38px;
   font-weight: 800;
   line-height: 1;
   color: #ffffff;
@@ -995,34 +1106,77 @@
   color: #94a3b8;
 }
 
-.session-events-ticker {
+.corner-telemetry-card,
+.brake-wear-card {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  padding-top: 6px;
-  border-top: 1px solid #1e2632;
-  overflow: hidden;
+  gap: 4px;
+  padding: 6px 8px;
+  background: #10151c;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  box-sizing: border-box;
 }
 
-.session-events-title {
+.corner-telemetry-header,
+.brake-wear-header {
   font-size: 9px;
   font-weight: 800;
-  color: #f59e0b;
+  letter-spacing: 0.05em;
+  color: #38bdf8;
+  border-bottom: 1px solid #1e293b;
+  padding-bottom: 3px;
 }
 
-.session-events-scroll {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+.corner-telemetry-grid,
+.brake-wear-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
   font-size: 9px;
-  color: #8b95a3;
-  font-family: var(--font-data);
 }
 
-.session-events-scroll .event-line {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.corner-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.corner-label {
+  color: #94a3b8;
+  font-size: 9px;
+}
+
+.corner-val {
+  font-family: var(--font-data);
+  font-weight: 700;
+  font-size: 9px;
+}
+
+.corner-damage-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 9px;
+  padding-top: 2px;
+  border-top: 1px solid #1e293b;
+}
+
+.damage-label {
+  color: #94a3b8;
+  font-size: 9px;
+}
+
+.damage-val {
+  font-family: var(--font-data);
+  font-weight: 700;
+  font-size: 9px;
+}
+
+.brake-wear-item {
+  font-family: var(--font-data);
+  font-size: 9px;
+  color: #cbd5e1;
 }
 
 /* -------------------------------------------------------------------------
@@ -1393,34 +1547,124 @@
 .delta-faster { color: #22c55e; }
 .delta-slower { color: #ef4444; }
 
-.comp-content-grid {
-  display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
-  gap: 10px;
-  flex: 1;
-  min-height: 0;
+/* MoTeC i2 Pro Navigation Toolbar: Zoom Presets & View Modes */
+.comp-nav-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  background: #090c10;
+  border: 1px solid #1e293b;
+  border-radius: 4px;
+  flex-shrink: 0;
+  min-width: 0;
   overflow: hidden;
 }
 
-.comp-graphs-col {
+.comp-nav-left,
+.comp-nav-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.comp-toolbar-title {
+  font-size: 9px;
+  font-weight: 800;
+  color: #94a3b8;
+  letter-spacing: 0.05em;
+}
+
+.comp-cursor-readout {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 9px;
+  padding: 0 8px;
+}
+
+.cursor-active-stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-data);
+  font-size: 10px;
+  color: #f8fafc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cursor-dist-label { color: #f59e0b; }
+.cursor-spd-live { color: #22d3ee; }
+.cursor-spd-ref { color: #f97316; }
+.cursor-delta { font-weight: 800; }
+.cursor-throt { color: #22c55e; }
+.cursor-brake { color: #ef4444; }
+
+.cursor-hint {
+  color: #64748b;
+  font-style: italic;
+  font-size: 9px;
+}
+
+/* Full Width Telemetry Workspace (No Halfway Cutoff!) */
+.comp-workspace-container {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.comp-workspace-container.mode-graphs-only .comp-fullwidth-graphs {
+  flex: 1;
+}
+
+.comp-workspace-container.mode-split .comp-fullwidth-graphs {
+  flex: 1.5;
+  min-height: 240px;
+}
+
+.comp-workspace-container.mode-split .comp-corners-drawer {
+  flex: 1;
+  min-height: 160px;
+}
+
+.comp-workspace-container.mode-table-only .comp-corners-drawer {
+  flex: 1;
+}
+
+.comp-fullwidth-graphs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   overflow: hidden;
 }
 
 .comp-graph-card {
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: #0d1218;
   border: 1px solid #1e293b;
   border-radius: 5px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .comp-graph-header {
@@ -1431,9 +1675,10 @@
 }
 
 .comp-graph-title {
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 9px;
+  font-weight: 800;
   color: #cbd5e1;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
@@ -1456,42 +1701,51 @@
   min-height: 0;
   background: #07090c;
   border: 1px solid #1e293b;
-  border-radius: 4px;
+  border-radius: 3px;
   overflow: hidden;
+  cursor: crosshair;
 }
 
-.comp-speed-svg,
-.comp-delta-svg {
+.comp-telemetry-svg {
   width: 100%;
   height: 100%;
+  display: block;
 }
 
-.comp-corners-panel {
+/* Bottom Corner Report Drawer */
+.comp-corners-drawer {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 0;
   background: #0d1218;
   border: 1px solid #1e293b;
   border-radius: 5px;
-  padding: 8px 10px;
+  padding: 6px 8px;
+  box-sizing: border-box;
   overflow: hidden;
+  min-height: 0;
+  width: 100%;
 }
 
 .comp-corners-header {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  padding-bottom: 6px;
+  align-items: center;
+  padding-bottom: 4px;
   border-bottom: 1px solid #1e293b;
   flex-shrink: 0;
 }
 
 .corners-title {
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
-  letter-spacing: 0.06em;
   color: #38bdf8;
+  letter-spacing: 0.05em;
+}
+
+.corners-count {
+  font-size: 8px;
+  color: #94a3b8;
+  font-family: var(--font-data);
 }
 
 .comp-table-scroll {
@@ -1503,33 +1757,41 @@
 .comp-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .comp-table th {
   position: sticky;
   top: 0;
-  background: #0d1218;
+  background: #111722;
   color: #94a3b8;
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  padding: 4px 6px;
-  border-bottom: 1px solid #334155;
   text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid #1e293b;
+  font-size: 9px;
 }
 
 .comp-table td {
   padding: 4px 6px;
-  border-bottom: 1px solid #1e293b;
+  border-bottom: 1px solid #141b24;
   font-family: var(--font-data);
-  color: #cbd5e1;
+  font-size: 9px;
+}
+
+.comp-table tr {
+  cursor: pointer;
+  transition: background 0.1s ease;
+}
+
+.comp-table tr:hover,
+.comp-table tr.row-highlighted {
+  background: #162030;
 }
 
 .corner-name-cell {
-  font-family: var(--font-ui);
+  font-family: var(--font-ui) !important;
   font-weight: 700;
-  color: #f8fafc;
+  color: #f1f5f9;
 }
 
 /* Polar Circle Map Layout */
