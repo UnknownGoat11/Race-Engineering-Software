@@ -12,14 +12,16 @@
  * Owner rule: preview data is never presented as real data. Every scenario page carries a fixed PREVIEW tag in
  * the bottom-right corner; an `origin: 'lmu'` scenario's tag says "SIMULATED LMU ORIGIN · NOT REAL DATA".
  */
+// Global styles first, in the same order as src/main.tsx (component stylesheets must win the cascade).
+import '../styles/fonts.css';
+import '../styles/tokens.css';
+import '../styles/app.css';
+import '../styles/views.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from '../App';
 import { AppErrorBoundary } from '../components/ErrorBoundary';
 import { logUiError } from '../lib/ipc';
-import '../styles/fonts.css';
-import '../styles/tokens.css';
-import '../styles/app.css';
 import { fakeBackend } from './backend';
 import { holdPreviewClock, installPreviewClock } from './clock';
 import { ScenarioIndex } from './ScenarioIndex';

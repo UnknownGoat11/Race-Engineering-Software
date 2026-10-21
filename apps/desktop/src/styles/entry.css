@@ -218,7 +218,8 @@
   max-height: 160px;
   overflow-y: auto;
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 .entry-error-log {
@@ -241,7 +242,8 @@
   padding: 6px 10px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  word-break: break-all;
+  word-break: normal;
+  overflow-wrap: anywhere;
   user-select: text;
 }
 

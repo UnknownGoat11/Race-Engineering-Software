@@ -1,12 +1,14 @@
+// Global styles first: component stylesheets imported by App must come later in the cascade, so
+// their rules win over the generic ones at equal specificity (e.g. driver action buttons over `.btn`).
+import './styles/fonts.css';
+import './styles/tokens.css';
+import './styles/app.css';
+import './styles/views.css';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { AppErrorBoundary } from './components/ErrorBoundary';
 import { logUiError } from './lib/ipc';
-import './styles/fonts.css';
-import './styles/tokens.css';
-import './styles/app.css';
-import './styles/views.css';
 
 // Forward unhandled window errors and promise rejections to the native log sink (DEFERRED 15)
 window.addEventListener('error', (event: ErrorEvent) => {

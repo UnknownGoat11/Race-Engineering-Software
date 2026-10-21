@@ -30,7 +30,7 @@
   gap: 12px;
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius-1);
   padding: 10px 16px;
 }
 
@@ -53,7 +53,7 @@
   align-items: center;
   gap: 6px;
   padding: 3px 8px;
-  border-radius: 3px;
+  border-radius: var(--radius-1);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
   font-weight: 700;
@@ -92,9 +92,9 @@
 }
 
 .status-badge-info {
-  background-color: rgba(76, 157, 255, 0.15);
-  color: var(--color-info);
-  border: 1px solid rgba(76, 157, 255, 0.3);
+  background-color: var(--status-info-bg);
+  color: var(--status-info);
+  border: 1px solid var(--border-strong);
 }
 
 .meta-chip {
@@ -126,7 +126,7 @@
 .card {
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--radius-1);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -193,7 +193,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 6px 10px;
-  border-radius: 3px;
+  border-radius: var(--radius-1);
   font-size: var(--font-size-xs);
   font-family: var(--font-ui);
 }
@@ -214,13 +214,6 @@
   background-color: var(--color-surface-raised);
   border: 1px solid var(--color-info);
   color: var(--color-info);
-}
-
-.btn-xs {
-  padding: 1px 6px;
-  font-size: 10px;
-  height: 20px;
-  line-height: 18px;
 }
 
 /* Inline two-step confirmation (components/ui/ConfirmAction.tsx; W1.1, new). */
