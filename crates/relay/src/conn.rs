@@ -64,6 +64,13 @@ const MAX_TEXT_CHARS: usize = 128;
 const SESSION_ID_ATTEMPTS: usize = 4;
 /// Time allowed for the TLS close_notify after the last write.
 const SHUTDOWN_FLUSH: Duration = Duration::from_secs(2);
+/// After the relay's side is closed, client bytes are discarded until none arrive for this long
+/// (or the client closes its side), so the socket is not dropped with unread data.
+const CLOSE_DRAIN_QUIET: Duration = Duration::from_millis(250);
+/// Longest time spent discarding client bytes after the relay's side is closed.
+const CLOSE_DRAIN_MAX: Duration = Duration::from_secs(2);
+/// Most client bytes discarded while a connection is closed.
+const CLOSE_DRAIN_MAX_BYTES: usize = 1024 * 1024;
 /// Payload limit until the connection is authenticated. HELLO, AUTH and ACCOUNT_REGISTER are
 /// well under 1 KiB, so an unauthenticated peer cannot make the reader reserve and buffer large
 /// frames; the configured (announced) limit applies from the first frame after AUTH_OK.
@@ -166,7 +173,7 @@ pub(crate) async fn serve_connection(
         tracing::warn!(component = COMPONENT, conn = id, %peer, "client did not negotiate ALPN lmure/1; closing");
         return;
     }
-    let (rd, wr) = tokio::io::split(tls);
+    let (mut rd, wr) = tokio::io::split(tls);
     let limits = &state.config.limits;
     let conn = Arc::new(ConnHandle::new(
         id,
@@ -178,7 +185,8 @@ pub(crate) async fn serve_connection(
     let writer = tokio::spawn(writer_loop(Arc::clone(&state), Arc::clone(&conn), wr));
     tracing::info!(component = COMPONENT, conn = id, %peer, "connection opened");
     let mut connection = Connection::new(Arc::clone(&state), Arc::clone(&conn), handshake_deadline);
-    let end = connection.run(rd).await;
+    // The read half is kept: it is drained when the connection closes (see `close_draining`).
+    let end = connection.run(&mut rd).await;
     connection.finish().await;
     state.logins.remove(id);
     conn.close();
@@ -188,7 +196,7 @@ pub(crate) async fn serve_connection(
         .timeouts
         .write_stall
         .saturating_add(SHUTDOWN_FLUSH);
-    if tokio::time::timeout(flush, writer).await.is_err() {
+    if !close_draining(&state, &mut rd, writer, flush).await {
         tracing::warn!(
             component = COMPONENT,
             conn = id,
@@ -206,6 +214,62 @@ pub(crate) async fn serve_connection(
         duration_ms = duration_ms(opened.elapsed()),
         "connection closed"
     );
+}
+
+/// Waits up to `flush` for the writer to flush the queued frames and close the relay's side,
+/// discarding client bytes meanwhile; returns whether the writer finished in time.
+///
+/// A socket dropped with unread bytes in its receive buffer is reset (RST) instead of closed, and
+/// a reset can make the client discard the last frames (a fatal ERROR, SESSION_CLOSE,
+/// DISCONNECT) before reading them. This happens when the relay ends a connection while the
+/// client is still sending, e.g. after too many invalid frames. So the read half is read and
+/// discarded while the writer flushes (a client blocked on a full window can then still read
+/// its frames) and, once the relay's side is closed, until the client closes its side or sends
+/// nothing for [`CLOSE_DRAIN_QUIET`]; at most [`CLOSE_DRAIN_MAX`] and [`CLOSE_DRAIN_MAX_BYTES`].
+async fn close_draining<R: AsyncRead + Unpin>(
+    state: &RelayState,
+    rd: &mut R,
+    mut writer: tokio::task::JoinHandle<()>,
+    flush: Duration,
+) -> bool {
+    let mut scratch = vec![0u8; READ_CHUNK];
+    let mut discarded = 0usize;
+    let mut readable = true;
+    let flush_deadline = tokio::time::Instant::now() + flush;
+    let finished = loop {
+        tokio::select! {
+            biased;
+            _ = &mut writer => break true,
+            _ = tokio::time::sleep_until(flush_deadline) => break false,
+            r = rd.read(&mut scratch), if readable => match r {
+                Ok(0) | Err(_) => readable = false,
+                Ok(n) => {
+                    discarded = discarded.saturating_add(n);
+                    readable = discarded < CLOSE_DRAIN_MAX_BYTES;
+                }
+            },
+        }
+    };
+    if !finished {
+        return false;
+    }
+    let drain_deadline = tokio::time::Instant::now() + CLOSE_DRAIN_MAX;
+    while readable {
+        let quiet_deadline = (tokio::time::Instant::now() + CLOSE_DRAIN_QUIET).min(drain_deadline);
+        let read = tokio::select! {
+            _ = state.hard_stop.cancelled() => break,
+            r = tokio::time::timeout_at(quiet_deadline, rd.read(&mut scratch)) => r,
+        };
+        match read {
+            Ok(Ok(n)) if n > 0 => {
+                discarded = discarded.saturating_add(n);
+                readable = discarded < CLOSE_DRAIN_MAX_BYTES;
+            }
+            // Quiet, the client closed its side, or the connection failed.
+            _ => break,
+        }
+    }
+    true
 }
 
 /// Reader-side state of one connection.

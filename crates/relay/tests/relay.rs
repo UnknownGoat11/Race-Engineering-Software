@@ -1408,6 +1408,39 @@ async fn repeated_invalid_frames_exhaust_the_budget() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_fatal_error_survives_a_client_that_keeps_sending() {
+    // The relay ends the connection while the client is still sending: the late bytes must not
+    // make the socket reset (which can discard the unread fatal ERROR on the client).
+    let relay = TestRelay::start(|c| c.limits.malformed_budget = 5).await;
+    let mut client = relay.client().await;
+    client.login(ClientRole::Driver, DRIVER).await;
+    let invalid = raw_frame(MsgType::Ping.id(), 0xFF, 0, 7, &[0, 0]);
+    for _ in 0..6 {
+        client.send_raw(&invalid).await;
+    }
+    // The relay has spent the budget and closed its side by now; the client has not read yet.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    for _ in 0..4 {
+        client.send_raw(&invalid).await;
+    }
+    let mut non_fatal = 0;
+    let mut fatal = false;
+    while let Some(frame) = client.frame().await {
+        if let Ok(Message::Error(e)) = Message::from_frame(&frame) {
+            assert_eq!(e.code, ErrorCode::Malformed);
+            if e.fatal {
+                fatal = true;
+            } else {
+                non_fatal += 1;
+            }
+        }
+    }
+    assert!(fatal, "the fatal ERROR is received");
+    assert_eq!(non_fatal, 5);
+    relay.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn handshake_must_come_first_and_versions_must_match() {
     let relay = TestRelay::start(|_| {}).await;
     // A session message before HELLO: fatal.
