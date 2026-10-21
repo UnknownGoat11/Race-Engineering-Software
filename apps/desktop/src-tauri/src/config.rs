@@ -29,7 +29,6 @@ pub const CONFIG_FILE_NAME: &str = "config.json";
 /// Refuse to parse anything larger than this; a legitimate config is a few hundred bytes.
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
-pub const DEFAULT_RELAY_HOST: &str = "relay.lmuracing.com";
 pub const DEFAULT_RELAY_PORT: u16 = 443;
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u32 = 5_000;
 pub const CONNECT_TIMEOUT_MS_RANGE: (u32, u32) = (500, 60_000);
@@ -159,9 +158,6 @@ impl AppConfig {
     pub fn defaults_for(environment: Environment) -> Self {
         let mut config = Self::default();
         config.application.environment = environment;
-        if environment == Environment::Production {
-            config.network.relay_host = DEFAULT_RELAY_HOST.to_string();
-        }
         config
     }
 }
@@ -792,10 +788,6 @@ impl ConfigStore {
                     );
                     config.application.environment = environment;
                 }
-                if environment == Environment::Production && config.network.relay_host.trim().is_empty() {
-                    config.network.relay_host = DEFAULT_RELAY_HOST.to_string();
-                    config.network.relay_port = DEFAULT_RELAY_PORT;
-                }
                 if config.network.extra_ca_file.is_some()
                     && config.network.trusted_extra_ca_file(environment).is_none()
                 {
@@ -1009,7 +1001,7 @@ mod tests {
         assert_eq!(config.schema_version, 1);
         assert_eq!(config.application.mode, None);
         assert_eq!(config.application.environment, Environment::Production);
-        assert_eq!(config.network.relay_host, DEFAULT_RELAY_HOST);
+        assert_eq!(config.network.relay_host, "");
         assert_eq!(config.network.relay_port, 443);
         assert_eq!(config.network.connect_timeout_ms, 5_000);
         assert_eq!(config.network.extra_ca_file, None);
@@ -1217,32 +1209,6 @@ mod tests {
             )
             .unwrap_or_else(|e| panic!("{address:?} rejected: {e}"));
         }
-    }
-
-    #[test]
-    fn production_defaults_and_load_default_relay_host() {
-        let prod_defaults = AppConfig::defaults_for(Environment::Production);
-        assert_eq!(prod_defaults.network.relay_host, DEFAULT_RELAY_HOST);
-        assert_eq!(prod_defaults.network.relay_port, DEFAULT_RELAY_PORT);
-        assert_eq!(
-            prod_defaults.network.relay_address().as_deref(),
-            Some("relay.lmuracing.com:443")
-        );
-
-        let (tmp, store) = store();
-        let empty_host_json = r#"{
-            "schema_version": 1,
-            "application": { "mode": "driver", "environment": "production" },
-            "network": { "relay_host": "", "relay_port": 443 }
-        }"#;
-        write_raw(&store, empty_host_json);
-        let loaded = store.load(Environment::Production);
-        assert_eq!(loaded.config.network.relay_host, DEFAULT_RELAY_HOST);
-        assert_eq!(
-            loaded.config.network.relay_address().as_deref(),
-            Some("relay.lmuracing.com:443")
-        );
-        drop(tmp);
     }
 
     #[test]

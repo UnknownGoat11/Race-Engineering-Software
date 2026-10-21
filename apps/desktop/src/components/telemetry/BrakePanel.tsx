@@ -1,6 +1,6 @@
 import { useContext, useMemo, type JSX } from 'react';
 import { ch } from '../../generated/channels';
-import { formatTemperature } from '../../lib/units';
+import { formatTemperature, NO_VALUE } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
 import { Panel } from '../ui/Panel';
 import { StatusBadge } from '../ui/StatusBadge';
@@ -113,7 +113,7 @@ function BrakePanelContent(): JSX.Element {
           </div>
           <div className="brake-sub-metrics">
             <span className="brake-sub-wear">
-              Wear: {wFL != null ? `${(wFL * 100).toFixed(1)}%` : '0.0%'}
+              Wear: {wFL != null ? `${(wFL * 100).toFixed(1)}%` : NO_VALUE}
             </span>
             {thFL != null && (
               <span className="brake-sub-thick">{(thFL * 1000).toFixed(1)} mm</span>
@@ -132,7 +132,7 @@ function BrakePanelContent(): JSX.Element {
           </div>
           <div className="brake-sub-metrics">
             <span className="brake-sub-wear">
-              Wear: {wFR != null ? `${(wFR * 100).toFixed(1)}%` : '0.0%'}
+              Wear: {wFR != null ? `${(wFR * 100).toFixed(1)}%` : NO_VALUE}
             </span>
             {thFR != null && (
               <span className="brake-sub-thick">{(thFR * 1000).toFixed(1)} mm</span>
@@ -151,7 +151,7 @@ function BrakePanelContent(): JSX.Element {
           </div>
           <div className="brake-sub-metrics">
             <span className="brake-sub-wear">
-              Wear: {wRL != null ? `${(wRL * 100).toFixed(1)}%` : '0.0%'}
+              Wear: {wRL != null ? `${(wRL * 100).toFixed(1)}%` : NO_VALUE}
             </span>
             {thRL != null && (
               <span className="brake-sub-thick">{(thRL * 1000).toFixed(1)} mm</span>
@@ -170,7 +170,7 @@ function BrakePanelContent(): JSX.Element {
           </div>
           <div className="brake-sub-metrics">
             <span className="brake-sub-wear">
-              Wear: {wRR != null ? `${(wRR * 100).toFixed(1)}%` : '0.0%'}
+              Wear: {wRR != null ? `${(wRR * 100).toFixed(1)}%` : NO_VALUE}
             </span>
             {thRR != null && (
               <span className="brake-sub-thick">{(thRR * 1000).toFixed(1)} mm</span>

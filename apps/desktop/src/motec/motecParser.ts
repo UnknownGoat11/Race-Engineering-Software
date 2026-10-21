@@ -1,8 +1,22 @@
 /**
  * MoTeC i2 Pro Logged Data (.ld) Binary File Parser.
  *
- * Fully decodes header metadata, channel linked-lists, and raw sample streams
- * adhering to the MoTeC binary specification.
+ * Layout (little endian), as documented by the public ldparser project (github.com/gotzl/ldparser) and as
+ * written by `motecWriter.ts`:
+ * - file header (1762 bytes): u32 marker 0x40 @0, u32 channel-meta ptr @8, u32 channel-data ptr @12,
+ *   u32 event ptr @36, u32 channel count @86, date @94 (16), time @126 (16), driver @158 (64),
+ *   vehicle @222 (64), venue @350 (64), short comment @1572 (64);
+ * - event block: name (64), session (64), comment (1024);
+ * - channel headers (124 bytes, doubly linked list): u32 prev, u32 next, u32 data ptr, u32 sample count,
+ *   u16 counter, u16 dtype_a, u16 dtype, u16 rate Hz, i16 shift, i16 mul, i16 scale, i16 dec places,
+ *   name (32), short name (8), unit (12);
+ * - sample type: dtype_a 0x07 -> float (dtype 2 = f16, 4 = f32); dtype_a 0x00/0x03/0x05 -> integer
+ *   (dtype 2 = i16, 4 = i32); dtype_a 0x08 with dtype 8 = f64. Anything else is rejected.
+ * - value = ((raw / scale) * 10^-dec + shift) * mul.
+ *
+ * Owner rule: nothing is invented. Missing header fields are null; samples the file does not contain are not
+ * created; non-finite values are NaN; a channel whose unit cannot be converted to the registry unit is not
+ * mapped. Problems that do not prevent reading are reported in `warnings`.
  */
 import { ch } from '../generated/channels';
 import type {
@@ -11,8 +25,26 @@ import type {
   MotecDataType,
   MotecHeader,
   MotecLap,
+  MotecLapView,
+  MotecSessionData,
   ParsedMotecFile,
 } from './motecTypes';
+import { matchChannelNameToAppId, motecUnitConverter, registryUnit, registryUnitSymbol } from './motecUnits';
+
+export { matchChannelNameToAppId } from './motecUnits';
+
+/** u32 at offset 0 of every .ld file. */
+export const LD_MARKER = 0x40;
+/** Size of the .ld file header. */
+export const LD_HEADER_SIZE = 1762;
+/** Size of one channel header. */
+const LD_CHANNEL_HEADER_SIZE = 124;
+/** Upper bound on channel headers walked (guards against corrupt pointer chains). */
+const MAX_CHANNELS = 4096;
+/** Shortest lap accepted as a valid lap (s). */
+const MIN_VALID_LAP_S = 25;
+/** Allowed deviation of a valid lap's distance from the median lap distance. */
+const LAP_DISTANCE_TOLERANCE = 0.05;
 
 /**
  * Decodes an IEEE 754 16-bit half-precision floating point number.
@@ -26,7 +58,7 @@ function decodeFloat16(h: number): number {
     return (sign ? -1 : 1) * Math.pow(2, -14) * (mant / 1024);
   }
   if (exp === 0x1f) {
-    return mant ? Number.NaN : (sign ? -Infinity : Infinity);
+    return mant ? Number.NaN : sign ? -Infinity : Infinity;
   }
   return (sign ? -1 : 1) * Math.pow(2, exp - 15) * (1 + mant / 1024);
 }
@@ -35,11 +67,10 @@ function decodeFloat16(h: number): number {
  * Reads an ASCII null-terminated string of fixed length from a DataView.
  */
 function readAscii(view: DataView, offset: number, maxLen: number): string {
-  if (offset + maxLen > view.byteLength) {
-    maxLen = Math.max(0, view.byteLength - offset);
-  }
+  if (offset < 0 || offset >= view.byteLength) return '';
+  const len = Math.min(maxLen, view.byteLength - offset);
   let str = '';
-  for (let i = 0; i < maxLen; i++) {
+  for (let i = 0; i < len; i++) {
     const code = view.getUint8(offset + i);
     if (code === 0) break;
     str += String.fromCharCode(code);
@@ -47,450 +78,354 @@ function readAscii(view: DataView, offset: number, maxLen: number): string {
   return str.trim();
 }
 
-/**
- * Common MoTeC channel name mappings to our canonical channel IDs.
- */
-const MOTEC_NAME_TO_CH_ID: Readonly<Record<string, number>> = {
-  // Speed
-  'ground speed': ch.SPEED,
-  'speed': ch.SPEED,
-  'car speed': ch.SPEED,
-  'gps speed': ch.SPEED,
-  'vcar': ch.SPEED,
-  'v car': ch.SPEED,
-  'corr speed': ch.SPEED,
-  'wheel speed': ch.SPEED,
-  'vehicle speed': ch.SPEED,
-  'speed kmh': ch.SPEED,
-  'speed ms': ch.SPEED,
-  'velocity': ch.SPEED,
-  'wspeed': ch.SPEED,
+function orNull(text: string): string | null {
+  return text === '' ? null : text;
+}
 
-  // Throttle
-  'throttle pos': ch.THROTTLE,
-  'throttle': ch.THROTTLE,
-  'throt': ch.THROTTLE,
-  'rthrottle': ch.THROTTLE,
-  'athrottle': ch.THROTTLE,
-  'pedal': ch.THROTTLE,
-  'gas': ch.THROTTLE,
-  'accel': ch.THROTTLE,
-  'accel pos': ch.THROTTLE,
-  'pedal pos': ch.THROTTLE,
-  'throttle filtered': ch.THROTTLE_FILTERED,
+/** Parses MoTeC `dd/mm/yyyy` + `hh:mm[:ss]` (local time). Null when absent or not a real date. */
+function parseMotecDateTime(date: string, time: string): number | null {
+  const d = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(date.trim());
+  if (!d) return null;
+  const t = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(time.trim());
+  const day = Number(d[1]);
+  const month = Number(d[2]);
+  const year = Number(d[3]);
+  const hh = t ? Number(t[1]) : 0;
+  const mm = t ? Number(t[2]) : 0;
+  const ss = t?.[3] ? Number(t[3]) : 0;
+  const result = new Date(year, month - 1, day, hh, mm, ss);
+  if (result.getFullYear() !== year || result.getMonth() !== month - 1 || result.getDate() !== day) return null;
+  if (hh > 23 || mm > 59 || ss > 59) return null;
+  return result.getTime();
+}
 
-  // Brake
-  'brake pos': ch.BRAKE,
-  'brake': ch.BRAKE,
-  'brakes force': ch.BRAKE,
-  'brake press': ch.BRAKE,
-  'brake pressure': ch.BRAKE,
-  'press brake': ch.BRAKE,
-  'rbrake': ch.BRAKE,
-  'abrake': ch.BRAKE,
-  'brakepos': ch.BRAKE,
-  'brake filtered': ch.BRAKE_FILTERED,
-
-  // Clutch
-  'clutch pos': ch.CLUTCH,
-  'clutch': ch.CLUTCH,
-  'rclutch': ch.CLUTCH,
-  'aclutch': ch.CLUTCH,
-
-  // Steering
-  'steering pos': ch.STEERING,
-  'steering': ch.STEERING,
-  'steer': ch.STEERING,
-  'steering angle': ch.STEERING,
-  'steer angle': ch.STEERING,
-  'steered angle': ch.STEERING,
-  'str angle': ch.STEERING,
-  'steering wheel angle': ch.STEERING,
-  'asteer': ch.STEERING,
-
-  // Engine
-  'engine rpm': ch.RPM,
-  'rpm': ch.RPM,
-  'revs': ch.RPM,
-  'nengine': ch.RPM,
-  'engine speed': ch.RPM,
-  'eng rpm': ch.RPM,
-  'engine torque': ch.ENGINE_TORQUE,
-  'torque': ch.ENGINE_TORQUE,
-  'gear': ch.GEAR,
-  'ngear': ch.GEAR,
-  'current gear': ch.GEAR,
-
-  // Accelerometer G
-  'g force lat': ch.G_LAT,
-  'g lat': ch.G_LAT,
-  'lat g': ch.G_LAT,
-  'lateral accel': ch.G_LAT,
-  'lateral g': ch.G_LAT,
-  'lat accel': ch.G_LAT,
-  'alat': ch.G_LAT,
-  'ay': ch.G_LAT,
-  'g force long': ch.G_LONG,
-  'g long': ch.G_LONG,
-  'long g': ch.G_LONG,
-  'longitudinal accel': ch.G_LONG,
-  'longitudinal g': ch.G_LONG,
-  'along': ch.G_LONG,
-  'ax': ch.G_LONG,
-
-  // Lap / Track Position
-  'lap distance': ch.LAP_DISTANCE,
-  'distance': ch.LAP_DISTANCE,
-  'lapdist': ch.LAP_DISTANCE,
-  'slap': ch.LAP_DISTANCE,
-  'lap time': ch.LAP_TIME,
-  'time': ch.LAP_TIME,
-  'laptime': ch.LAP_TIME,
-
-  // Tyre Pressures (kPa)
-  'tyre pressure fl': ch.TYRE_PRESSURE_FL,
-  'tyrespressure fl': ch.TYRE_PRESSURE_FL,
-  'tyre press fl': ch.TYRE_PRESSURE_FL,
-  'tire press fl': ch.TYRE_PRESSURE_FL,
-  'fl press': ch.TYRE_PRESSURE_FL,
-  'tyre pressure fr': ch.TYRE_PRESSURE_FR,
-  'tyrespressure fr': ch.TYRE_PRESSURE_FR,
-  'tyre press fr': ch.TYRE_PRESSURE_FR,
-  'tire press fr': ch.TYRE_PRESSURE_FR,
-  'fr press': ch.TYRE_PRESSURE_FR,
-  'tyre pressure rl': ch.TYRE_PRESSURE_RL,
-  'tyrespressure rl': ch.TYRE_PRESSURE_RL,
-  'tyre press rl': ch.TYRE_PRESSURE_RL,
-  'tire press rl': ch.TYRE_PRESSURE_RL,
-  'rl press': ch.TYRE_PRESSURE_RL,
-  'tyre pressure rr': ch.TYRE_PRESSURE_RR,
-  'tyrespressure rr': ch.TYRE_PRESSURE_RR,
-  'tyre press rr': ch.TYRE_PRESSURE_RR,
-  'tire press rr': ch.TYRE_PRESSURE_RR,
-  'rr press': ch.TYRE_PRESSURE_RR,
-
-  // Brake Temperatures (°C)
-  'brake temp fl': ch.BRAKE_TEMP_FL,
-  'fl brake temp': ch.BRAKE_TEMP_FL,
-  'disc temp fl': ch.BRAKE_TEMP_FL,
-  'brake temp fr': ch.BRAKE_TEMP_FR,
-  'fr brake temp': ch.BRAKE_TEMP_FR,
-  'disc temp fr': ch.BRAKE_TEMP_FR,
-  'brake temp rl': ch.BRAKE_TEMP_RL,
-  'rl brake temp': ch.BRAKE_TEMP_RL,
-  'disc temp rl': ch.BRAKE_TEMP_RL,
-  'brake temp rr': ch.BRAKE_TEMP_RR,
-  'rr brake temp': ch.BRAKE_TEMP_RR,
-  'disc temp rr': ch.BRAKE_TEMP_RR,
-
-  // Tyre Temperatures Inner / Core / Outer
-  'tyre temp fl inner': ch.TYRE_TEMP_INNER_FL,
-  'tyre temp fl core': ch.TYRE_TEMP_MIDDLE_FL,
-  'tyre temp fl outer': ch.TYRE_TEMP_OUTER_FL,
-  'tire temp fl inner': ch.TYRE_TEMP_INNER_FL,
-  'tire temp fl core': ch.TYRE_TEMP_MIDDLE_FL,
-  'tire temp fl outer': ch.TYRE_TEMP_OUTER_FL,
-  'tyre temp fr inner': ch.TYRE_TEMP_INNER_FR,
-  'tyre temp fr core': ch.TYRE_TEMP_MIDDLE_FR,
-  'tyre temp fr outer': ch.TYRE_TEMP_OUTER_FR,
-  'tire temp fr inner': ch.TYRE_TEMP_INNER_FR,
-  'tire temp fr core': ch.TYRE_TEMP_MIDDLE_FR,
-  'tire temp fr outer': ch.TYRE_TEMP_OUTER_FR,
-  'tyre temp rl inner': ch.TYRE_TEMP_INNER_RL,
-  'tyre temp rl core': ch.TYRE_TEMP_MIDDLE_RL,
-  'tyre temp rl outer': ch.TYRE_TEMP_OUTER_RL,
-  'tire temp rl inner': ch.TYRE_TEMP_INNER_RL,
-  'tire temp rl core': ch.TYRE_TEMP_MIDDLE_RL,
-  'tire temp rl outer': ch.TYRE_TEMP_OUTER_RL,
-  'tyre temp rr inner': ch.TYRE_TEMP_INNER_RR,
-  'tyre temp rr core': ch.TYRE_TEMP_MIDDLE_RR,
-  'tyre temp rr outer': ch.TYRE_TEMP_OUTER_RR,
-  'tire temp rr inner': ch.TYRE_TEMP_INNER_RR,
-  'tire temp rr core': ch.TYRE_TEMP_MIDDLE_RR,
-  'tire temp rr outer': ch.TYRE_TEMP_OUTER_RR,
-};
-
-export function matchChannelNameToAppId(name: string): number | undefined {
-  const norm = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  if (MOTEC_NAME_TO_CH_ID[norm] !== undefined) {
-    return MOTEC_NAME_TO_CH_ID[norm];
+function decodeSampleType(dtypeA: number, dtype: number): { type: MotecDataType; bytes: number } | null {
+  if (dtypeA === 0x07) {
+    if (dtype === 2) return { type: 'f16', bytes: 2 };
+    if (dtype === 4) return { type: 'f32', bytes: 4 };
+    return null;
   }
-  const noSpaces = norm.replace(/\s+/g, '');
-  if (MOTEC_NAME_TO_CH_ID[noSpaces] !== undefined) {
-    return MOTEC_NAME_TO_CH_ID[noSpaces];
+  if (dtypeA === 0x08 && dtype === 8) return { type: 'f64', bytes: 8 };
+  if (dtypeA === 0x00 || dtypeA === 0x03 || dtypeA === 0x05) {
+    if (dtype === 2) return { type: 'i16', bytes: 2 };
+    if (dtype === 4) return { type: 'i32', bytes: 4 };
   }
-  return undefined;
+  return null;
 }
 
 /**
  * Parses MoTeC .ldx XML companion content to extract lap beacon markers.
+ *
+ * The time unit is decided once per file: MoTeC writes marker times in microseconds; a file whose largest time
+ * exceeds 100 000 (longer than a 24 h race in seconds) is read as microseconds, otherwise as seconds.
  */
-export function parseLdxMarkers(xmlContent: string): { timeS: number; distM: number; name: string }[] {
-  const markers: { timeS: number; distM: number; name: string }[] = [];
-  if (!xmlContent || !xmlContent.includes('<Marker')) return markers;
+export function parseLdxMarkers(xmlContent: string): { timeS: number; distM: number | null; name: string }[] {
+  if (!xmlContent.includes('<Marker')) return [];
 
-  // Match all <Marker ... /> or <Marker ...>...</Marker>
+  const raw: { time: number; distM: number | null; name: string }[] = [];
   const markerRegex = /<Marker\b([^>]*)/gi;
   let match: RegExpExecArray | null;
 
   while ((match = markerRegex.exec(xmlContent)) !== null) {
-    const attrs = match[1] || '';
-    const timeMatch = /Time="([^"]+)"/i.exec(attrs);
-    const distMatch = /Distance="([^"]+)"/i.exec(attrs);
-    const nameMatch = /(?:Name|String)="([^"]+)"/i.exec(attrs);
-
-    if (timeMatch && timeMatch[1]) {
-      let timeVal = parseFloat(timeMatch[1]);
-      // If time is expressed in microseconds (> 100,000), convert to seconds
-      if (timeVal > 100000) {
-        timeVal = timeVal / 1000000;
-      }
-      const distVal = distMatch && distMatch[1] ? parseFloat(distMatch[1]) : 0;
-      const name = nameMatch && nameMatch[1] ? nameMatch[1] : `Marker_${markers.length}`;
-
-      if (Number.isFinite(timeVal)) {
-        markers.push({ timeS: timeVal, distM: distVal, name });
-      }
-    }
+    const attrs = match[1] ?? '';
+    const timeMatch = /\bTime="([^"]+)"/i.exec(attrs);
+    if (!timeMatch?.[1]) continue;
+    const time = Number.parseFloat(timeMatch[1]);
+    if (!Number.isFinite(time)) continue;
+    const distMatch = /\bDistance="([^"]+)"/i.exec(attrs);
+    const dist = distMatch?.[1] !== undefined ? Number.parseFloat(distMatch[1]) : Number.NaN;
+    const nameMatch = /\b(?:Name|String)="([^"]+)"/i.exec(attrs);
+    raw.push({
+      time,
+      distM: Number.isFinite(dist) ? dist : null,
+      name: nameMatch?.[1] ?? `Marker_${raw.length}`,
+    });
   }
 
-  // Sort markers by time
+  const maxTime = raw.reduce((m, r) => Math.max(m, r.time), Number.NEGATIVE_INFINITY);
+  const divisor = maxTime > 100_000 ? 1_000_000 : 1;
+  const markers = raw.map((r) => ({ timeS: r.time / divisor, distM: r.distM, name: r.name }));
   markers.sort((a, b) => a.timeS - b.timeS);
   return markers;
 }
 
+type ResampleMode = 'linear' | 'hold' | 'distance';
+
+function resampleModeFor(appChannelId: number): ResampleMode {
+  if (appChannelId === ch.LAP_DISTANCE) return 'distance';
+  const unit = registryUnit(appChannelId);
+  return unit === 'Enum' || unit === 'Count' ? 'hold' : 'linear';
+}
+
 /**
- * Detects all laps within a MoTeC session using:
- * 1. .ldx companion markers (if provided)
- * 2. Lap Number channels (1 -> 2 -> 3)
- * 3. Lap Distance reset drops (> 800m drop)
- * 4. Beacon pulse channels (0 -> 1)
+ * Resamples `raw` (sampled at `freqHz` from t = 0) onto `count` points at `t0 + k / targetHz`. Points outside
+ * the channel's samples are NaN. 'hold' keeps the previous sample (discrete channels); 'distance' interpolates
+ * but holds across a decrease (lap distance reset), so no fake intermediate distance is created.
  */
-function detectSessionLaps(
-  channels: Map<string, MotecChannelData>,
-  channelsByAppId: Map<number, MotecChannelData>,
-  distanceTimelineM: Float64Array,
-  timeTimelineS: Float64Array,
-  primaryFreqHz: number,
-  ldxContent?: string,
-): MotecLap[] {
-  const totalSamples = timeTimelineS.length;
-  const totalDurationS = timeTimelineS[totalSamples - 1] ?? 0;
-  const totalDistanceM = distanceTimelineM[totalSamples - 1] ?? 0;
+export function resampleByTime(
+  raw: Float64Array,
+  freqHz: number,
+  t0: number,
+  targetHz: number,
+  count: number,
+  mode: ResampleMode,
+): Float64Array {
+  const out = new Float64Array(count);
+  const n = raw.length;
+  for (let k = 0; k < count; k++) {
+    let pos = (t0 + k / targetHz) * freqHz;
+    const rounded = Math.round(pos);
+    if (Math.abs(pos - rounded) < 1e-6) pos = rounded;
+    const i = Math.floor(pos);
+    if (i < 0 || i > n - 1) {
+      out[k] = Number.NaN;
+      continue;
+    }
+    const frac = pos - i;
+    const a = raw[i] ?? Number.NaN;
+    if (frac === 0 || mode === 'hold') {
+      out[k] = a;
+      continue;
+    }
+    if (i + 1 > n - 1) {
+      out[k] = Number.NaN;
+      continue;
+    }
+    const b = raw[i + 1] ?? Number.NaN;
+    out[k] = mode === 'distance' && b < a ? a : a + (b - a) * frac;
+  }
+  return out;
+}
 
-  if (totalSamples < 10) return [];
+interface Boundary {
+  readonly timeS: number;
+  /** Lap number of the segment that starts here (lap-number method only). */
+  readonly lapNumber?: number;
+}
 
-  // 1. Try parsing .ldx companion markers if provided
+interface BoundaryResult {
+  readonly source: NonNullable<ParsedMotecFile['lapSource']>;
+  readonly boundaries: readonly Boundary[];
+  /** Lap number of the segment before the first boundary (lap-number method only). */
+  readonly firstLapNumber?: number;
+}
+
+function findBoundaries(
+  channels: ReadonlyMap<string, MotecChannelData>,
+  appChannels: ReadonlyMap<number, MotecChannelData>,
+  durationS: number,
+  ldxContent: string | undefined,
+): BoundaryResult | null {
+  // 1. .ldx companion markers.
   if (ldxContent) {
-    const markers = parseLdxMarkers(ldxContent);
-    if (markers.length >= 2) {
-      const laps: MotecLap[] = [];
-      for (let i = 0; i < markers.length - 1; i++) {
-        const mStart = markers[i]!;
-        const mEnd = markers[i + 1]!;
-        const startTimeS = mStart.timeS;
-        const endTimeS = mEnd.timeS;
-        const lapTimeS = endTimeS - startTimeS;
-        if (lapTimeS > 10) {
-          const startIdx = Math.min(totalSamples - 1, Math.max(0, Math.round(startTimeS * primaryFreqHz)));
-          const endIdx = Math.min(totalSamples - 1, Math.max(startIdx, Math.round(endTimeS * primaryFreqHz) - 1));
-          const startDistM = distanceTimelineM[startIdx] ?? mStart.distM;
-          const endDistM = distanceTimelineM[endIdx] ?? mEnd.distM;
-
-          laps.push({
-            lapNumber: laps.length + 1,
-            lapTimeS,
-            startTimeS,
-            endTimeS,
-            startDistM,
-            endDistM,
-            startSampleIdx: startIdx,
-            endSampleIdx: endIdx,
-            isValid: lapTimeS >= 25,
-          });
-        }
-      }
-      if (laps.length > 0) return laps;
+    const markers = parseLdxMarkers(ldxContent).filter((m) => m.timeS >= 0 && m.timeS <= durationS);
+    if (markers.length > 0) {
+      return { source: 'ldx', boundaries: markers.map((m) => ({ timeS: m.timeS })) };
     }
   }
 
-  // 2. Try detecting from Lap Number channel
-  const lapChan =
-    channelsByAppId.get(ch.LAP_NUMBER) ||
-    channels.get('lap') ||
-    channels.get('lap number') ||
-    channels.get('lap count') ||
-    channels.get('current lap') ||
-    channels.get('lap_number') ||
-    channels.get('lap_index') ||
-    channels.get('lapnum') ||
-    channels.get('mlap') ||
-    channels.get('lap_count') ||
-    channels.get('car_lap');
-
-  if (lapChan && lapChan.samples.length === totalSamples) {
-    const boundaries: { lapNum: number; startIdx: number }[] = [];
-    let lastLap = -999;
-
-    for (let i = 0; i < totalSamples; i++) {
-      const cur = Math.round(lapChan.samples[i] ?? 0);
-      if (cur !== lastLap && cur >= 1) {
-        boundaries.push({ lapNum: cur, startIdx: i });
-        lastLap = cur;
+  // 2. Lap number channel: a boundary wherever the value changes.
+  const lapChan = appChannels.get(ch.LAP_NUMBER);
+  if (lapChan && lapChan.meta.frequencyHz > 0) {
+    const f = lapChan.meta.frequencyHz;
+    const boundaries: Boundary[] = [];
+    let last: number | null = null;
+    let first: number | null = null;
+    for (let i = 0; i < lapChan.samples.length; i++) {
+      const v = lapChan.samples[i] ?? Number.NaN;
+      if (!Number.isFinite(v)) continue;
+      const cur = Math.round(v);
+      if (last === null) {
+        first = cur;
+      } else if (cur !== last) {
+        boundaries.push({ timeS: i / f, lapNumber: cur });
       }
+      last = cur;
     }
-
-    if (boundaries.length > 1) {
-      const laps: MotecLap[] = [];
-      for (let k = 0; k < boundaries.length; k++) {
-        const startIdx = boundaries[k]!.startIdx;
-        const endIdx = k + 1 < boundaries.length ? boundaries[k + 1]!.startIdx - 1 : totalSamples - 1;
-        const startTimeS = timeTimelineS[startIdx] ?? 0;
-        const endTimeS = timeTimelineS[endIdx] ?? 0;
-        const lapTimeS = endTimeS - startTimeS;
-        const startDistM = distanceTimelineM[startIdx] ?? 0;
-        const endDistM = distanceTimelineM[endIdx] ?? 0;
-
-        if (lapTimeS > 15) {
-          laps.push({
-            lapNumber: boundaries[k]!.lapNum,
-            lapTimeS,
-            startTimeS,
-            endTimeS,
-            startDistM,
-            endDistM,
-            startSampleIdx: startIdx,
-            endSampleIdx: endIdx,
-            isValid: lapTimeS >= 25,
-          });
-        }
-      }
-      if (laps.length > 0) return laps;
+    if (boundaries.length > 0) {
+      return first === null
+        ? { source: 'lap-number', boundaries }
+        : { source: 'lap-number', boundaries, firstLapNumber: first };
     }
   }
 
-  // 3. Try detecting from Lap Distance Reset
-  const distChan =
-    channelsByAppId.get(ch.LAP_DISTANCE) ||
-    channels.get('lap distance') ||
-    channels.get('lapdist') ||
-    channels.get('lap dist') ||
-    channels.get('slap') ||
-    channels.get('lap_distance') ||
-    channels.get('distance in lap');
-
-  if (distChan && distChan.samples.length === totalSamples) {
-    const cutIndices: number[] = [0];
-    for (let i = 1; i < totalSamples; i++) {
-      const prev = distChan.samples[i - 1] ?? 0;
-      const cur = distChan.samples[i] ?? 0;
-      // Sharp drop indicating finish line crossing (e.g. from >1000m to <200m)
+  // 3. Lap distance reset (a sharp drop at the finish line).
+  const distChan = appChannels.get(ch.LAP_DISTANCE);
+  if (distChan && distChan.meta.frequencyHz > 0) {
+    const f = distChan.meta.frequencyHz;
+    const boundaries: Boundary[] = [];
+    let lastT = Number.NEGATIVE_INFINITY;
+    for (let i = 1; i < distChan.samples.length; i++) {
+      const prev = distChan.samples[i - 1] ?? Number.NaN;
+      const cur = distChan.samples[i] ?? Number.NaN;
       if (prev - cur > 800 && prev > 1000) {
-        const lastCut = cutIndices[cutIndices.length - 1] ?? 0;
-        if ((i - lastCut) / primaryFreqHz > 25) {
-          cutIndices.push(i);
+        const t = i / f;
+        if (t - lastT > MIN_VALID_LAP_S) {
+          boundaries.push({ timeS: t });
+          lastT = t;
         }
       }
     }
-
-    if (cutIndices.length > 1) {
-      const laps: MotecLap[] = [];
-      for (let k = 0; k < cutIndices.length; k++) {
-        const startIdx = cutIndices[k]!;
-        const endIdx = k + 1 < cutIndices.length ? cutIndices[k + 1]! - 1 : totalSamples - 1;
-        const startTimeS = timeTimelineS[startIdx] ?? 0;
-        const endTimeS = timeTimelineS[endIdx] ?? 0;
-        const lapTimeS = endTimeS - startTimeS;
-        const startDistM = distanceTimelineM[startIdx] ?? 0;
-        const endDistM = distanceTimelineM[endIdx] ?? 0;
-
-        if (lapTimeS > 15) {
-          laps.push({
-            lapNumber: k + 1,
-            lapTimeS,
-            startTimeS,
-            endTimeS,
-            startDistM,
-            endDistM,
-            startSampleIdx: startIdx,
-            endSampleIdx: endIdx,
-            isValid: lapTimeS >= 25,
-          });
-        }
-      }
-      if (laps.length > 0) return laps;
-    }
+    if (boundaries.length > 0) return { source: 'lap-distance', boundaries };
   }
 
-  // 4. Try detecting from Beacon Marker Pulses
+  // 4. Beacon pulses (rising edges).
   const beaconChan =
-    channels.get('beacon') ||
-    channels.get('lap marker') ||
-    channels.get('beacon markers') ||
-    channels.get('beacon pulse') ||
+    channels.get('beacon') ??
+    channels.get('lap marker') ??
+    channels.get('beacon markers') ??
+    channels.get('beacon pulse') ??
     channels.get('split beacon');
-
-  if (beaconChan && beaconChan.samples.length === totalSamples) {
-    const beaconIndices: number[] = [0];
-    for (let i = 1; i < totalSamples; i++) {
-      if ((beaconChan.samples[i - 1] ?? 0) <= 0.5 && (beaconChan.samples[i] ?? 0) > 0.5) {
-        const lastIdx = beaconIndices[beaconIndices.length - 1] ?? 0;
-        if ((i - lastIdx) / primaryFreqHz > 25) {
-          beaconIndices.push(i);
+  if (beaconChan && beaconChan.meta.frequencyHz > 0) {
+    const f = beaconChan.meta.frequencyHz;
+    const boundaries: Boundary[] = [];
+    let lastT = Number.NEGATIVE_INFINITY;
+    for (let i = 1; i < beaconChan.samples.length; i++) {
+      if ((beaconChan.samples[i - 1] ?? Number.NaN) <= 0.5 && (beaconChan.samples[i] ?? Number.NaN) > 0.5) {
+        const t = i / f;
+        if (t - lastT > MIN_VALID_LAP_S) {
+          boundaries.push({ timeS: t });
+          lastT = t;
         }
       }
     }
+    if (boundaries.length > 0) return { source: 'beacon', boundaries };
+  }
 
-    if (beaconIndices.length > 1) {
-      const laps: MotecLap[] = [];
-      for (let k = 0; k < beaconIndices.length; k++) {
-        const startIdx = beaconIndices[k]!;
-        const endIdx = k + 1 < beaconIndices.length ? beaconIndices[k + 1]! - 1 : totalSamples - 1;
-        const startTimeS = timeTimelineS[startIdx] ?? 0;
-        const endTimeS = timeTimelineS[endIdx] ?? 0;
-        const lapTimeS = endTimeS - startTimeS;
-        const startDistM = distanceTimelineM[startIdx] ?? 0;
-        const endDistM = distanceTimelineM[endIdx] ?? 0;
+  return null;
+}
 
-        if (lapTimeS > 15) {
-          laps.push({
-            lapNumber: k + 1,
-            lapTimeS,
-            startTimeS,
-            endTimeS,
-            startDistM,
-            endDistM,
-            startSampleIdx: startIdx,
-            endSampleIdx: endIdx,
-            isValid: lapTimeS >= 25,
-          });
-        }
+function finiteOrNull(v: number | undefined): number | null {
+  return v !== undefined && Number.isFinite(v) ? v : null;
+}
+
+function median(values: readonly number[]): number {
+  const s = [...values].sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return s.length % 2 === 1 ? (s[mid] ?? Number.NaN) : ((s[mid - 1] ?? Number.NaN) + (s[mid] ?? Number.NaN)) / 2;
+}
+
+function buildLaps(
+  result: BoundaryResult,
+  durationS: number,
+  primaryHz: number,
+  sampleCount: number,
+  distance: Float64Array | null,
+): MotecLap[] {
+  const points: { timeS: number; real: boolean; lapNumber?: number | undefined }[] = [];
+  const bs = result.boundaries;
+  if ((bs[0]?.timeS ?? 0) > 0) points.push({ timeS: 0, real: false, lapNumber: result.firstLapNumber });
+  for (const b of bs) points.push({ timeS: b.timeS, real: true, lapNumber: b.lapNumber });
+  if ((bs[bs.length - 1]?.timeS ?? durationS) < durationS) points.push({ timeS: durationS, real: false });
+
+  const minSegmentS = 1 / primaryHz;
+  const draft: (Omit<MotecLap, 'isValid' | 'invalidReason'> & { reason: string | null; lapDistM: number | null })[] =
+    [];
+  for (let j = 0; j + 1 < points.length; j++) {
+    const start = points[j];
+    const end = points[j + 1];
+    if (!start || !end) continue;
+    const lapTimeS = end.timeS - start.timeS;
+    if (lapTimeS < minSegmentS) continue;
+    const startSampleIdx = Math.min(sampleCount - 1, Math.max(0, Math.round(start.timeS * primaryHz)));
+    const endSampleIdx = Math.min(sampleCount - 1, Math.max(startSampleIdx, Math.round(end.timeS * primaryHz) - 1));
+    const startDistM = distance ? finiteOrNull(distance[startSampleIdx]) : null;
+    const endDistM = distance ? finiteOrNull(distance[endSampleIdx]) : null;
+    const isComplete = start.real && end.real;
+    let reason: string | null = null;
+    if (!start.real) reason = 'starts at the beginning of the file (out-lap or partial lap)';
+    else if (!end.real) reason = 'ends at the end of the file (partial lap)';
+    else if (lapTimeS < MIN_VALID_LAP_S) reason = `shorter than ${MIN_VALID_LAP_S} s`;
+    draft.push({
+      lapNumber: result.source === 'lap-number' && start.lapNumber !== undefined ? start.lapNumber : draft.length + 1,
+      lapTimeS,
+      startTimeS: start.timeS,
+      endTimeS: end.timeS,
+      startDistM,
+      endDistM,
+      startSampleIdx,
+      endSampleIdx,
+      isComplete,
+      reason,
+      lapDistM: startDistM !== null && endDistM !== null ? endDistM - startDistM : null,
+    });
+  }
+
+  // Distance plausibility: a valid lap covers about the median distance of the complete laps.
+  const candidateDistances = draft
+    .flatMap((l) => (l.reason === null && l.lapDistM !== null ? [l.lapDistM] : []));
+  const medianDistM = candidateDistances.length > 0 ? median(candidateDistances) : null;
+
+  return draft.map(({ reason, lapDistM, ...lap }) => {
+    let invalidReason = reason;
+    if (invalidReason === null && medianDistM !== null && medianDistM > 0 && lapDistM !== null) {
+      if (Math.abs(lapDistM - medianDistM) > medianDistM * LAP_DISTANCE_TOLERANCE) {
+        invalidReason = `distance ${lapDistM.toFixed(0)} m differs from the median lap distance ${medianDistM.toFixed(0)} m`;
       }
-      if (laps.length > 0) return laps;
+    }
+    return { ...lap, isValid: invalidReason === null, invalidReason };
+  });
+}
+
+function buildView(session: MotecSessionData, lap: MotecLap | null): MotecLapView {
+  const hz = session.primaryFrequencyHz;
+  const startIdx = lap ? lap.startSampleIdx : 0;
+  const endIdx = lap ? lap.endSampleIdx : session.sampleCount - 1;
+  const count = Math.max(1, endIdx - startIdx + 1);
+  const t0 = startIdx / hz;
+
+  const timeTimelineS = new Float64Array(count);
+  for (let k = 0; k < count; k++) timeTimelineS[k] = k / hz;
+
+  const channelsByAppId = new Map<number, MotecChannelData>();
+  for (const [appId, chan] of session.appChannels) {
+    channelsByAppId.set(appId, {
+      meta: chan.meta,
+      samples: resampleByTime(chan.samples, chan.meta.frequencyHz, t0, hz, count, resampleModeFor(appId)),
+      appChannelId: appId,
+    });
+  }
+
+  let distanceTimelineM: Float64Array | null = null;
+  let maxDistanceM: number | null = null;
+  const dist = session.distanceTimelineM;
+  if (dist) {
+    let offset = Number.NaN;
+    for (let k = 0; k < count && !Number.isFinite(offset); k++) offset = dist[startIdx + k] ?? Number.NaN;
+    if (Number.isFinite(offset)) {
+      distanceTimelineM = new Float64Array(count);
+      for (let k = 0; k < count; k++) {
+        const v = (dist[startIdx + k] ?? Number.NaN) - offset;
+        distanceTimelineM[k] = v;
+        if (Number.isFinite(v)) maxDistanceM = v;
+      }
     }
   }
 
-  // 5. Fallback: single lap covering the entire file
-  return [
-    {
-      lapNumber: 1,
-      lapTimeS: totalDurationS,
-      startTimeS: 0,
-      endTimeS: totalDurationS,
-      startDistM: 0,
-      endDistM: totalDistanceM,
-      startSampleIdx: 0,
-      endSampleIdx: totalSamples - 1,
-      isValid: true,
-    },
-  ];
+  return {
+    lap,
+    channelsByAppId,
+    durationS: lap ? lap.lapTimeS : count / hz,
+    maxDistanceM,
+    distanceTimelineM,
+    timeTimelineS,
+  };
+}
+
+/**
+ * The data of one lap of a parsed file, resampled onto a common timeline starting at 0 s / 0 m. Use it to compare
+ * two laps from the same file.
+ */
+export function extractMotecLap(file: ParsedMotecFile, lap: MotecLap): MotecLapView {
+  return buildView(file.session, lap);
 }
 
 /**
  * Parses an ArrayBuffer containing a binary MoTeC .ld file and optional .ldx companion.
  *
- * Automatically detects laps and slices the dataset to ONLY the quickest lap
- * for accurate 1:1 telemetry comparison against live and target runs.
+ * Detects laps and scopes the comparison data to the quickest valid lap. When no valid lap exists the whole file
+ * is used (`scope: 'whole-file'`) and a warning says so. Throws a descriptive Error for files that are not
+ * readable .ld files.
  */
 export function parseMotecLd(
   buffer: ArrayBuffer | Uint8Array,
@@ -498,303 +433,291 @@ export function parseMotecLd(
   ldxContent?: string,
 ): ParsedMotecFile {
   const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  if (bytes.byteLength < 128) {
-    throw new Error(`Invalid MoTeC .ld file: file length (${bytes.byteLength} bytes) is too small.`);
+  if (bytes.byteLength === 0) {
+    throw new Error('Invalid MoTeC .ld file: the file is empty (0 bytes).');
+  }
+  if (bytes.byteLength < LD_HEADER_SIZE) {
+    throw new Error(
+      `Invalid MoTeC .ld file: file length (${bytes.byteLength} bytes) is too small for the ${LD_HEADER_SIZE}-byte header.`,
+    );
   }
 
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const warnings: string[] = [];
 
-  // --- 1. File Header (ldHead) ---
+  // --- 1. File header ---
+  const marker = view.getUint32(0, true);
+  if (marker !== LD_MARKER) {
+    throw new Error(
+      `Not a MoTeC .ld file: header marker is 0x${marker.toString(16)} at offset 0 (expected 0x${LD_MARKER.toString(16)}).`,
+    );
+  }
   const metaPtr = view.getUint32(8, true);
   const eventPtr = view.getUint32(36, true);
   const numChanns = view.getUint32(86, true);
+  if (numChanns === 0) {
+    throw new Error('Invalid MoTeC .ld file: the header declares 0 channels.');
+  }
+  if (metaPtr < LD_HEADER_SIZE || metaPtr + LD_CHANNEL_HEADER_SIZE > view.byteLength) {
+    throw new Error(
+      `Invalid MoTeC .ld file: channel table pointer ${metaPtr} is outside the file (${view.byteLength} bytes).`,
+    );
+  }
 
   const dateStr = readAscii(view, 94, 16);
   const timeStr = readAscii(view, 126, 16);
-  const driver = readAscii(view, 158, 64) || 'MoTeC Driver';
-  const vehicleId = readAscii(view, 222, 64) || 'MoTeC Car';
-  const venue = readAscii(view, 350, 64) || 'Race Circuit';
-  const shortComment = view.byteLength >= 1636 ? readAscii(view, 1572, 64) : '';
-
-  let sessionName = 'Practice / Test';
+  let session: string | null = null;
   if (eventPtr > 0 && eventPtr + 128 <= view.byteLength) {
-    const rawSession = readAscii(view, eventPtr + 64, 64);
-    if (rawSession) sessionName = rawSession;
+    session = orNull(readAscii(view, eventPtr + 64, 64));
   }
-
-  const dateTimeStr = `${dateStr} ${timeStr}`.trim();
-  const timestampMs = Date.parse(dateTimeStr) || Date.now();
+  const dateTimeStr = orNull(`${dateStr} ${timeStr}`.trim());
 
   const header: MotecHeader = {
-    driver,
-    vehicleId,
-    venue,
-    session: sessionName,
-    shortComment,
+    driver: orNull(readAscii(view, 158, 64)),
+    vehicleId: orNull(readAscii(view, 222, 64)),
+    venue: orNull(readAscii(view, 350, 64)),
+    session,
+    shortComment: orNull(readAscii(view, 1572, 64)),
     dateTimeStr,
-    timestampMs,
+    timestampMs: parseMotecDateTime(dateStr, timeStr),
     numChannels: numChanns,
   };
 
-  // --- 2. Channel Headers Linked List (ldChan) ---
+  // --- 2. Channel headers and samples ---
   const channels = new Map<string, MotecChannelData>();
-  const channelsByAppId = new Map<number, MotecChannelData>();
-
+  const visited = new Set<number>();
   let currMetaPtr = metaPtr;
-  let safetyLoopCounter = 0;
-  const maxChannelsAllowed = 2048;
+  let chanIndex = 0;
 
-  let primarySampleCount = 0;
-  let primaryFreqHz = 100;
-
-  while (currMetaPtr > 0 && currMetaPtr + 84 <= view.byteLength && safetyLoopCounter < maxChannelsAllowed) {
-    safetyLoopCounter++;
+  while (currMetaPtr > 0 && !visited.has(currMetaPtr)) {
+    if (currMetaPtr + LD_CHANNEL_HEADER_SIZE > view.byteLength) {
+      warnings.push(`Channel header at offset ${currMetaPtr} lies outside the file; remaining channels skipped.`);
+      break;
+    }
+    if (chanIndex >= MAX_CHANNELS) {
+      warnings.push(`More than ${MAX_CHANNELS} channel headers; the rest were skipped.`);
+      break;
+    }
+    visited.add(currMetaPtr);
+    chanIndex++;
 
     const nextMetaPtr = view.getUint32(currMetaPtr + 4, true);
-    const chanDataPtr = view.getUint32(currMetaPtr + 8, true);
-    const chanDataLen = view.getUint32(currMetaPtr + 12, true);
-
+    const dataPtr = view.getUint32(currMetaPtr + 8, true);
+    const declaredCount = view.getUint32(currMetaPtr + 12, true);
     const dtypeA = view.getUint16(currMetaPtr + 18, true);
     const dtype = view.getUint16(currMetaPtr + 20, true);
-    const freq = view.getUint16(currMetaPtr + 22, true) || 100;
+    const freq = view.getUint16(currMetaPtr + 22, true);
     const shift = view.getInt16(currMetaPtr + 24, true);
-    const mul = view.getInt16(currMetaPtr + 26, true) || 1;
-    const scale = view.getInt16(currMetaPtr + 28, true) || 1;
+    const mul = view.getInt16(currMetaPtr + 26, true);
+    const scale = view.getInt16(currMetaPtr + 28, true);
     const decPlaces = view.getInt16(currMetaPtr + 30, true);
-
-    const name = readAscii(view, currMetaPtr + 32, 32);
+    const rawName = readAscii(view, currMetaPtr + 32, 32);
+    const name = rawName || `Unnamed channel ${chanIndex}`;
     const shortName = readAscii(view, currMetaPtr + 64, 8);
     const unit = readAscii(view, currMetaPtr + 72, 12);
 
-    let dataType: MotecDataType = 'i16';
-    let bytesPerSample = 2;
+    currMetaPtr = nextMetaPtr;
 
-    if (dtypeA === 0x07 && (dtype === 4 || dtype === 0)) {
-      dataType = 'f32';
-      bytesPerSample = 4;
-    } else if (dtypeA === 0x07 && dtype === 2) {
-      dataType = 'f16';
-      bytesPerSample = 2;
-    } else if (dtypeA === 0x08 && dtype === 8) {
-      dataType = 'f64';
-      bytesPerSample = 8;
-    } else if ((dtypeA === 0 || dtypeA === 3 || dtypeA === 5) && dtype === 4) {
-      dataType = 'i32';
-      bytesPerSample = 4;
-    } else {
-      dataType = 'i16';
-      bytesPerSample = 2;
+    const sampleType = decodeSampleType(dtypeA, dtype);
+    if (!sampleType) {
+      throw new Error(
+        `Unsupported MoTeC sample type in channel "${name}" (dtype_a=0x${dtypeA.toString(16)}, dtype=${dtype}).`,
+      );
+    }
+    if (freq === 0) {
+      warnings.push(`Channel "${name}" has a sample rate of 0 Hz; skipped.`);
+      continue;
+    }
+    if (scale === 0 || mul === 0) {
+      warnings.push(`Channel "${name}" has an invalid calibration (scale ${scale}, mul ${mul}); skipped.`);
+      continue;
     }
 
-    const chanMeta: MotecChannelMeta = {
-      id: safetyLoopCounter,
-      name: name || `Channel_${safetyLoopCounter}`,
-      shortName: shortName || `Ch${safetyLoopCounter}`,
-      unit: unit || '',
+    // Bounds check BEFORE allocating: never trust the declared count.
+    const available =
+      dataPtr >= view.byteLength ? 0 : Math.floor((view.byteLength - dataPtr) / sampleType.bytes);
+    const readCount = Math.min(declaredCount, available);
+    if (readCount < declaredCount) {
+      warnings.push(
+        `Channel "${name}": file is truncated or the sample count is corrupt; read ${readCount} of ${declaredCount} declared samples.`,
+      );
+    }
+    if (readCount === 0) {
+      if (declaredCount === 0) warnings.push(`Channel "${name}" has no samples; skipped.`);
+      continue;
+    }
+
+    const samples = new Float64Array(readCount);
+    const decFactor = Math.pow(10, -decPlaces);
+    let offset = dataPtr;
+    for (let i = 0; i < readCount; i++) {
+      let rawVal: number;
+      switch (sampleType.type) {
+        case 'f32':
+          rawVal = view.getFloat32(offset, true);
+          break;
+        case 'f16':
+          rawVal = decodeFloat16(view.getUint16(offset, true));
+          break;
+        case 'f64':
+          rawVal = view.getFloat64(offset, true);
+          break;
+        case 'i32':
+          rawVal = view.getInt32(offset, true);
+          break;
+        case 'i16':
+          rawVal = view.getInt16(offset, true);
+          break;
+      }
+      const calibrated = ((rawVal / scale) * decFactor + shift) * mul;
+      samples[i] = Number.isFinite(calibrated) ? calibrated : Number.NaN;
+      offset += sampleType.bytes;
+    }
+
+    const meta: MotecChannelMeta = {
+      id: chanIndex,
+      name,
+      shortName,
+      unit,
       frequencyHz: freq,
-      sampleCount: chanDataLen,
+      sampleCount: readCount,
+      declaredSampleCount: declaredCount,
       scale,
       shift,
       mul,
       decPlaces,
-      dataType,
-      dataPtr: chanDataPtr,
+      dataType: sampleType.type,
+      dataPtr,
     };
-
-    // --- 3. Read Raw Data Samples ---
-    const samples = new Float64Array(chanDataLen);
-    const decFactor = Math.pow(10, -decPlaces);
-    const scaleDiv = scale !== 0 ? scale : 1;
-
-    let readOffset = chanDataPtr;
-    for (let i = 0; i < chanDataLen; i++) {
-      if (readOffset + bytesPerSample > view.byteLength) {
-        break; // file truncated safely
-      }
-
-      let rawVal = 0;
-      if (dataType === 'f32') {
-        rawVal = view.getFloat32(readOffset, true);
-      } else if (dataType === 'f16') {
-        rawVal = decodeFloat16(view.getUint16(readOffset, true));
-      } else if (dataType === 'f64') {
-        rawVal = view.getFloat64(readOffset, true);
-      } else if (dataType === 'i32') {
-        rawVal = view.getInt32(readOffset, true);
-      } else {
-        rawVal = view.getInt16(readOffset, true);
-      }
-
-      // MoTeC Calibration Formula: ((raw / scale) * (10^-dec) + shift) * mul
-      const calibrated = ((rawVal / scaleDiv) * decFactor + shift) * mul;
-      samples[i] = Number.isFinite(calibrated) ? calibrated : 0;
-
-      readOffset += bytesPerSample;
+    const key = name.toLowerCase();
+    if (channels.has(key)) {
+      warnings.push(`Duplicate channel name "${name}"; only the first is used.`);
+      continue;
     }
-
-    const appChannelId = matchChannelNameToAppId(chanMeta.name);
-    const channelData: MotecChannelData = {
-      meta: chanMeta,
-      samples,
-      appChannelId,
-    };
-
-    channels.set(chanMeta.name.toLowerCase(), channelData);
-    if (appChannelId !== undefined && !channelsByAppId.has(appChannelId)) {
-      channelsByAppId.set(appChannelId, channelData);
-    }
-
-    if (chanDataLen > primarySampleCount) {
-      primarySampleCount = chanDataLen;
-      primaryFreqHz = freq;
-    }
-
-    if (nextMetaPtr <= currMetaPtr || nextMetaPtr === 0) {
-      break;
-    }
-    currMetaPtr = nextMetaPtr;
+    channels.set(key, { meta, samples });
   }
 
-  // --- 4. Synthesize Timelines & Distance ---
-  const durationS = primaryFreqHz > 0 ? primarySampleCount / primaryFreqHz : 0;
-  const timeTimelineS = new Float64Array(primarySampleCount);
-  for (let i = 0; i < primarySampleCount; i++) {
-    timeTimelineS[i] = i / primaryFreqHz;
+  if (chanIndex !== numChanns) {
+    warnings.push(`The header declares ${numChanns} channels but ${chanIndex} channel headers were found.`);
+  }
+  if (channels.size === 0) {
+    throw new Error('Invalid MoTeC .ld file: no channel contains any samples.');
   }
 
-  // Distance timeline: from Lap Distance channel or integrated from Speed
-  let distanceTimelineM = new Float64Array(primarySampleCount);
-  const distChan =
-    channelsByAppId.get(ch.LAP_DISTANCE) ||
-    channels.get('lap distance') ||
-    channels.get('distance') ||
-    channels.get('slap');
-  const speedChan =
-    channelsByAppId.get(ch.SPEED) ||
-    channels.get('ground speed') ||
-    channels.get('speed') ||
-    channels.get('vcar') ||
-    channels.get('gps speed');
+  // --- 3. Common timeline ---
+  let primaryFrequencyHz = 0;
+  let rawSessionDurationS = 0;
+  for (const c of channels.values()) {
+    primaryFrequencyHz = Math.max(primaryFrequencyHz, c.meta.frequencyHz);
+    rawSessionDurationS = Math.max(rawSessionDurationS, c.meta.sampleCount / c.meta.frequencyHz);
+  }
+  const sampleCount = Math.max(1, Math.round(rawSessionDurationS * primaryFrequencyHz));
+  for (const c of channels.values()) {
+    const covered = c.meta.sampleCount / c.meta.frequencyHz;
+    if (rawSessionDurationS - covered > Math.max(2 / c.meta.frequencyHz, 0.1)) {
+      warnings.push(
+        `Channel "${c.meta.name}" covers ${covered.toFixed(2)} s of the ${rawSessionDurationS.toFixed(2)} s file; the rest has no data.`,
+      );
+    }
+  }
 
-  if (distChan && distChan.samples.length === primarySampleCount) {
-    distanceTimelineM = new Float64Array(distChan.samples);
-  } else if (speedChan) {
-    // Integrate speed (km/h or m/s) over time
-    const dt = 1 / primaryFreqHz;
-    let accumM = 0;
-    const isKmh = speedChan.meta.unit.toLowerCase().includes('km') || (speedChan.samples[10] ?? 0) > 100;
-    const speedRatio = isKmh ? 1 / 3.6 : 1.0;
+  // --- 4. Registry mapping with unit conversion ---
+  const appChannels = new Map<number, MotecChannelData>();
+  for (const c of channels.values()) {
+    const appId = matchChannelNameToAppId(c.meta.name);
+    if (appId === undefined || appChannels.has(appId)) continue;
+    const convert = motecUnitConverter(appId, c.meta.unit);
+    if (!convert) {
+      const symbol = registryUnitSymbol(appId);
+      const target = symbol !== '' ? symbol : (registryUnit(appId) ?? 'registry unit');
+      warnings.push(
+        `Channel "${c.meta.name}" (unit "${c.meta.unit}") not used: its unit cannot be converted to ${target}.`,
+      );
+      continue;
+    }
+    const si = new Float64Array(c.samples.length);
+    for (let i = 0; i < si.length; i++) {
+      const v = convert(c.samples[i] ?? Number.NaN);
+      si[i] = Number.isFinite(v) ? v : Number.NaN;
+    }
+    appChannels.set(appId, { meta: c.meta, samples: si, appChannelId: appId });
+  }
 
-    for (let i = 0; i < primarySampleCount; i++) {
-      const spd = (speedChan.samples[i] ?? 0) * speedRatio;
-      accumM += Math.max(0, spd) * dt;
-      distanceTimelineM[i] = accumM;
+  // --- 5. Whole-file distance ---
+  let distanceTimelineM: Float64Array | null = null;
+  let distanceSource: MotecSessionData['distanceSource'] = null;
+  const lapDist = appChannels.get(ch.LAP_DISTANCE);
+  const speed = appChannels.get(ch.SPEED);
+  if (lapDist) {
+    distanceTimelineM = resampleByTime(lapDist.samples, lapDist.meta.frequencyHz, 0, primaryFrequencyHz, sampleCount, 'distance');
+    distanceSource = 'lap-distance';
+  } else if (speed) {
+    const mps = resampleByTime(speed.samples, speed.meta.frequencyHz, 0, primaryFrequencyHz, sampleCount, 'linear');
+    distanceTimelineM = new Float64Array(sampleCount);
+    const dt = 1 / primaryFrequencyHz;
+    let accum = 0;
+    let missing = 0;
+    for (let i = 0; i < sampleCount; i++) {
+      const v = mps[i] ?? Number.NaN;
+      if (Number.isFinite(v)) accum += Math.max(0, v) * dt;
+      else missing++;
+      distanceTimelineM[i] = accum;
+    }
+    distanceSource = 'integrated-speed';
+    if (missing > 0) {
+      warnings.push(`Distance is integrated from speed; ${missing} samples without speed add no distance.`);
     }
   } else {
-    // Fallback linear distance
-    for (let i = 0; i < primarySampleCount; i++) {
-      distanceTimelineM[i] = i * 0.7; // ~70 m/s
-    }
+    warnings.push('No lap distance or speed channel with a known unit: distance is unavailable.');
   }
 
-  const maxDistanceM = distanceTimelineM[primarySampleCount - 1] ?? 0;
-
-  // --- 5. Laps Breakdown & Quickest Lap Extraction ---
-  const detectedLaps = detectSessionLaps(
-    channels,
-    channelsByAppId,
+  const sessionData: MotecSessionData = {
+    primaryFrequencyHz,
+    sampleCount,
+    appChannels,
     distanceTimelineM,
-    timeTimelineS,
-    primaryFreqHz,
-    ldxContent,
-  );
+    distanceSource,
+  };
 
-  // Identify the quickest (fastest) lap in the session
-  const validLaps = detectedLaps.filter((l) => l.isValid);
-  const quickestLap = (validLaps.length > 0 ? validLaps : detectedLaps).reduce(
-    (best, cur) => (cur.lapTimeS < best.lapTimeS ? cur : best),
-    detectedLaps[0] || {
-      lapNumber: 1,
-      lapTimeS: durationS,
-      startTimeS: 0,
-      endTimeS: durationS,
-      startDistM: 0,
-      endDistM: maxDistanceM,
-      isValid: true,
-    },
-  );
-
-  const rawSessionDurationS = durationS;
-  const rawSessionDistanceM = maxDistanceM;
-
-  // Slicing channels to ONLY the quickest lap for comparison:
-  let finalChannels = channels;
-  let finalChannelsByAppId = channelsByAppId;
-  let finalDistanceTimelineM = distanceTimelineM;
-  let finalTimeTimelineS = timeTimelineS;
-  let finalDurationS = durationS;
-  let finalMaxDistanceM = maxDistanceM;
-
-  if (quickestLap && detectedLaps.length > 1) {
-    const qStart = quickestLap.startSampleIdx ?? 0;
-    const qEnd = quickestLap.endSampleIdx ?? (primarySampleCount - 1);
-    const qCount = Math.max(1, qEnd - qStart + 1);
-
-    // Re-base distance timeline so it starts at 0m and ends at lap distance
-    const slicedDist = new Float64Array(qCount);
-    const distOffset = distanceTimelineM[qStart] ?? 0;
-    for (let i = 0; i < qCount; i++) {
-      slicedDist[i] = Math.max(0, (distanceTimelineM[qStart + i] ?? 0) - distOffset);
-    }
-
-    // Re-base time timeline so it starts at 0s and ends at lapTimeS
-    const slicedTime = new Float64Array(qCount);
-    for (let i = 0; i < qCount; i++) {
-      slicedTime[i] = i / primaryFreqHz;
-    }
-
-    // Slice all channels proportionately according to their sample rate
-    const slicedChans = new Map<string, MotecChannelData>();
-    const slicedByAppId = new Map<number, MotecChannelData>();
-
-    for (const [name, chan] of channels) {
-      const rateRatio = primaryFreqHz > 0 ? chan.meta.frequencyHz / primaryFreqHz : 1;
-      const chanStart = Math.min(chan.samples.length - 1, Math.max(0, Math.round(qStart * rateRatio)));
-      const chanEnd = Math.min(chan.samples.length - 1, Math.max(chanStart, Math.round(qEnd * rateRatio)));
-      const slicedSamples = chan.samples.slice(chanStart, chanEnd + 1);
-
-      const slicedData: MotecChannelData = {
-        meta: { ...chan.meta, sampleCount: slicedSamples.length },
-        samples: slicedSamples,
-        appChannelId: chan.appChannelId,
-      };
-
-      slicedChans.set(name, slicedData);
-      if (chan.appChannelId !== undefined) {
-        slicedByAppId.set(chan.appChannelId, slicedData);
-      }
-    }
-
-    finalChannels = slicedChans;
-    finalChannelsByAppId = slicedByAppId;
-    finalDistanceTimelineM = slicedDist;
-    finalTimeTimelineS = slicedTime;
-    finalDurationS = quickestLap.lapTimeS;
-    finalMaxDistanceM = slicedDist[qCount - 1] ?? (quickestLap.endDistM - quickestLap.startDistM);
+  let rawSessionDistanceM: number | null = null;
+  if (distanceTimelineM && distanceSource === 'integrated-speed') {
+    rawSessionDistanceM = distanceTimelineM[sampleCount - 1] ?? null;
   }
+
+  // --- 6. Laps ---
+  const boundaryResult = findBoundaries(channels, appChannels, rawSessionDurationS, ldxContent);
+  const laps = boundaryResult
+    ? buildLaps(boundaryResult, rawSessionDurationS, primaryFrequencyHz, sampleCount, distanceTimelineM)
+    : [];
+  const validLaps = laps.filter((l) => l.isValid);
+  const fastestLap = validLaps.reduce<MotecLap | undefined>(
+    (best, cur) => (best === undefined || cur.lapTimeS < best.lapTimeS ? cur : best),
+    undefined,
+  );
+
+  if (!boundaryResult) {
+    warnings.push(
+      'No lap boundaries found (no .ldx markers, lap number, lap distance reset or beacon channel); showing the whole file.',
+    );
+  } else if (!fastestLap) {
+    warnings.push('No complete, valid lap found; showing the whole file.');
+  }
+
+  const lapView = buildView(sessionData, fastestLap ?? null);
 
   return {
+    ...lapView,
     filename,
     header,
-    channels: finalChannels,
-    channelsByAppId: finalChannelsByAppId,
-    durationS: finalDurationS,
-    maxDistanceM: finalMaxDistanceM,
-    distanceTimelineM: finalDistanceTimelineM,
-    timeTimelineS: finalTimeTimelineS,
-    laps: detectedLaps,
-    fastestLap: quickestLap,
+    channels,
+    scope: fastestLap ? 'fastest-lap' : 'whole-file',
+    laps,
+    fastestLap,
+    lapSource: boundaryResult?.source ?? null,
+    primaryFrequencyHz,
     rawSessionDurationS,
     rawSessionDistanceM,
+    warnings,
+    session: sessionData,
   };
 }

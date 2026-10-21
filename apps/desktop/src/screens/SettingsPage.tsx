@@ -11,6 +11,7 @@ import {
 } from '../lib/ipc';
 import { buildProfileLabel, environmentLabel, modeLabel } from '../lib/labels';
 import { NO_VALUE } from '../lib/units';
+import { describeConnectivityReport, type TestState } from '../lib/connectivity';
 
 interface SettingsPageProps {
   readonly info: AppInfo;
@@ -22,12 +23,6 @@ interface SettingsPageProps {
 const MODES: readonly Mode[] = ['driver', 'engineer'];
 
 type SaveState = { readonly kind: 'idle' } | { readonly kind: 'saving' } | { readonly kind: 'error'; readonly message: string };
-
-type TestState =
-  | { readonly kind: 'idle' }
-  | { readonly kind: 'testing' }
-  | { readonly kind: 'success'; readonly message: string; readonly rtt: number | null }
-  | { readonly kind: 'error'; readonly message: string };
 
 type SettingsSaveState =
   | { readonly kind: 'idle' }
@@ -58,6 +53,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
   const [testState, setTestState] = useState<TestState>({ kind: 'idle' });
   const [settingsSave, setSettingsSave] = useState<SettingsSaveState>({ kind: 'idle' });
   const [restarting, setRestarting] = useState(false);
+  const [restartError, setRestartError] = useState<string | null>(null);
 
   const isStreaming = status?.network.streaming === true;
   const isRecording = status?.recording.state === 'active';
@@ -90,20 +86,10 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
     setTestState({ kind: 'testing' });
     try {
       const report = await testRelayConnection({ host: hostToTest, port: relayPort });
-      const rtt = report.rtt?.avg_ms ?? null;
-      setTestState({
-        kind: 'success',
-        rtt,
-        message: rtt !== null
-          ? `Server reached successfully! Latency: ${rtt.toFixed(1)} ms. TLS Handshake & Authentication verified.`
-          : 'Server reached successfully! TLS Handshake verified.',
-      });
+      setTestState(describeConnectivityReport(report));
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setTestState({
-        kind: 'error',
-        message: `Connection failed: ${msg}. Check host address and verify the server is running.`,
-      });
+      setTestState({ kind: 'error', message: `Connection test could not run: ${msg}` });
     }
   };
 
@@ -115,8 +101,8 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
         network: {
           ...config.network,
           relay_host: relayHost.trim(),
-          relay_port: Number(relayPort),
-          connect_timeout_ms: Number(connectTimeout),
+          relay_port: relayPort,
+          connect_timeout_ms: connectTimeout,
         },
         telemetry: {
           ...config.telemetry,
@@ -124,12 +110,12 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
         },
         fuel: {
           ...config.fuel,
-          window_laps: Number(fuelWindow),
-          reserve_laps: Number(fuelReserve),
+          window_laps: fuelWindow,
+          reserve_laps: fuelReserve,
         },
         ui: {
           ...config.ui,
-          max_refresh_hz: Number(uiRefresh),
+          max_refresh_hz: uiRefresh,
         },
       };
 
@@ -143,10 +129,11 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
 
   const handleRestart = async (): Promise<void> => {
     setRestarting(true);
+    setRestartError(null);
     try {
       await restartApp();
-    } catch (err) {
-      console.error('Failed to restart app:', err);
+    } catch (err: unknown) {
+      setRestartError(err instanceof Error ? err.message : String(err));
       setRestarting(false);
     }
   };
@@ -215,9 +202,11 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
       {/* Relay Server & Global Connection Panel */}
       <div className="panel" data-testid="settings-relay-panel">
         <div className="panel-header">
-          <span>Relay Server Connection (Global & Online)</span>
+          <span>Relay server</span>
           <span className="badge badge-info">
-            {config.network.relay_host ? `Active: ${config.network.relay_host}:${config.network.relay_port}` : 'Not Connected'}
+            {config.network.relay_host
+              ? `Configured: ${config.network.relay_host}:${config.network.relay_port}`
+              : 'Not configured'}
           </span>
         </div>
         <div className="panel-body">
@@ -232,17 +221,6 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
               Connection Presets:
             </span>
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className={`btn btn-xs ${relayHost === 'relay.lmuracing.com' ? 'btn-primary' : ''}`}
-                onClick={() => {
-                  setRelayHost('relay.lmuracing.com');
-                  setRelayPort(443);
-                }}
-                title="Connect via official global cloud server for worldwide low-latency telemetry"
-              >
-                🌐 Global Cloud Relay (relay.lmuracing.com)
-              </button>
               <button
                 type="button"
                 className={`btn btn-xs ${relayHost === '127.0.0.1' ? 'btn-primary' : ''}`}
@@ -277,7 +255,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
                 id="relay-host-input"
                 type="text"
                 className="input"
-                placeholder="e.g. relay.lmuracing.com or 192.168.1.100"
+                placeholder="e.g. relay.example.com or 192.168.1.100"
                 value={relayHost}
                 onChange={(e) => { setRelayHost(e.target.value); }}
                 style={{ width: '100%', fontFamily: 'monospace' }}
@@ -349,14 +327,14 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
 
           {testState.kind === 'success' && (
             <div className="alert alert-success" style={{ marginBottom: '12px', borderColor: 'var(--color-success)' }}>
-              <strong>✅ Connection Successful!</strong>
+              <strong>✅ Connection test passed</strong>
               <div style={{ fontSize: '12px', marginTop: '2px' }}>{testState.message}</div>
             </div>
           )}
 
           {testState.kind === 'error' && (
             <div className="alert alert-error" style={{ marginBottom: '12px' }}>
-              <strong>❌ Connectivity Test Warning</strong>
+              <strong>❌ Connection test failed</strong>
               <div style={{ fontSize: '12px', marginTop: '2px' }}>{testState.message}</div>
             </div>
           )}
@@ -386,6 +364,12 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
                   >
                     {restarting ? 'Restarting…' : '🔄 Restart Application Now'}
                   </button>
+                </div>
+              )}
+              {restartError !== null && (
+                <div className="alert alert-error" role="alert" style={{ marginTop: '10px' }}>
+                  <span className="alert-title">Could not restart</span>
+                  <span>{restartError}</span>
                 </div>
               )}
             </div>

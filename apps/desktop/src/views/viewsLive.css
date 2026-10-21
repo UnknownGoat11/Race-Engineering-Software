@@ -1,0 +1,105 @@
+/*
+ * Shared styles for the engineering views' live-data and "no data" states.
+ * Tokens come from styles/tokens.css.
+ */
+
+.view-no-data {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px;
+  background: var(--surface-panel);
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-1, 4px);
+  color: var(--text-secondary);
+}
+
+.view-no-data-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.view-no-data-dash {
+  font-family: var(--font-data, monospace);
+  font-size: 20px;
+  color: var(--text-disabled);
+}
+
+.view-no-data-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.view-no-data-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.view-no-data-reason {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.view-live-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.view-live-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 4px);
+}
+
+.view-live-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: var(--text-tertiary);
+}
+
+.view-live-value {
+  font-family: var(--font-data, monospace);
+  font-size: 16px;
+  color: var(--text-primary);
+}
+
+.view-live-note {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.view-live-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.view-live-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.view-hist-bar-fill {
+  height: 100%;
+  background: var(--p-class-cyan);
+}
+
+.ms-ribbon-cell.ms-nodata {
+  color: var(--text-disabled);
+}

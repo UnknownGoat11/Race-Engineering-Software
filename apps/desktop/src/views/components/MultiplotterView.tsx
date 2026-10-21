@@ -1,113 +1,208 @@
-import { useState, type JSX } from 'react';
+import { useMemo, useState, type JSX } from 'react';
+import { ch } from '../../generated/channels';
+import { mpsToKmh, NO_VALUE } from '../../lib/units';
+import { useLiveRing } from '../liveData';
+import { NOT_CONNECTED_REASON, ViewNoData } from './ViewNoData';
 
 export type PlotMode = 'speed_rpm' | 'steer_latg' | 'brake_decel';
 
+interface PlotDef {
+  readonly label: string;
+  readonly xId: number;
+  readonly yId: number;
+  readonly xName: string;
+  readonly yName: string;
+  readonly xMap: (v: number) => number;
+  readonly yMap: (v: number) => number;
+}
+
+const RAD_TO_DEG = 180 / Math.PI;
+
+const PLOTS: Readonly<Record<PlotMode, PlotDef>> = {
+  steer_latg: {
+    label: 'Steering angle vs Lateral G',
+    xId: ch.STEERING_ANGLE,
+    yId: ch.G_LAT,
+    xName: 'Steering (deg)',
+    yName: 'Lateral G (+ left)',
+    xMap: (v) => v * RAD_TO_DEG,
+    yMap: (v) => v,
+  },
+  speed_rpm: {
+    label: 'Speed vs RPM',
+    xId: ch.SPEED,
+    yId: ch.RPM,
+    xName: 'Speed (km/h)',
+    yName: 'RPM',
+    xMap: mpsToKmh,
+    yMap: (v) => v,
+  },
+  brake_decel: {
+    label: 'Brake pedal vs Deceleration',
+    xId: ch.BRAKE,
+    yId: ch.G_LONG,
+    xName: 'Brake (%)',
+    yName: 'Deceleration G',
+    xMap: (v) => v * 100,
+    yMap: (v) => -v,
+  },
+};
+
+const RING_CHANNELS: readonly number[] = [ch.STEERING_ANGLE, ch.G_LAT, ch.SPEED, ch.RPM, ch.BRAKE, ch.G_LONG];
+const MAX_POINTS = 600;
+/** Fewer paired samples than this make correlation statistics meaningless. */
+const MIN_STATS_SAMPLES = 10;
+
+interface Stats {
+  readonly r: number | null;
+  readonly slope: number | null;
+}
+
+function regression(xs: readonly number[], ys: readonly number[]): Stats {
+  const n = xs.length;
+  if (n < MIN_STATS_SAMPLES) return { r: null, slope: null };
+  let sx = 0;
+  let sy = 0;
+  for (let i = 0; i < n; i++) {
+    sx += xs[i] ?? 0;
+    sy += ys[i] ?? 0;
+  }
+  const mx = sx / n;
+  const my = sy / n;
+  let sxx = 0;
+  let syy = 0;
+  let sxy = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = (xs[i] ?? 0) - mx;
+    const dy = (ys[i] ?? 0) - my;
+    sxx += dx * dx;
+    syy += dy * dy;
+    sxy += dx * dy;
+  }
+  return {
+    r: sxx > 0 && syy > 0 ? sxy / Math.sqrt(sxx * syy) : null,
+    slope: sxx > 0 ? sxy / sxx : null,
+  };
+}
+
+/** X-Y scatter of real paired samples from the live ring, with Pearson r and least-squares slope. */
 export function MultiplotterView(): JSX.Element {
   const [plotMode, setPlotMode] = useState<PlotMode>('steer_latg');
+  const ring = useLiveRing(RING_CHANNELS);
+  const plot = PLOTS[plotMode];
 
-  // Synthetic scatter points for each plot mode
-  const points = Array.from({ length: 60 }).map((_, i) => {
-    if (plotMode === 'speed_rpm') {
-      const v = 60 + (i / 60) * 260; // 60 to 320 km/h
-      const rpm = 4500 + (v / 320) * 4400 + (Math.sin(i) * 300);
-      return { x: (v / 340) * 100, y: 100 - (rpm / 9500) * 100 };
+  const data = useMemo(() => {
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const xCol = ring.series.get(plot.xId) ?? [];
+    const yCol = ring.series.get(plot.yId) ?? [];
+    for (let i = 0; i < ring.rows; i++) {
+      const x = xCol[i];
+      const y = yCol[i];
+      if (x === null || x === undefined || y === null || y === undefined) continue;
+      xs.push(plot.xMap(x));
+      ys.push(plot.yMap(y));
     }
-    if (plotMode === 'steer_latg') {
-      const steer = -35 + (i / 60) * 70; // -35 to +35 deg
-      const latG = (steer / 35) * 2.1 + (Math.cos(i) * 0.15); // -2.1 to +2.1G
-      return { x: 50 + (steer / 40) * 45, y: 50 - (latG / 2.5) * 45 };
+    let xMin = Infinity;
+    let xMax = -Infinity;
+    let yMin = Infinity;
+    let yMax = -Infinity;
+    for (let i = 0; i < xs.length; i++) {
+      const x = xs[i] ?? 0;
+      const y = ys[i] ?? 0;
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+      if (y < yMin) yMin = y;
+      if (y > yMax) yMax = y;
     }
-    // brake vs decel
-    const brake = (i / 60) * 1.0;
-    const decelG = brake * 2.8 + (Math.sin(i * 2) * 0.18);
-    return { x: brake * 100, y: 100 - (decelG / 3.2) * 100 };
-  });
+    const xSpan = xMax - xMin || 1;
+    const ySpan = yMax - yMin || 1;
+    const step = Math.max(1, Math.ceil(xs.length / MAX_POINTS));
+    const points: { x: number; y: number }[] = [];
+    for (let i = 0; i < xs.length; i += step) {
+      points.push({
+        x: 5 + (((xs[i] ?? 0) - xMin) / xSpan) * 90,
+        y: 95 - (((ys[i] ?? 0) - yMin) / ySpan) * 90,
+      });
+    }
+    return {
+      count: xs.length,
+      points,
+      stats: regression(xs, ys),
+      range: xs.length > 0 ? { xMin, xMax, yMin, yMax } : null,
+    };
+  }, [ring, plot]);
 
   return (
     <div className="multiplotter-view" data-testid="multiplotter-view">
       <div className="plotter-header">
         <div className="plotter-title-group">
-          <span className="badge badge-subtle">V1.1 X-Y CORRELATION</span>
           <h2 className="plotter-title">Multiplotter (Channel Cross-Correlation Scatter)</h2>
           <p className="plotter-desc">
-            Evaluate vehicle dynamics correlations: understeer/oversteer gradient, gear ratio matching, and braking friction efficiency.
+            Paired live samples over the live window{ring.windowS !== null ? ` (last ${String(ring.windowS)} s)` : ''}.
           </p>
         </div>
 
         <div className="plotter-mode-pills" role="radiogroup" aria-label="Scatter Mode">
-          <button
-            type="button"
-            className={`btn btn-xs ${plotMode === 'steer_latg' ? 'btn-primary' : ''}`}
-            onClick={() => {
-              setPlotMode('steer_latg');
-            }}
-          >
-            Steering vs Lateral G (Understeer Gradient)
-          </button>
-          <button
-            type="button"
-            className={`btn btn-xs ${plotMode === 'speed_rpm' ? 'btn-primary' : ''}`}
-            onClick={() => {
-              setPlotMode('speed_rpm');
-            }}
-          >
-            Speed vs RPM (Gearing)
-          </button>
-          <button
-            type="button"
-            className={`btn btn-xs ${plotMode === 'brake_decel' ? 'btn-primary' : ''}`}
-            onClick={() => {
-              setPlotMode('brake_decel');
-            }}
-          >
-            Brake % vs Decel G (Pad Friction)
-          </button>
+          {(Object.keys(PLOTS) as PlotMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              className={`btn btn-xs ${plotMode === mode ? 'btn-primary' : ''}`}
+              onClick={() => {
+                setPlotMode(mode);
+              }}
+            >
+              {PLOTS[mode].label}
+            </button>
+          ))}
         </div>
       </div>
 
-      <div className="plotter-viewport-card">
-        <div className="plotter-svg-wrapper">
-          <svg viewBox="0 0 100 100" className="plotter-svg" preserveAspectRatio="none">
-            {/* Grid */}
-            <line x1="0" y1="50" x2="100" y2="50" stroke="#334155" strokeWidth="0.5" strokeDasharray="2 2" />
-            <line x1="50" y1="0" x2="50" y2="100" stroke="#334155" strokeWidth="0.5" strokeDasharray="2 2" />
+      {ring.windowS === null ? (
+        <ViewNoData title={plot.label} reason={NOT_CONNECTED_REASON} testId="plotter-not-connected" />
+      ) : data.count === 0 ? (
+        <ViewNoData
+          title={plot.label}
+          reason="No paired live samples of these channels in the window yet."
+          testId="plotter-no-samples"
+        />
+      ) : (
+        <div className="plotter-viewport-card">
+          <div className="plotter-svg-wrapper">
+            <svg viewBox="0 0 100 100" className="plotter-svg" preserveAspectRatio="none" data-testid="plotter-scatter">
+              {data.points.map((p, i) => (
+                <circle key={i} cx={p.x} cy={p.y} r="1.2" fill="#38bdf8" opacity="0.8" />
+              ))}
+            </svg>
+          </div>
 
-            {/* Regression trendline */}
-            {plotMode === 'steer_latg' && (
-              <line x1="10" y1="90" x2="90" y2="10" stroke="#22d3ee" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />
-            )}
-            {plotMode === 'speed_rpm' && (
-              <line x1="10" y1="80" x2="95" y2="15" stroke="#22d3ee" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />
-            )}
-            {plotMode === 'brake_decel' && (
-              <line x1="5" y1="95" x2="95" y2="10" stroke="#22d3ee" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />
-            )}
-
-            {/* Data Scatter Points */}
-            {points.map((p, i) => (
-              <circle key={i} cx={p.x} cy={p.y} r="1.5" fill="#38bdf8" opacity="0.85" />
-            ))}
-          </svg>
+          <div className="plotter-sidebar-stats">
+            <div className="plot-stat-card">
+              <span className="stat-label">Samples</span>
+              <span className="stat-value">{data.count}</span>
+              <span className="stat-note">
+                X: {plot.xName}
+                {data.range ? ` ${data.range.xMin.toFixed(1)} .. ${data.range.xMax.toFixed(1)}` : ''}
+              </span>
+              <span className="stat-note">
+                Y: {plot.yName}
+                {data.range ? ` ${data.range.yMin.toFixed(2)} .. ${data.range.yMax.toFixed(2)}` : ''}
+              </span>
+            </div>
+            <div className="plot-stat-card">
+              <span className="stat-label">Pearson Correlation (r)</span>
+              <span className="stat-value num-cyan" data-testid="plotter-r">
+                {data.stats.r !== null ? data.stats.r.toFixed(3) : NO_VALUE}
+              </span>
+            </div>
+            <div className="plot-stat-card">
+              <span className="stat-label">Least-squares slope (Y per X unit)</span>
+              <span className="stat-value">{data.stats.slope !== null ? data.stats.slope.toPrecision(3) : NO_VALUE}</span>
+            </div>
+          </div>
         </div>
-
-        <div className="plotter-sidebar-stats">
-          <div className="plot-stat-card">
-            <span className="stat-label">Pearson Correlation (r)</span>
-            <span className="stat-value num-cyan">0.964</span>
-            <span className="stat-note">Strong linear mechanical grip correlation</span>
-          </div>
-          <div className="plot-stat-card">
-            <span className="stat-label">Gradient Slope</span>
-            <span className="stat-value">0.058 G / deg</span>
-            <span className="stat-note">Neutral to slight progressive understeer at limit</span>
-          </div>
-          <div className="plot-stat-card">
-            <span className="stat-label">Grip Saturation Point</span>
-            <span className="stat-value text-amber">2.18 G</span>
-            <span className="stat-note">Tyre slip angle saturation reached at ~28° steer</span>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }

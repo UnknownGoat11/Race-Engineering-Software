@@ -1,70 +1,117 @@
 import { describe, expect, it, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 import { MotecImportBar } from './MotecImportBar';
 import { motecStore } from './useMotecStore';
+import { generateMultiLapMotecBuffer, generateSyntheticDemoMotecBuffer } from './motecWriter';
+
+function loadMultiLap(): void {
+  act(() => {
+    motecStore.loadBuffer(generateMultiLapMotecBuffer(), 'session.ld', { dataKind: 'synthetic' });
+  });
+}
 
 describe('MoTeC Telemetry Store & UI Integration', () => {
   beforeEach(() => {
     motecStore.clear();
   });
 
-  it('renders initial empty state with import and benchmark buttons', () => {
+  it('renders the empty state without any demo/benchmark button', () => {
     render(<MotecImportBar />);
-
     expect(screen.getByTestId('motec-import-bar')).toBeInTheDocument();
     expect(screen.getByTestId('motec-import-button')).toBeInTheDocument();
-    expect(screen.getByTestId('motec-benchmark-button')).toBeInTheDocument();
+    expect(screen.queryByTestId('motec-benchmark-button')).toBeNull();
     expect(screen.getByText(/No MoTeC \(\.ld\) file loaded/i)).toBeInTheDocument();
   });
 
-  it('loads MoTeC benchmark lap and displays metadata and comparison line indicator', () => {
+  it('shows real metadata: quickest lap, sample rate from the file, unknown header fields', () => {
     render(<MotecImportBar />);
-
-    const loadBtn = screen.getByTestId('motec-benchmark-button');
-    fireEvent.click(loadBtn);
-
-    // Verify metadata shown
-    expect(screen.getByText(/Ferrari 499P/i)).toBeInTheDocument();
-    expect(screen.getByText(/Antonio Fuoco/i)).toBeInTheDocument();
+    act(() => {
+      motecStore.loadBuffer(generateMultiLapMotecBuffer(), 'session.ld');
+    });
+    expect(screen.getByTestId('motec-lap-pill')).toHaveTextContent(/Quickest: Lap 3 \(2:14\.500\)/);
+    expect(screen.getByTestId('motec-lap-pill')).toHaveTextContent(/2 valid laps/);
+    expect(screen.getByTestId('motec-channel-pill')).toHaveTextContent('@ 10 Hz');
     expect(screen.getByText(/Orange Line = MoTeC Reference/i)).toBeInTheDocument();
-    expect(screen.getByTestId('motec-toggle-button')).toBeInTheDocument();
-    expect(screen.getByTestId('motec-clear-button')).toBeInTheDocument();
+    expect(screen.queryByTestId('motec-synthetic-badge')).toBeNull();
+  });
+
+  it('labels synthetic data and never shows a real driver name', () => {
+    render(<MotecImportBar />);
+    act(() => {
+      motecStore.loadBuffer(generateSyntheticDemoMotecBuffer(), 'demo.ld', { dataKind: 'synthetic' });
+    });
+    expect(screen.getByTestId('motec-synthetic-badge')).toHaveTextContent('Synthetic test data');
+    expect(screen.getByTestId('motec-header-pill')).toHaveTextContent(/Synthetic data/);
+    expect(screen.getByTestId('motec-lap-pill')).toHaveTextContent(/No complete lap found/);
+    expect(motecStore.getState().graphSource?.dataKind).toBe('synthetic');
+  });
+
+  it('shows unknown header fields as unknown', () => {
+    render(<MotecImportBar />);
+    act(() => {
+      // Patch the driver/vehicle fields of the synthetic file to empty.
+      const buf = generateMultiLapMotecBuffer();
+      buf.fill(0, 158, 158 + 64);
+      buf.fill(0, 222, 222 + 64);
+      motecStore.loadBuffer(buf, 'nohdr.ld');
+    });
+    expect(screen.getByTestId('motec-header-pill')).toHaveTextContent('Driver unknown • Car unknown');
   });
 
   it('toggles MoTeC comparison line visibility', () => {
     render(<MotecImportBar />);
-
-    fireEvent.click(screen.getByTestId('motec-benchmark-button'));
+    loadMultiLap();
     const toggleBtn = screen.getByTestId('motec-toggle-button');
     expect(toggleBtn).toHaveTextContent(/MoTeC Line ON/i);
-
     fireEvent.click(toggleBtn);
     expect(toggleBtn).toHaveTextContent(/MoTeC Line OFF/i);
     expect(motecStore.getState().isOverlayEnabled).toBe(false);
-
     fireEvent.click(toggleBtn);
-    expect(toggleBtn).toHaveTextContent(/MoTeC Line ON/i);
     expect(motecStore.getState().isOverlayEnabled).toBe(true);
   });
 
   it('clears loaded MoTeC session when Unload is clicked', () => {
     render(<MotecImportBar />);
-
-    fireEvent.click(screen.getByTestId('motec-benchmark-button'));
-    expect(screen.getByText(/Ferrari 499P/i)).toBeInTheDocument();
-
-    const clearBtn = screen.getByTestId('motec-clear-button');
-    fireEvent.click(clearBtn);
-
+    loadMultiLap();
+    fireEvent.click(screen.getByTestId('motec-clear-button'));
     expect(screen.getByText(/No MoTeC \(\.ld\) file loaded/i)).toBeInTheDocument();
     expect(motecStore.getState().parsedFile).toBeNull();
   });
 
-  it('computes and displays live speed delta against MoTeC when distance is provided', () => {
-    render(<MotecImportBar currentLapDistanceM={1000} currentSpeedKmh={290} />);
+  it('clears the previous file and shows the error when a new file fails to parse', () => {
+    render(<MotecImportBar />);
+    loadMultiLap();
+    act(() => {
+      motecStore.loadBuffer(new Uint8Array(4096), 'junk.ld');
+    });
+    expect(motecStore.getState().parsedFile).toBeNull();
+    expect(motecStore.getState().graphSource).toBeNull();
+    expect(screen.getByTestId('motec-error')).toHaveTextContent(/Not a MoTeC \.ld file/);
+  });
 
-    fireEvent.click(screen.getByTestId('motec-benchmark-button'));
+  it('reports an empty file explicitly', () => {
+    render(<MotecImportBar />);
+    act(() => {
+      motecStore.loadBuffer(new Uint8Array(0), 'empty.ld');
+    });
+    expect(screen.getByTestId('motec-error')).toHaveTextContent(/"empty\.ld" is empty/);
+  });
 
+  it('reports an empty File object explicitly', async () => {
+    await motecStore.loadFiles([new File([], 'empty.ld')]);
+    expect(motecStore.getState().error).toMatch(/empty/);
+    expect(motecStore.getState().parsedFile).toBeNull();
+  });
+
+  it('shows the live speed delta in km/h from SI inputs', () => {
+    loadMultiLap();
+    render(<MotecImportBar currentLapDistanceM={1000} currentSpeedMps={80} />);
     expect(screen.getByText(/Δ Speed vs MoTeC:/i)).toBeInTheDocument();
+  });
+
+  it('shows no speed delta past the end of the reference lap', () => {
+    loadMultiLap();
+    render(<MotecImportBar currentLapDistanceM={1e9} currentSpeedMps={80} />);
+    expect(screen.queryByText(/Δ Speed vs MoTeC:/i)).toBeNull();
   });
 });

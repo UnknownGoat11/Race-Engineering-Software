@@ -454,6 +454,7 @@ export type CommandErrorCode =
   | 'unknown_alert'
   | 'network_busy'
   | 'network_error'
+  | 'restart_blocked'
   | 'code_malformed'
   | 'code_invalid'
   | 'code_expired'
@@ -574,7 +575,7 @@ export function testRelayConnection(options?: { host?: string; port?: number }):
 
 /** Restart the desktop application. */
 export function restartApp(): Promise<void> {
-  return call<void>('restart_app');
+  return callUnit('restart_app');
 }
 
 /** Pick a MoTeC .ld/.ldx file via native desktop dialog. */

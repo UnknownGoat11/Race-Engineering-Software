@@ -1,30 +1,28 @@
 import { useRef, type ChangeEvent, type DragEvent, type JSX } from 'react';
 import { ch } from '../generated/channels';
 import { isTauri, pickMotecFile } from '../lib/ipc';
-import { formatLapTime } from '../lib/units';
+import { formatLapTime, isFiniteNumber, mpsToKmh, NO_VALUE } from '../lib/units';
+import { sampleMotecAtDistance } from './motecSource';
 import { motecStore, useMotecSession } from './useMotecStore';
 import './motec.css';
 
 export interface MotecImportBarProps {
   readonly currentLapDistanceM?: number;
-  readonly currentSpeedKmh?: number;
+  /** Live speed in m/s (registry unit). */
+  readonly currentSpeedMps?: number;
   readonly className?: string;
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 export function MotecImportBar({
   currentLapDistanceM,
-  currentSpeedKmh,
+  currentSpeedMps,
   className = '',
 }: MotecImportBarProps): JSX.Element {
-  const {
-    parsedFile,
-    isLoading,
-    error,
-    isOverlayEnabled,
-    loadBenchmarkLap,
-    clear,
-    setOverlayEnabled,
-  } = useMotecSession();
+  const { parsedFile, dataKind, isLoading, error, isOverlayEnabled, clear, setOverlayEnabled } = useMotecSession();
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -32,13 +30,16 @@ export function MotecImportBar({
     if (isTauri()) {
       try {
         const picked = await pickMotecFile();
-        if (picked && picked.bytes && picked.bytes.length > 0) {
-          motecStore.loadBuffer(new Uint8Array(picked.bytes), picked.name);
+        if (picked === null) return; // user cancelled
+        if (picked.bytes.length === 0) {
+          motecStore.setError(`"${picked.name}" is empty (0 bytes).`);
           return;
         }
+        motecStore.loadBuffer(new Uint8Array(picked.bytes), picked.name);
       } catch (err) {
-        console.warn('Native dialog failed, falling back to browser file input:', err);
+        motecStore.setError(`Could not open the MoTeC file: ${messageOf(err)}`);
       }
+      return;
     }
     fileInputRef.current?.click();
   };
@@ -59,38 +60,20 @@ export function MotecImportBar({
     e.preventDefault();
     e.stopPropagation();
     const files = e.dataTransfer.files;
-    if (files && files.length > 0) {
+    if (files.length > 0) {
       void motecStore.loadFiles(files);
     }
   };
 
-  // Sample MoTeC benchmark at current live distance if available
-  let motecSpeedAtDist: number | null = null;
-  let speedDelta: number | null = null;
-
-  if (parsedFile && typeof currentLapDistanceM === 'number' && typeof currentSpeedKmh === 'number') {
-    const speedChan =
-      parsedFile.channelsByAppId.get(ch.SPEED) ||
-      parsedFile.channels.get('ground speed') ||
-      parsedFile.channels.get('speed') ||
-      parsedFile.channels.get('vcar');
-    if (speedChan && parsedFile.distanceTimelineM.length > 0) {
-      const xs = parsedFile.distanceTimelineM;
-      let lo = 0;
-      let hi = xs.length - 1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        const v = xs[mid] ?? 0;
-        if (v < currentLapDistanceM) lo = mid + 1;
-        else hi = mid - 1;
-      }
-      const idx = Math.min(xs.length - 1, Math.max(0, lo));
-      motecSpeedAtDist = speedChan.samples[idx] ?? null;
-      if (motecSpeedAtDist !== null) {
-        speedDelta = currentSpeedKmh - motecSpeedAtDist;
-      }
-    }
+  // Live speed minus the MoTeC reference at the current lap distance (both m/s), or null.
+  let speedDeltaMps: number | null = null;
+  if (parsedFile && isFiniteNumber(currentLapDistanceM) && isFiniteNumber(currentSpeedMps)) {
+    const ref = sampleMotecAtDistance(parsedFile, ch.SPEED, currentLapDistanceM);
+    if (ref !== null) speedDeltaMps = currentSpeedMps - ref;
   }
+
+  const completeLaps = parsedFile ? parsedFile.laps.filter((l) => l.isValid).length : 0;
+  const warnings = parsedFile?.warnings ?? [];
 
   return (
     <div
@@ -115,20 +98,43 @@ export function MotecImportBar({
 
         {parsedFile ? (
           <div className="motec-session-info">
+            {dataKind === 'synthetic' && (
+              <span className="motec-meta-pill" data-testid="motec-synthetic-badge">
+                Synthetic test data
+              </span>
+            )}
             <span className="motec-file-name" title={parsedFile.filename}>
               📄 {parsedFile.filename}
             </span>
-            <span className="motec-meta-pill">
-              🏎️ {parsedFile.header.driver} • {parsedFile.header.vehicleId}
+            <span className="motec-meta-pill" data-testid="motec-header-pill">
+              🏎️ {parsedFile.header.driver ?? 'Driver unknown'} • {parsedFile.header.vehicleId ?? 'Car unknown'}
             </span>
-            <span className="motec-meta-pill" title={parsedFile.laps.length > 1 ? `Quickest lap selected from ${parsedFile.laps.length} session laps` : 'Lap duration'}>
-              ⏱️ {parsedFile.laps.length > 1
-                ? <>Quickest: <strong>Lap {parsedFile.fastestLap?.lapNumber ?? 1} ({formatLapTime(parsedFile.fastestLap?.lapTimeS ?? parsedFile.durationS)})</strong> • {parsedFile.laps.length} laps</>
-                : <>Lap: <strong>{formatLapTime(parsedFile.durationS)}</strong></>}
+            <span className="motec-meta-pill" data-testid="motec-lap-pill">
+              ⏱️{' '}
+              {parsedFile.fastestLap ? (
+                <>
+                  Quickest: <strong>Lap {parsedFile.fastestLap.lapNumber} ({formatLapTime(parsedFile.fastestLap.lapTimeS)})</strong>{' '}
+                  • {completeLaps} valid {completeLaps === 1 ? 'lap' : 'laps'}
+                </>
+              ) : (
+                <>
+                  No complete lap found • whole file <strong>{formatLapTime(parsedFile.durationS)}</strong>
+                </>
+              )}
             </span>
-            <span className="motec-meta-pill">
-              📡 {parsedFile.channels.size} ch @ 100Hz
+            <span className="motec-meta-pill" data-testid="motec-channel-pill">
+              📡 {parsedFile.channels.size} ch ({parsedFile.channelsByAppId.size} mapped) @ {parsedFile.primaryFrequencyHz} Hz
             </span>
+            {parsedFile.distanceTimelineM === null && (
+              <span className="motec-meta-pill" data-testid="motec-no-distance">
+                Distance: {NO_VALUE} (no lap distance or speed channel)
+              </span>
+            )}
+            {warnings.length > 0 && (
+              <span className="motec-meta-pill" title={warnings.join('\n')} data-testid="motec-warnings">
+                ⚠️ {warnings.length} import {warnings.length === 1 ? 'warning' : 'warnings'}
+              </span>
+            )}
 
             {/* Line Color Indicator for Comparison */}
             <div className="motec-line-indicator" title="MoTeC comparison line color in telemetry graphs">
@@ -144,11 +150,12 @@ export function MotecImportBar({
       </div>
 
       {/* Live Delta Readout when car is running */}
-      {parsedFile && speedDelta !== null && (
+      {parsedFile && speedDeltaMps !== null && (
         <div className="motec-live-delta-pill">
           <span className="delta-label">Δ Speed vs MoTeC:</span>
-          <span className={`delta-val ${speedDelta >= 0 ? 'delta-faster' : 'delta-slower'}`}>
-            {speedDelta >= 0 ? '+' : ''}{speedDelta.toFixed(1)} km/h
+          <span className={`delta-val ${speedDeltaMps >= 0 ? 'delta-faster' : 'delta-slower'}`}>
+            {speedDeltaMps >= 0 ? '+' : ''}
+            {mpsToKmh(speedDeltaMps).toFixed(1)} km/h
           </span>
         </div>
       )}
@@ -189,33 +196,25 @@ export function MotecImportBar({
             </button>
           </>
         ) : (
-          <>
-            <button
-              type="button"
-              className="btn btn-xs btn-primary"
-              onClick={() => {
-                void handleOpenFileDialog();
-              }}
-              disabled={isLoading}
-              data-testid="motec-import-button"
-            >
-              📁 Add MoTeC File (.ld)
-            </button>
-            <button
-              type="button"
-              className="btn btn-xs btn-secondary"
-              onClick={loadBenchmarkLap}
-              disabled={isLoading}
-              title="Load Spa-Francorchamps Ferrari 499P Pole Lap (2:16.421) MoTeC demo reference"
-              data-testid="motec-benchmark-button"
-            >
-              ⚡ Try Demo Benchmark Lap
-            </button>
-          </>
+          <button
+            type="button"
+            className="btn btn-xs btn-primary"
+            onClick={() => {
+              void handleOpenFileDialog();
+            }}
+            disabled={isLoading}
+            data-testid="motec-import-button"
+          >
+            📁 Add MoTeC File (.ld)
+          </button>
         )}
       </div>
 
-      {error && <div className="motec-error-banner">⚠️ MoTeC Error: {error}</div>}
+      {error && (
+        <div className="motec-error-banner" role="alert" data-testid="motec-error">
+          ⚠️ MoTeC Error: {error}
+        </div>
+      )}
     </div>
   );
 }

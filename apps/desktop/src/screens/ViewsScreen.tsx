@@ -1,4 +1,8 @@
-import { useState, type JSX } from 'react';
+import { useEffect, useMemo, useState, type JSX } from 'react';
+import { useScoring } from '../hooks/useScoring';
+import { connectTauriTelemetry } from '../telemetry/bridge';
+import { TelemetryStoreContext } from '../telemetry/hooks';
+import { TelemetryStore } from '../telemetry/store';
 import type { ViewId } from '../views/types';
 import { ALL_VIEWS, getViewDefinition } from '../views/viewRegistry';
 import { ViewSwitcherDropdown } from '../views/ViewSwitcherDropdown';
@@ -48,6 +52,17 @@ export function ViewsScreen({ initialViewId = 'driving' }: ViewsScreenProps): JS
   const [activeViewId, setActiveViewId] = useState<ViewId>(viewParam);
   const activeDef = getViewDefinition(activeViewId);
 
+  // Live telemetry for every view (same pipeline as the Driver / Engineer screens): views read real channels
+  // from this store and render "no data" for anything missing. No view carries demo values.
+  const store = useMemo(() => new TelemetryStore(), []);
+  useEffect(() => {
+    const conn = connectTauriTelemetry(store);
+    return () => {
+      conn.disconnect();
+    };
+  }, [store]);
+  const scoring = useScoring();
+
   // Navigate to previous or next view in the catalogue
   const currentIndex = ALL_VIEWS.findIndex((v) => v.id === activeViewId);
   const handlePrev = () => {
@@ -72,7 +87,7 @@ export function ViewsScreen({ initialViewId = 'driving' }: ViewsScreenProps): JS
       case 'lap-comparison':
         return <LapComparisonView />;
       case 'multicar-circle':
-        return <MulticarRadarCircleView />;
+        return <MulticarRadarCircleView scoring={scoring} />;
       case 'multicar-minisector-timing':
         return <MinisectorTimingView />;
       case 'multicar-race-field-spread':
@@ -100,21 +115,21 @@ export function ViewsScreen({ initialViewId = 'driving' }: ViewsScreenProps): JS
       case 'laptime-data':
         return <LaptimeDataView />;
       case 'race-info':
-        return <RaceInfoView />;
+        return <RaceInfoView scoring={scoring} />;
       case 'time-trial':
         return <TimeTrialInfoView />;
       case 'multicar-map':
-        return <MulticarMapView />;
+        return <MulticarMapView scoring={scoring} />;
       case 'multicar-race-timing':
-        return <MulticarRaceTimingView />;
+        return <MulticarRaceTimingView scoring={scoring} />;
       case 'multicar-one-lap-timing':
-        return <MulticarOneLapTimingView />;
+        return <MulticarOneLapTimingView scoring={scoring} />;
       case 'multicar-opponent-stats':
         return <MulticarOpponentStatsView />;
       case 'multicar-race-history':
         return <MulticarRaceHistoryView />;
       case 'multicar-session-data':
-        return <MulticarSessionDataView />;
+        return <MulticarSessionDataView scoring={scoring} />;
       case 'multicar-telemetry':
         return <MulticarTelemetryView />;
       case 'multilap-telemetry':
@@ -122,54 +137,56 @@ export function ViewsScreen({ initialViewId = 'driving' }: ViewsScreenProps): JS
       case 'workspace':
       case 'telemetry':
       default:
-        return <WorkspaceView />;
+        return <WorkspaceView scoring={scoring} />;
     }
   };
 
   return (
-    <div className="views-screen-container" data-testid="views-screen">
-      {/* Top Views Control Bar with Dropdown Switcher */}
-      <div className="views-control-bar">
-        <div className="views-control-left">
-          <ViewSwitcherDropdown activeViewId={activeViewId} onSelectView={setActiveViewId} />
-          <div className="views-nav-buttons">
-            <button
-              type="button"
-              className="btn btn-sm btn-icon"
-              onClick={handlePrev}
-              title="Previous view (Left arrow)"
-              aria-label="Previous view"
-            >
-              ◀
-            </button>
-            <span className="views-index-text">
-              {currentIndex + 1} / {ALL_VIEWS.length}
+    <TelemetryStoreContext value={store}>
+      <div className="views-screen-container" data-testid="views-screen">
+        {/* Top Views Control Bar with Dropdown Switcher */}
+        <div className="views-control-bar">
+          <div className="views-control-left">
+            <ViewSwitcherDropdown activeViewId={activeViewId} onSelectView={setActiveViewId} />
+            <div className="views-nav-buttons">
+              <button
+                type="button"
+                className="btn btn-sm btn-icon"
+                onClick={handlePrev}
+                title="Previous view (Left arrow)"
+                aria-label="Previous view"
+              >
+                ◀
+              </button>
+              <span className="views-index-text">
+                {currentIndex + 1} / {ALL_VIEWS.length}
+              </span>
+              <button
+                type="button"
+                className="btn btn-sm btn-icon"
+                onClick={handleNext}
+                title="Next view (Right arrow)"
+                aria-label="Next view"
+              >
+                ▶
+              </button>
+            </div>
+          </div>
+
+          <div className="views-control-right">
+            <span className="views-active-title">
+              {activeDef.glyph} {activeDef.title}
             </span>
-            <button
-              type="button"
-              className="btn btn-sm btn-icon"
-              onClick={handleNext}
-              title="Next view (Right arrow)"
-              aria-label="Next view"
-            >
-              ▶
-            </button>
+            <span className="badge badge-subtle">{activeDef.category.toUpperCase()}</span>
+            <span className="badge badge-mode">V1.1</span>
           </div>
         </div>
 
-        <div className="views-control-right">
-          <span className="views-active-title">
-            {activeDef.glyph} {activeDef.title}
-          </span>
-          <span className="badge badge-subtle">{activeDef.category.toUpperCase()}</span>
-          <span className="badge badge-mode">V1.1</span>
+        {/* Main Viewport */}
+        <div className="views-viewport" data-testid={`view-container-${activeViewId}`}>
+          {renderActiveView()}
         </div>
       </div>
-
-      {/* Main Viewport */}
-      <div className="views-viewport" data-testid={`view-container-${activeViewId}`}>
-        {renderActiveView()}
-      </div>
-    </div>
+    </TelemetryStoreContext>
   );
 }

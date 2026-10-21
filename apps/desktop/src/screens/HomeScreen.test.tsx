@@ -55,7 +55,7 @@ describe('HomeScreen', () => {
     expect(screen.getByTestId('home-card-join')).toBeInTheDocument();
   });
 
-  it('hosts a session and displays deliverable code with copy button', async () => {
+  it('requests a relay code when hosting and never shows a locally invented code', async () => {
     render(
       <HomeScreen
         currentMode="driver"
@@ -65,24 +65,30 @@ describe('HomeScreen', () => {
       />
     );
 
-    const hostBtn = screen.getByTestId('home-host-btn');
-    fireEvent.click(hostBtn);
+    fireEvent.click(screen.getByTestId('home-host-btn'));
 
     await waitFor(() => {
       expect(ipc.driverNewCode).toHaveBeenCalled();
     });
+    // No relay code in core status yet: nothing to copy, no banner.
+    expect(screen.queryByTestId('home-active-banner')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('home-code-value')).not.toBeInTheDocument();
+  });
 
-    // After hosting, deliverable code is displayed
-    const activeBanner = await screen.findByTestId('home-active-banner');
-    expect(activeBanner).toBeInTheDocument();
+  it('shows the error when the relay cannot issue a code', async () => {
+    vi.mocked(ipc.driverNewCode).mockRejectedValueOnce(new Error('relay unreachable'));
+    render(
+      <HomeScreen
+        currentMode="driver"
+        onChangeMode={onChangeMode}
+        onEnterSession={onEnterSession}
+      />
+    );
 
-    const copyBtn = screen.getByTestId('home-copy-code-btn');
-    fireEvent.click(copyBtn);
-    expect(writeTextSpy).toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('home-host-btn'));
 
-    const enterBtn = screen.getByTestId('home-enter-session-btn');
-    fireEvent.click(enterBtn);
-    expect(onEnterSession).toHaveBeenCalled();
+    expect(await screen.findByRole('alert')).toHaveTextContent('relay unreachable');
+    expect(screen.queryByTestId('home-code-value')).not.toBeInTheDocument();
   });
 
   it('switches mode when hosting as engineer', async () => {

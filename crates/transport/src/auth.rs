@@ -232,11 +232,8 @@ impl AuthManager {
         state.account = Some(account.clone());
         state.tokens[role_index(role)].refresh = Some(token.clone());
         drop(state);
-        self.store.store(
-            &self.namespace,
-            CredentialKind::refresh_token(role),
-            &token,
-        )?;
+        self.store
+            .store(&self.namespace, CredentialKind::refresh_token(role), &token)?;
         Ok(account)
     }
 

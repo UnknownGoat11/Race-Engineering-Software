@@ -1,82 +1,143 @@
-import { useMemo, type JSX } from 'react';
+import { useEffect, useState, type JSX } from 'react';
 import { ch } from '../../generated/channels';
-import { useChannelValues } from '../../telemetry/hooks';
+import { formatDelta, NO_VALUE } from '../../lib/units';
+import { useTelemetryStore } from '../../telemetry/hooks';
+import type { TelemetryStore } from '../../telemetry/store';
 import '../../styles/engineer.css';
+import '../../views/viewsLive.css';
 
-const MINISECTOR_CHANNELS = [
-  ch.LAP_PROGRESS,
-  ch.DELTA_PERSONAL_BEST,
-  ch.DELTA_BEST,
-  ch.LAP_TIME,
-  ch.LAP_NUMBER,
-] as const;
+/** Minisectors per lap (equal fractions of LAP_PROGRESS). */
+const MINISECTOR_COUNT = 12;
 
-// 12 Baseline micro-sector delta offsets for live pitwall delta pacing
-const DEFAULT_DELTAS = [
-  -0.035, -0.062, 0.015, -0.048, 0.008, -0.024,
-  -0.018, 0.032, -0.012, -0.054, 0.018, -0.026,
-];
+const TRACKED_CHANNELS = [ch.LAP_PROGRESS, ch.DELTA_PERSONAL_BEST, ch.LAP_NUMBER] as const;
+
+/**
+ * Per-minisector time gained or lost against the personal best on the current lap, measured from the live
+ * DELTA_PERSONAL_BEST channel: a minisector's delta is the running delta when the car leaves it minus the
+ * running delta when it entered. A minisector the car has not yet completed this lap, or whose entry was not
+ * observed (view opened mid-minisector, a progress jump, missing delta), has no value.
+ */
+interface MinisectorTracker {
+  readonly lap: number | null;
+  /** Minisector the car is in, or null before the first progress sample. */
+  readonly index: number | null;
+  /** Running delta when the current minisector was entered; null when that entry was not observed. */
+  readonly entryDelta: number | null;
+  /** Completed minisector deltas of the current lap (s); null where not measured. */
+  readonly deltas: readonly (number | null)[];
+}
+
+const INITIAL_TRACKER: MinisectorTracker = {
+  lap: null,
+  index: null,
+  entryDelta: null,
+  deltas: Array.from({ length: MINISECTOR_COUNT }, () => null),
+};
+
+function minisectorOf(progress: number): number {
+  const frac = Math.min(1, Math.max(0, progress));
+  return Math.min(MINISECTOR_COUNT - 1, Math.floor(frac * MINISECTOR_COUNT));
+}
+
+/** Pure tracker step for one observation of (lap number, lap progress 0..1, running delta to PB in s). */
+function advanceTracker(
+  prev: MinisectorTracker,
+  lap: number | null,
+  progress: number | null,
+  delta: number | null,
+): MinisectorTracker {
+  if (progress === null) return prev;
+  const index = minisectorOf(progress);
+
+  // A new lap: start a fresh row. Only minisector 1 can be measured if we see it from its start.
+  if (prev.lap !== null && lap !== null && lap !== prev.lap) {
+    return {
+      lap,
+      index,
+      entryDelta: index === 0 ? delta : null,
+      deltas: INITIAL_TRACKER.deltas,
+    };
+  }
+
+  if (prev.index === null) {
+    // First observation: the entry into this minisector was not seen.
+    return { lap, index, entryDelta: null, deltas: prev.deltas };
+  }
+
+  if (index === prev.index) {
+    // Still inside: a missing delta makes this minisector unmeasurable.
+    return delta === null && prev.entryDelta !== null ? { ...prev, lap, entryDelta: null } : { ...prev, lap };
+  }
+
+  if (index === prev.index + 1) {
+    const deltas = [...prev.deltas];
+    deltas[prev.index] = prev.entryDelta !== null && delta !== null ? delta - prev.entryDelta : null;
+    return { lap, index, entryDelta: delta, deltas };
+  }
+
+  // Skipped minisectors or moved backwards: neither the left nor the new minisector is measurable.
+  return { lap, index, entryDelta: null, deltas: prev.deltas };
+}
+
+function readNumber(store: TelemetryStore, id: number): number | null {
+  const v = store.getSample(id).value;
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+function observe(store: TelemetryStore, prev: MinisectorTracker): MinisectorTracker {
+  return advanceTracker(
+    prev,
+    readNumber(store, ch.LAP_NUMBER),
+    readNumber(store, ch.LAP_PROGRESS),
+    readNumber(store, ch.DELTA_PERSONAL_BEST),
+  );
+}
+
+function statusClass(delta: number | null): string {
+  if (delta === null) return 'ms-nodata';
+  if (delta < 0) return 'ms-faster';
+  if (delta > 0) return 'ms-slower';
+  return '';
+}
 
 export function MinisectorRibbon(): JSX.Element {
-  const samples = useChannelValues(MINISECTOR_CHANNELS);
+  const store = useTelemetryStore();
+  const [tracker, setTracker] = useState<MinisectorTracker>(() => observe(store, INITIAL_TRACKER));
 
-  const lapFraction = typeof samples[0]?.value === 'number' ? samples[0].value : null;
-  const deltaPb = typeof samples[1]?.value === 'number' ? samples[1].value : null;
-
-  // Active minisector index (0 to 11)
-  const activeMs = useMemo(() => {
-    if (lapFraction == null || isNaN(lapFraction)) return 0;
-    const frac = Math.min(1, Math.max(0, lapFraction));
-    return Math.min(11, Math.max(0, Math.floor(frac * 12)));
-  }, [lapFraction]);
-
-  // Dynamic minisector deltas
-  const minisectors = useMemo(() => {
-    return DEFAULT_DELTAS.map((baseDelta, idx) => {
-      // In active or past minisectors, factor in the live PB delta
-      const delta = deltaPb != null && idx <= activeMs
-        ? baseDelta * 0.4 + (deltaPb / 12)
-        : baseDelta;
-
-      let statusClass = 'ms-faster';
-      if (idx === 0 || idx === 6 || idx === 10) {
-        statusClass = 'ms-purple';
-      } else if (delta > 0.01) {
-        statusClass = 'ms-slower';
-      } else {
-        statusClass = 'ms-faster';
-      }
-
-      const formatted = delta >= 0 ? `+${delta.toFixed(2)}` : delta.toFixed(2);
-      return {
-        id: idx + 1,
-        label: `M${idx + 1}`,
-        deltaText: formatted,
-        statusClass,
-        isActive: idx === activeMs,
-      };
-    });
-  }, [deltaPb, activeMs]);
+  useEffect(
+    () =>
+      store.subscribeChannels(TRACKED_CHANNELS, () => {
+        setTracker((prev) => observe(store, prev));
+      }),
+    [store],
+  );
 
   return (
     <div className="engineer-minisector-ribbon" data-testid="engineer-minisector-ribbon">
       <div className="ms-ribbon-header">
-        <span className="ms-ribbon-tag">LIVE 12-MINISECTOR TRACK DELTA</span>
+        <span className="ms-ribbon-tag">12-MINISECTOR DELTA VS PB (THIS LAP, FROM LIVE DELTA)</span>
         <span className="ms-ribbon-status">
-          ACTIVE: <strong className="text-cyan">M{activeMs + 1}</strong>
+          ACTIVE:{' '}
+          <strong className="text-cyan" data-testid="ms-active">
+            {tracker.index !== null ? `M${String(tracker.index + 1)}` : NO_VALUE}
+          </strong>
         </span>
       </div>
       <div className="ms-ribbon-grid">
-        {minisectors.map((ms) => (
-          <div
-            key={ms.id}
-            className={`ms-ribbon-cell ${ms.statusClass} ${ms.isActive ? 'ms-cell-active' : ''}`}
-            title={`Minisector ${ms.id}: ${ms.deltaText}s`}
-          >
-            <span className="ms-cell-label">{ms.label}</span>
-            <span className="ms-cell-delta">{ms.deltaText}</span>
-          </div>
-        ))}
+        {tracker.deltas.map((delta, idx) => {
+          const text = delta !== null ? formatDelta(delta) : NO_VALUE;
+          return (
+            <div
+              key={idx}
+              className={`ms-ribbon-cell ${statusClass(delta)} ${idx === tracker.index ? 'ms-cell-active' : ''}`}
+              title={`Minisector ${String(idx + 1)}: ${delta !== null ? `${text} s` : 'not measured'}`}
+              data-testid={`ms-cell-${String(idx + 1)}`}
+            >
+              <span className="ms-cell-label">M{idx + 1}</span>
+              <span className="ms-cell-delta">{text}</span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -2,36 +2,56 @@
  * Global MoTeC Telemetry Store & React Hook.
  *
  * Manages the imported MoTeC .ld session, generates ReferenceSeries for TelemetryGraph,
- * and calculates real-time deltas against live telemetry.
+ * and samples the reference at a lap distance.
+ *
+ * A failed load clears any previously loaded file, so a stale overlay is never shown next to an error.
  */
 import { useSyncExternalStore, useMemo } from 'react';
 import { parseMotecLd } from './motecParser';
 import { createMotecGraphSource, createMotecReferenceSeries, sampleMotecAtDistance } from './motecSource';
 import type { ParsedMotecFile } from './motecTypes';
-import { generateSpaBenchmarkMotecBuffer } from './motecWriter';
-import type { ReferenceSeries } from '../graph/types';
+import type { DataKind, ReferenceSeries } from '../graph/types';
 import type { StaticSource } from '../graph/staticSource';
 
 interface MotecState {
   parsedFile: ParsedMotecFile | null;
+  /** Distance-axis source, or null when the file has no usable distance. */
   graphSource: StaticSource | null;
+  /** Time-axis source (always available once a file is loaded). */
+  timeGraphSource: StaticSource | null;
+  /** 'synthetic' for generated data, 'lmu' for an imported recording. */
+  dataKind: DataKind | null;
   isLoading: boolean;
   error: string | null;
   isOverlayEnabled: boolean;
 }
 
-let state: MotecState = {
+const EMPTY: MotecState = {
   parsedFile: null,
   graphSource: null,
+  timeGraphSource: null,
+  dataKind: null,
   isLoading: false,
   error: null,
-  isOverlayEnabled: true,
+  isOverlayEnabled: false,
 };
+
+let state: MotecState = EMPTY;
 
 const listeners = new Set<() => void>();
 
 function emit(): void {
   for (const l of listeners) l();
+}
+
+function messageOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+export interface MotecLoadOptions {
+  readonly ldxContent?: string;
+  /** Default 'lmu' (an imported recording). Generated data must pass 'synthetic'. */
+  readonly dataKind?: DataKind;
 }
 
 export const motecStore = {
@@ -46,10 +66,17 @@ export const motecStore = {
     };
   },
 
+  /** Shows an error and unloads any previous file. */
+  setError(message: string): void {
+    state = { ...EMPTY, error: message };
+    emit();
+  },
+
   async loadFile(file: File, ldxFile?: File | string): Promise<void> {
     state = { ...state, isLoading: true, error: null };
     emit();
     try {
+      if (file.size === 0) throw new Error(`"${file.name}" is empty (0 bytes).`);
       const buffer = await file.arrayBuffer();
       let ldxText: string | undefined;
       if (typeof ldxFile === 'string') {
@@ -57,20 +84,9 @@ export const motecStore = {
       } else if (ldxFile instanceof File) {
         ldxText = await ldxFile.text();
       }
-      const parsed = parseMotecLd(buffer, file.name, ldxText);
-      const graphSource = createMotecGraphSource(parsed, 'distance');
-      state = {
-        parsedFile: parsed,
-        graphSource,
-        isLoading: false,
-        error: null,
-        isOverlayEnabled: true,
-      };
-      emit();
+      motecStore.loadBuffer(buffer, file.name, ldxText === undefined ? {} : { ldxContent: ldxText });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      state = { ...state, isLoading: false, error: msg };
-      emit();
+      motecStore.setError(messageOf(err));
     }
   },
 
@@ -80,46 +96,35 @@ export const motecStore = {
     const ldxFile = fileArray.find((f) => f.name.toLowerCase().endsWith('.ldx'));
 
     if (!ldFile) {
-      state = { ...state, error: 'No .ld file found in the selected files.' };
-      emit();
+      motecStore.setError('No .ld file found in the selected files.');
       return;
     }
 
     await motecStore.loadFile(ldFile, ldxFile);
   },
 
-  loadBuffer(buffer: ArrayBuffer | Uint8Array, filename = 'motec_log.ld', ldxContent?: string): void {
+  loadBuffer(buffer: ArrayBuffer | Uint8Array, filename = 'motec_log.ld', options: MotecLoadOptions = {}): void {
     try {
-      const parsed = parseMotecLd(buffer, filename, ldxContent);
-      const graphSource = createMotecGraphSource(parsed, 'distance');
+      if (buffer.byteLength === 0) throw new Error(`"${filename}" is empty (0 bytes).`);
+      const parsed = parseMotecLd(buffer, filename, options.ldxContent);
+      const dataKind = options.dataKind ?? 'lmu';
       state = {
         parsedFile: parsed,
-        graphSource,
+        graphSource: createMotecGraphSource(parsed, 'distance', dataKind),
+        timeGraphSource: createMotecGraphSource(parsed, 'time', dataKind),
+        dataKind,
         isLoading: false,
         error: null,
         isOverlayEnabled: true,
       };
       emit();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      state = { ...state, error: msg };
-      emit();
+      motecStore.setError(messageOf(err));
     }
   },
 
-  loadBenchmarkLap(): void {
-    const buffer = generateSpaBenchmarkMotecBuffer();
-    motecStore.loadBuffer(buffer, 'spa_ferrari_499p_pole.ld');
-  },
-
   clear(): void {
-    state = {
-      parsedFile: null,
-      graphSource: null,
-      isLoading: false,
-      error: null,
-      isOverlayEnabled: false,
-    };
+    state = EMPTY;
     emit();
   },
 
@@ -129,49 +134,62 @@ export const motecStore = {
   },
 };
 
+const subscribe = (listener: () => void): (() => void) => motecStore.subscribe(listener);
+const getState = (): MotecState => motecStore.getState();
+
 /**
  * Hook subscribing to the active MoTeC imported session.
  */
 export function useMotecSession() {
-  const current = useSyncExternalStore(motecStore.subscribe, motecStore.getState);
+  const current = useSyncExternalStore(subscribe, getState);
 
   return {
     parsedFile: current.parsedFile,
     graphSource: current.graphSource,
+    timeGraphSource: current.timeGraphSource,
+    dataKind: current.dataKind,
     isLoading: current.isLoading,
     error: current.error,
     isOverlayEnabled: current.isOverlayEnabled,
-    loadFile: motecStore.loadFile,
-    loadBenchmarkLap: motecStore.loadBenchmarkLap,
-    clear: motecStore.clear,
-    setOverlayEnabled: motecStore.setOverlayEnabled,
+    loadFile: (file: File, ldxFile?: File | string) => motecStore.loadFile(file, ldxFile),
+    clear: () => {
+      motecStore.clear();
+    },
+    setOverlayEnabled: (enabled: boolean) => {
+      motecStore.setOverlayEnabled(enabled);
+    },
   };
 }
 
 /**
- * Returns TelemetryGraph ReferenceSeries array for the specified channels when
- * MoTeC overlay is loaded and enabled.
+ * Returns TelemetryGraph ReferenceSeries array for the specified channels when MoTeC overlay is loaded and
+ * enabled. `axis` must match the graph's x axis: 'distance' (default) or 'time'. No references are returned on the
+ * distance axis when the file has no usable distance.
  */
-export function useMotecReferences(channelIds: readonly number[]): readonly ReferenceSeries[] {
-  const { parsedFile, graphSource, isOverlayEnabled } = useMotecSession();
+export function useMotecReferences(
+  channelIds: readonly number[],
+  axis: 'distance' | 'time' = 'distance',
+): readonly ReferenceSeries[] {
+  const { parsedFile, graphSource, timeGraphSource, isOverlayEnabled } = useMotecSession();
+  const source = axis === 'distance' ? graphSource : timeGraphSource;
 
   return useMemo(() => {
-    if (!isOverlayEnabled || !parsedFile || !graphSource) {
+    if (!isOverlayEnabled || !parsedFile || !source) {
       return [];
     }
 
     const refs: ReferenceSeries[] = [];
     for (const chId of channelIds) {
       if (parsedFile.channelsByAppId.has(chId)) {
-        refs.push(createMotecReferenceSeries(parsedFile, chId, graphSource, 2)); // slot 2 = orange/amber
+        refs.push(createMotecReferenceSeries(parsedFile, chId, source, 2)); // slot 2 = orange/amber
       }
     }
     return refs;
-  }, [parsedFile, graphSource, isOverlayEnabled, channelIds]);
+  }, [parsedFile, source, isOverlayEnabled, channelIds]);
 }
 
 /**
- * Computes live delta for any lap distance.
+ * MoTeC reference value (registry units) at a lap distance, or null.
  */
 export function useMotecSample(channelId: number, distanceM: number): number | null {
   const { parsedFile, isOverlayEnabled } = useMotecSession();

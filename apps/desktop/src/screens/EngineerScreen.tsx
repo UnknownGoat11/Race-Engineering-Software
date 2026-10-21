@@ -154,7 +154,11 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
   }, [currentWorksheet]);
 
   const activeChannelIds = useMemo(() => activeSeries.map((s) => s.channelId), [activeSeries]);
-  const motecReferences = useMotecReferences(activeChannelIds);
+  // The MoTeC reference is aligned by lap distance or lap time only; other x-axes get no overlay.
+  const motecReferences = useMotecReferences(
+    xMode === 'lapDistance' || xMode === 'lapTime' ? activeChannelIds : [],
+    xMode === 'lapTime' ? 'time' : 'distance',
+  );
 
   const handleApplyCustomChannels = (selectedIds: readonly number[]) => {
     const newSeries: GraphSeries[] = selectedIds.map((channelId, index) => ({
@@ -545,7 +549,7 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                   <EventsLog alerts={alerts} onDismissAlert={dismissAlert} />
                 </div>
 
-                {/* 12-Minisector Live Delta Ribbon (Telemetry Tool v1509 inspired) */}
+                {/* 12-minisector live delta ribbon */}
                 <PanelErrorBoundary name="Minisector Ribbon">
                   <MinisectorRibbon />
                 </PanelErrorBoundary>

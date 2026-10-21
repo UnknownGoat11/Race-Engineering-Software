@@ -100,6 +100,7 @@ pub mod codes {
     pub const UNKNOWN_ALERT: &str = "unknown_alert";
     pub const NETWORK_BUSY: &str = "network_busy";
     pub const NETWORK_ERROR: &str = "network_error";
+    pub const RESTART_BLOCKED: &str = "restart_blocked";
     // Join (engineer).
     pub const CODE_MALFORMED: &str = "code_malformed";
     pub const CODE_INVALID: &str = "code_invalid";
@@ -794,48 +795,61 @@ pub async fn test_relay_connection(
     let core = state.core();
     let transport = transport::TcpTlsTelemetryTransport::new();
 
-    // Determine target host and port to test
-    let target = match (host, port) {
-        (Some(h), p) if !h.trim().is_empty() => Some((h.trim().to_owned(), p.unwrap_or(443))),
-        _ => {
-            let cfg = state.snapshot().config;
-            let h = cfg.network.relay_host.trim().to_owned();
-            if h.is_empty() {
+    // An explicit host (typed in the settings, not saved yet) is tested on its own endpoint. Its
+    // credential namespace differs from the core one, so no stored login of the configured relay is
+    // presented to it. A target equal to the core endpoint uses the core path below: a second
+    // AuthManager on the same namespace would rotate the refresh token behind the core's back and
+    // force a re-login on its next reconnect.
+    let explicit = match host {
+        Some(h) if !h.trim().is_empty() => {
+            let mut endpoint = transport::endpoint::RelayEndpoint::new(
+                h.trim(),
+                port.unwrap_or(crate::config::DEFAULT_RELAY_PORT),
+                "Test",
+                state.environment().to_transport(),
+            )
+            .map_err(|e| {
+                logged(
+                    "test_relay_connection",
+                    CommandError::new(codes::INVALID_INPUT, e.to_string()),
+                )
+            })?;
+            if endpoint.credential_namespace() == core.endpoint().credential_namespace() {
                 None
             } else {
-                Some((h, cfg.network.relay_port))
+                let snapshot = state.snapshot();
+                if let Some(path) = snapshot
+                    .config
+                    .network
+                    .trusted_extra_ca_file(state.environment())
+                {
+                    endpoint = endpoint
+                        .with_extra_ca(transport::endpoint::ExtraCa::PemFile(path.to_path_buf()))
+                        .map_err(|e| {
+                            logged(
+                                "test_relay_connection",
+                                CommandError::new(codes::INVALID_INPUT, e.to_string()),
+                            )
+                        })?;
+                }
+                Some(endpoint)
             }
         }
+        _ => None,
     };
 
-    let report = if let Some((target_host, target_port)) = target {
-        let endpoint = transport::endpoint::RelayEndpoint::new(
-            &target_host,
-            target_port,
-            "Test",
-            state.environment().to_transport(),
-        )
-        .map_err(|e| logged("test_relay_connection", CommandError::new(codes::RELAY_INCOMPATIBLE, e.to_string())))?;
-
+    let report = if let Some(endpoint) = explicit {
+        let auth = Arc::new(transport::auth::AuthManager::new(
+            Arc::clone(core.credential_store()),
+            &endpoint,
+        ));
         let config = transport::ClientConfig::new(
-            endpoint.clone(),
+            endpoint,
             env!("CARGO_PKG_VERSION"),
             ONE_SHOT_CLIENT_ID,
             core.clock().epoch(),
         );
-
-        let auth_mgr = Arc::new(transport::auth::AuthManager::new(
-            Arc::clone(core.credential_store()),
-            &endpoint,
-        ));
-
-        run_connectivity_test(
-            &transport,
-            &config,
-            &auth_mgr,
-            active_role(&state),
-        )
-        .await
+        run_connectivity_test(&transport, &config, &auth, active_role(&state)).await
     } else {
         require_relay(&state).map_err(|e| logged("test_relay_connection", e))?;
         let config = one_shot_config(core);
@@ -858,13 +872,37 @@ pub struct PickedFilePayload {
     pub bytes: Vec<u8>,
 }
 
-/// Restart the Tauri desktop application.
+/// Restarts the app to apply changed relay settings. Refused while quitting would interrupt something (the same
+/// blockers as the close confirmation: recording, streaming, a connected engineer session); otherwise requests a
+/// restart through the event loop so `RunEvent::Exit` runs the strict core shutdown first.
 #[tauri::command(rename_all = "snake_case")]
-pub fn restart_app(app: tauri::AppHandle) {
-    app.restart();
+pub fn restart_app(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), CommandError> {
+    let core = state.core();
+    let live_driver_running = core.is_driver_running() && !core.is_demo_running();
+    let blockers = crate::lifecycle::close_blockers(
+        Some(&core.status()),
+        live_driver_running,
+        core.engineer_client().is_some(),
+    );
+    if !blockers.is_empty() {
+        let text = crate::lifecycle::confirm_text(&blockers);
+        return Err(logged(
+            "restart_app",
+            CommandError::new(
+                codes::RESTART_BLOCKED,
+                format!("Not restarting: stop the following first. {text}"),
+            ),
+        ));
+    }
+    tracing::info!(component = component::APP, "restart requested from the UI");
+    app.request_restart();
+    Ok(())
 }
 
-/// Native file picker for MoTeC .ld and .ldx log files.
+/// Largest MoTeC log the picker reads (the bytes cross IPC as a JSON array, about 4x their size).
+pub const MAX_MOTEC_FILE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Native file picker for MoTeC .ld log files. `Ok(None)` when the user cancels.
 #[tauri::command(rename_all = "snake_case")]
 pub async fn pick_motec_file(
     app: tauri::AppHandle,
@@ -873,31 +911,68 @@ pub async fn pick_motec_file(
     let file = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
-            .add_filter("MoTeC Log (*.ld, *.ldx)", &["ld", "ldx"])
+            .add_filter("MoTeC Log (*.ld)", &["ld"])
             .blocking_pick_file()
     })
     .await
-    .map_err(|e| CommandError::new(codes::INVALID_INPUT, e.to_string()))?;
+    .map_err(|e| {
+        logged(
+            "pick_motec_file",
+            CommandError::new(codes::RUNTIME_ERROR, e.to_string()),
+        )
+    })?;
 
-    match file {
-        Some(file_path) => {
-            let path = file_path
-                .into_path()
-                .map_err(|e| CommandError::new(codes::INVALID_INPUT, e.to_string()))?;
-            let name = path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_else(|| "motec_log.ld".to_owned());
-            let bytes = std::fs::read(&path)
-                .map_err(|e| CommandError::new(codes::INVALID_INPUT, format!("Failed to read file: {e}")))?;
-            Ok(Some(PickedFilePayload {
-                name,
-                path: Some(path.to_string_lossy().to_string()),
-                bytes,
-            }))
-        }
-        None => Ok(None),
+    let Some(file_path) = file else {
+        return Ok(None);
+    };
+    let path = file_path.into_path().map_err(|e| {
+        logged(
+            "pick_motec_file",
+            CommandError::new(codes::INVALID_INPUT, e.to_string()),
+        )
+    })?;
+    let name = path.file_name().map_or_else(
+        || "motec_log.ld".to_owned(),
+        |s| s.to_string_lossy().into_owned(),
+    );
+    let size = std::fs::metadata(&path)
+        .map_err(|e| {
+            logged(
+                "pick_motec_file",
+                CommandError::new(codes::IO_ERROR, format!("Cannot read {name}: {e}")),
+            )
+        })?
+        .len();
+    if size == 0 {
+        return Err(logged(
+            "pick_motec_file",
+            CommandError::new(codes::INVALID_INPUT, format!("{name} is empty.")),
+        ));
     }
+    if size > MAX_MOTEC_FILE_BYTES {
+        return Err(logged(
+            "pick_motec_file",
+            CommandError::new(
+                codes::INVALID_INPUT,
+                format!(
+                    "{name} is {} MiB; the limit is {} MiB.",
+                    size / (1024 * 1024),
+                    MAX_MOTEC_FILE_BYTES / (1024 * 1024)
+                ),
+            ),
+        ));
+    }
+    let bytes = std::fs::read(&path).map_err(|e| {
+        logged(
+            "pick_motec_file",
+            CommandError::new(codes::IO_ERROR, format!("Cannot read {name}: {e}")),
+        )
+    })?;
+    Ok(Some(PickedFilePayload {
+        name,
+        path: Some(path.to_string_lossy().into_owned()),
+        bytes,
+    }))
 }
 
 /// Writes a frontend error to the app log (blueprint §9 item 15): rate-limited, bounded and redacted.

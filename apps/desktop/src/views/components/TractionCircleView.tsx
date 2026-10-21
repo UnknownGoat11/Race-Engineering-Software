@@ -1,89 +1,100 @@
-import { useState, useMemo, type JSX } from 'react';
-import type { VehicleDynamicsState } from '../types';
+import { useMemo, useState, type JSX } from 'react';
+import { ch } from '../../generated/channels';
+import { NO_VALUE } from '../../lib/units';
+import { useLiveReadings, useLiveRing } from '../liveData';
+import { NOT_CONNECTED_REASON, ViewNoData } from './ViewNoData';
 
 export interface TractionCircleViewProps {
-  readonly state?: VehicleDynamicsState | undefined;
+  /** Plot scale: G at the outer edge of the plot. */
   readonly maxG?: number | undefined;
 }
 
 interface GPoint {
+  /** Lateral G, positive toward the LEFT (registry G_LAT, ISO). */
   readonly latG: number;
+  /** Longitudinal G, positive accelerating (registry G_LONG). */
   readonly longG: number;
-  readonly phase: 'braking' | 'trail-braking' | 'cornering' | 'acceleration' | 'neutral';
-  readonly speedKmh?: number | undefined;
 }
 
-const DEFAULT_SCATTER: readonly GPoint[] = [
-  // Straight braking into Turn 1
-  { latG: 0.02, longG: -2.25, phase: 'braking', speedKmh: 285 },
-  { latG: 0.05, longG: -2.18, phase: 'braking', speedKmh: 260 },
-  { latG: 0.12, longG: -1.95, phase: 'braking', speedKmh: 230 },
-  // Trail-braking turn-in (transition from pure brake to lateral)
-  { latG: 0.45, longG: -1.65, phase: 'trail-braking', speedKmh: 195 },
-  { latG: 0.85, longG: -1.35, phase: 'trail-braking', speedKmh: 165 },
-  { latG: 1.25, longG: -0.92, phase: 'trail-braking', speedKmh: 135 },
-  { latG: 1.62, longG: -0.45, phase: 'trail-braking', speedKmh: 110 },
-  // Apex pure cornering
-  { latG: 1.88, longG: -0.05, phase: 'cornering', speedKmh: 98 },
-  { latG: 1.92, longG: 0.08, phase: 'cornering', speedKmh: 102 },
-  { latG: 1.85, longG: 0.22, phase: 'cornering', speedKmh: 112 },
-  // Corner exit acceleration
-  { latG: 1.45, longG: 0.48, phase: 'acceleration', speedKmh: 130 },
-  { latG: 0.95, longG: 0.68, phase: 'acceleration', speedKmh: 155 },
-  { latG: 0.45, longG: 0.82, phase: 'acceleration', speedKmh: 185 },
-  { latG: 0.10, longG: 0.88, phase: 'acceleration', speedKmh: 215 },
-  // Left-hander transition (Chicane)
-  { latG: -0.35, longG: -1.45, phase: 'trail-braking', speedKmh: 180 },
-  { latG: -1.15, longG: -1.05, phase: 'trail-braking', speedKmh: 145 },
-  { latG: -1.78, longG: -0.15, phase: 'cornering', speedKmh: 115 },
-  { latG: -1.82, longG: 0.15, phase: 'cornering', speedKmh: 122 },
-  { latG: -1.25, longG: 0.55, phase: 'acceleration', speedKmh: 150 },
-  { latG: -0.55, longG: 0.75, phase: 'acceleration', speedKmh: 180 },
-];
+const LIVE_CHANNELS: readonly number[] = [ch.G_LAT, ch.G_LONG];
+const RING_CHANNELS: readonly number[] = [ch.G_LAT, ch.G_LONG];
+/** Most points drawn for the trail (older rows are subsampled). */
+const MAX_TRAIL_POINTS = 400;
+const TRAIL_OPTIONS_S = [5, 15, 60] as const;
 
-export function TractionCircleView({
-  state,
-  maxG = 2.5,
-}: TractionCircleViewProps): JSX.Element {
-  const [trailLength, setTrailLength] = useState<number>(100);
-  const [showFrictionEnvelope, setShowFrictionEnvelope] = useState<boolean>(true);
+function lateralText(latG: number | null): string {
+  if (latG === null) return NO_VALUE;
+  if (latG === 0) return '0.00 G';
+  return latG > 0 ? `${latG.toFixed(2)} G (Left)` : `${Math.abs(latG).toFixed(2)} G (Right)`;
+}
 
-  const liveLatG = state?.latG ?? 1.45;
-  const liveLongG = state?.longG ?? 0.62;
+function longitudinalText(longG: number | null): string {
+  if (longG === null) return NO_VALUE;
+  return longG < 0 ? `${longG.toFixed(2)} G (Brake)` : `+${longG.toFixed(2)} G (Drive)`;
+}
 
-  // Compute live combined G magnitude: sqrt(lat^2 + long^2)
-  const combinedG = Math.sqrt(liveLatG * liveLatG + liveLongG * liveLongG);
-  const frictionLimit = 2.15; // Estimated limit for Hypercar/LMH downforce levels
-  const gripUtilizationPct = Math.min(100, (combinedG / frictionLimit) * 100);
+function peakText(value: number | null, signed: boolean): string {
+  if (value === null) return NO_VALUE;
+  return signed && value > 0 ? `+${value.toFixed(2)} G` : `${value.toFixed(2)} G`;
+}
 
-  // Map (-maxG .. +maxG) to SVG coordinate space (0 .. 300)
-  const svgCenter = 150;
-  const svgScale = 120 / maxG; // 120px for maxG
+export function TractionCircleView({ maxG = 2.5 }: TractionCircleViewProps): JSX.Element {
+  const [trailS, setTrailS] = useState<number>(15);
+  const live = useLiveReadings(LIVE_CHANNELS);
+  const ring = useLiveRing(RING_CHANNELS);
 
-  const toSvgX = (lat: number) => svgCenter + lat * svgScale;
-  const toSvgY = (long: number) => svgCenter - long * svgScale;
+  const liveLatG = live.num(ch.G_LAT);
+  const liveLongG = live.num(ch.G_LONG);
+  const combinedG =
+    liveLatG !== null && liveLongG !== null ? Math.sqrt(liveLatG * liveLatG + liveLongG * liveLongG) : null;
 
-  const liveDotX = toSvgX(liveLatG);
-  const liveDotY = toSvgY(liveLongG);
-
-  // Generate friction envelope ellipse path
-  // Lateral limit: ~2.0G, Braking limit: ~2.3G, Acceleration limit: ~0.9G
-  const ellipsePoints = useMemo(() => {
-    const pts: string[] = [];
-    const steps = 64;
-    for (let i = 0; i <= steps; i++) {
-      const angle = (i / steps) * Math.PI * 2;
-      const lat = Math.sin(angle) * 1.95;
-      const long = Math.cos(angle) >= 0 ? Math.cos(angle) * 0.95 : Math.cos(angle) * 2.35;
-      const x = toSvgX(lat);
-      const y = toSvgY(long);
-      pts.push(`${i === 0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`);
+  // Real samples from the live ring: the trail (last `trailS` seconds) and the peaks over the whole ring window.
+  const { trail, peaks, windowPoints } = useMemo(() => {
+    const lat = ring.series.get(ch.G_LAT) ?? [];
+    const lon = ring.series.get(ch.G_LONG) ?? [];
+    const newest = ring.times.length > 0 ? (ring.times[ring.times.length - 1] ?? null) : null;
+    const all: GPoint[] = [];
+    const recent: GPoint[] = [];
+    for (let i = 0; i < ring.rows; i++) {
+      const la = lat[i];
+      const lo = lon[i];
+      if (la === null || la === undefined || lo === null || lo === undefined) continue;
+      const point = { latG: la, longG: lo };
+      all.push(point);
+      const t = ring.times[i];
+      if (newest !== null && t !== null && t !== undefined && newest - t <= trailS) recent.push(point);
     }
-    pts.push('Z');
-    return pts.join(' ');
-  }, [maxG]);
+    const step = Math.max(1, Math.ceil(recent.length / MAX_TRAIL_POINTS));
+    const sampled = step === 1 ? recent : recent.filter((_, i) => i % step === 0);
+    let brake: number | null = null;
+    let accel: number | null = null;
+    let left: number | null = null;
+    let right: number | null = null;
+    for (const p of all) {
+      if (brake === null || p.longG < brake) brake = p.longG;
+      if (accel === null || p.longG > accel) accel = p.longG;
+      if (left === null || p.latG > left) left = p.latG;
+      if (right === null || p.latG < right) right = p.latG;
+    }
+    return {
+      trail: sampled,
+      windowPoints: all.length,
+      peaks: {
+        brake: brake !== null && brake < 0 ? brake : null,
+        accel: accel !== null && accel > 0 ? accel : null,
+        left: left !== null && left > 0 ? left : null,
+        right: right !== null && right < 0 ? Math.abs(right) : null,
+      },
+    };
+  }, [ring, trailS]);
 
-  const scatterPoints = DEFAULT_SCATTER;
+  const svgCenter = 150;
+  const svgScale = 120 / maxG;
+  // G_LAT is positive to the LEFT: a left-hand load plots on the left half of the diagram.
+  const toSvgX = (latG: number): number => svgCenter - latG * svgScale;
+  const toSvgY = (longG: number): number => svgCenter - longG * svgScale;
+
+  const rings = [0.5, 1.0, 1.5, 2.0, 2.5].filter((g) => g <= maxG);
 
   return (
     <div className="view-card traction-circle-view" data-testid="traction-circle-view">
@@ -91,236 +102,142 @@ export function TractionCircleView({
         <div className="view-card-title-group">
           <span className="view-card-glyph">🎯</span>
           <h2 className="view-card-title">Traction Circle (G-G Diagram)</h2>
-          <span className="badge badge-accent">V1.1 CHASSIS DYNAMICS</span>
+          <span className="badge badge-accent">LIVE G_LAT / G_LONG</span>
         </div>
         <div className="view-card-controls">
-          <label className="view-control-label">
-            <input
-              type="checkbox"
-              checked={showFrictionEnvelope}
-              onChange={(e) => setShowFrictionEnvelope(e.target.checked)}
-            />
-            Limit Envelope
-          </label>
           <select
             className="view-select-sm"
-            value={trailLength}
-            onChange={(e) => setTrailLength(Number(e.target.value))}
-            aria-label="Scatter trail depth"
+            value={trailS}
+            onChange={(e) => {
+              setTrailS(Number(e.target.value));
+            }}
+            aria-label="Scatter trail length"
           >
-            <option value={50}>Trail: 50 pts</option>
-            <option value={100}>Trail: 100 pts</option>
-            <option value={200}>Trail: 200 pts</option>
+            {TRAIL_OPTIONS_S.map((s) => (
+              <option key={s} value={s}>
+                Trail: last {s} s
+              </option>
+            ))}
           </select>
         </div>
       </div>
 
+      {!live.connected && <ViewNoData title="G-G diagram" reason={NOT_CONNECTED_REASON} testId="traction-not-connected" />}
+
       <div className="traction-circle-content-grid">
-        {/* Main High-Resolution G-G Polar / Cartesian Plot */}
         <div className="traction-circle-plot-card">
           <div className="traction-circle-svg-wrapper">
             <svg viewBox="0 0 300 300" className="traction-circle-svg" role="img" aria-label="G-G diagram plot">
-              {/* Radial gradient background */}
-              <defs>
-                <radialGradient id="ggGripGlow" cx="50%" cy="50%" r="50%">
-                  <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.12" />
-                  <stop offset="60%" stopColor="#3b82f6" stopOpacity="0.05" />
-                  <stop offset="100%" stopColor="#0f172a" stopOpacity="0.0" />
-                </radialGradient>
-              </defs>
-
-              <rect x="0" y="0" width="300" height="300" fill="url(#ggGripGlow)" />
-
-              {/* Crosshair Axes */}
               <line x1="20" y1={svgCenter} x2="280" y2={svgCenter} stroke="#334155" strokeWidth="1.2" />
               <line x1={svgCenter} y1="20" x2={svgCenter} y2="280" stroke="#334155" strokeWidth="1.2" />
 
-              {/* Concentric G Rings */}
-              {[0.5, 1.0, 1.5, 2.0, 2.5].map((g) => {
+              {rings.map((g) => {
                 const r = g * svgScale;
                 return (
-                  <g key={`ring-${g}`}>
-                    <circle
-                      cx={svgCenter}
-                      cy={svgCenter}
-                      r={r}
-                      fill="none"
-                      stroke={g === 2.0 ? '#0284c7' : '#1e293b'}
-                      strokeWidth={g === 2.0 ? '1.5' : '1'}
-                      strokeDasharray={g === 2.0 ? 'none' : '3 3'}
-                    />
-                    <text
-                      x={svgCenter + 4}
-                      y={svgCenter - r + 11}
-                      fill="#64748b"
-                      fontSize="9"
-                      fontFamily="monospace"
-                    >
+                  <g key={`ring-${String(g)}`}>
+                    <circle cx={svgCenter} cy={svgCenter} r={r} fill="none" stroke="#1e293b" strokeWidth="1" strokeDasharray="3 3" />
+                    <text x={svgCenter + 4} y={svgCenter - r + 11} fill="#64748b" fontSize="9" fontFamily="monospace">
                       {g.toFixed(1)}G
                     </text>
                   </g>
                 );
               })}
 
-              {/* Quadrant Regime Labels */}
-              <text x="210" y="32" fill="#10b981" fontSize="10" fontWeight="bold">ACCEL + RIGHT</text>
               <text x="25" y="32" fill="#10b981" fontSize="10" fontWeight="bold">ACCEL + LEFT</text>
-              <text x="210" y="278" fill="#ef4444" fontSize="10" fontWeight="bold">BRAKE + RIGHT</text>
+              <text x="200" y="32" fill="#10b981" fontSize="10" fontWeight="bold">ACCEL + RIGHT</text>
               <text x="25" y="278" fill="#ef4444" fontSize="10" fontWeight="bold">BRAKE + LEFT</text>
+              <text x="200" y="278" fill="#ef4444" fontSize="10" fontWeight="bold">BRAKE + RIGHT</text>
 
-              {/* Theoretical Friction Limit Envelope */}
-              {showFrictionEnvelope && (
-                <path
-                  d={ellipsePoints}
-                  fill="none"
-                  stroke="#f59e0b"
-                  strokeWidth="2"
-                  strokeDasharray="4 2"
-                  strokeOpacity="0.8"
-                />
-              )}
-
-              {/* Telemetry Scatter Points */}
-              {scatterPoints.map((pt, idx) => {
-                const color =
-                  pt.phase === 'braking'
-                    ? '#ef4444'
-                    : pt.phase === 'trail-braking'
-                    ? '#f59e0b'
-                    : pt.phase === 'cornering'
-                    ? '#22d3ee'
-                    : '#10b981';
-                return (
+              <g data-testid="traction-trail">
+                {trail.map((pt, idx) => (
                   <circle
-                    key={`pt-${idx}`}
+                    key={`pt-${String(idx)}`}
                     cx={toSvgX(pt.latG)}
                     cy={toSvgY(pt.longG)}
-                    r="3"
-                    fill={color}
-                    fillOpacity="0.75"
-                    stroke="#0f172a"
-                    strokeWidth="0.5"
+                    r="2"
+                    fill="#22d3ee"
+                    fillOpacity="0.55"
                   />
-                );
-              })}
+                ))}
+              </g>
 
-              {/* Dynamic Live Position Indicator with Vector Line */}
-              <line
-                x1={svgCenter}
-                y1={svgCenter}
-                x2={liveDotX}
-                y2={liveDotY}
-                stroke="#22d3ee"
-                strokeWidth="1.5"
-                strokeOpacity="0.6"
-              />
-              <circle cx={liveDotX} cy={liveDotY} r="7" fill="#ef4444" fillOpacity="0.3" />
-              <circle cx={liveDotX} cy={liveDotY} r="4.5" fill="#ef4444" stroke="#ffffff" strokeWidth="1.5" />
+              {liveLatG !== null && liveLongG !== null && (
+                <g data-testid="traction-live-dot">
+                  <line
+                    x1={svgCenter}
+                    y1={svgCenter}
+                    x2={toSvgX(liveLatG)}
+                    y2={toSvgY(liveLongG)}
+                    stroke="#22d3ee"
+                    strokeWidth="1.5"
+                    strokeOpacity="0.6"
+                  />
+                  <circle cx={toSvgX(liveLatG)} cy={toSvgY(liveLongG)} r="4.5" fill="#ef4444" stroke="#ffffff" strokeWidth="1.5" />
+                </g>
+              )}
             </svg>
           </div>
-
           <div className="traction-circle-legend">
-            <span className="legend-item"><span className="legend-dot dot-red" /> Braking</span>
-            <span className="legend-item"><span className="legend-dot dot-amber" /> Trail-Braking</span>
-            <span className="legend-item"><span className="legend-dot dot-cyan" /> Apex Cornering</span>
-            <span className="legend-item"><span className="legend-dot dot-green" /> Traction Accel</span>
-            <span className="legend-item"><span className="legend-line line-amber" /> Grip Envelope</span>
+            <span className="legend-item">
+              <span className="legend-dot dot-cyan" /> Live ring samples (last {trailS} s, {trail.length} drawn)
+            </span>
+            <span className="legend-item">
+              <span className="legend-dot dot-red" /> Current
+            </span>
           </div>
         </div>
 
-        {/* Right Column: Grip Telemetry & Technique Analytics */}
         <div className="traction-circle-stats-col">
-          {/* Live G Status Card */}
           <div className="stat-card stat-card-live-g">
             <div className="stat-card-label">CURRENT CHASSIS LOAD</div>
             <div className="stat-main-row">
-              <span className="stat-hero-number">{combinedG.toFixed(2)} G</span>
+              <span className="stat-hero-number" data-testid="traction-combined">
+                {combinedG !== null ? `${combinedG.toFixed(2)} G` : NO_VALUE}
+              </span>
               <span className="stat-sub-badge">COMBINED</span>
             </div>
             <div className="stat-split-row">
               <div className="stat-split-item">
                 <span className="split-label">Lateral G:</span>
-                <span className="split-value num-cyan">
-                  {liveLatG >= 0 ? `+${liveLatG.toFixed(2)} G (Right)` : `${liveLatG.toFixed(2)} G (Left)`}
+                <span className="split-value num-cyan" data-testid="traction-lateral">
+                  {lateralText(liveLatG)}
                 </span>
               </div>
               <div className="stat-split-item">
                 <span className="split-label">Longitudinal G:</span>
-                <span className={`split-value ${liveLongG < 0 ? 'num-red' : 'num-green'}`}>
-                  {liveLongG < 0 ? `${liveLongG.toFixed(2)} G (Brake)` : `+${liveLongG.toFixed(2)} G (Drive)`}
+                <span
+                  className={`split-value ${liveLongG !== null && liveLongG < 0 ? 'num-red' : 'num-green'}`}
+                  data-testid="traction-longitudinal"
+                >
+                  {longitudinalText(liveLongG)}
                 </span>
               </div>
             </div>
-
-            {/* Grip Utilization Bar */}
-            <div className="grip-util-container">
-              <div className="grip-util-header">
-                <span className="grip-util-title">Friction Limit Utilization</span>
-                <span className="grip-util-pct">{gripUtilizationPct.toFixed(1)}%</span>
-              </div>
-              <div className="grip-util-track">
-                <div
-                  className="grip-util-fill"
-                  style={{
-                    width: `${gripUtilizationPct}%`,
-                    backgroundColor:
-                      gripUtilizationPct > 90
-                        ? '#ef4444'
-                        : gripUtilizationPct > 70
-                        ? '#10b981'
-                        : '#3b82f6',
-                  }}
-                />
-              </div>
-            </div>
           </div>
 
-          {/* Peak G Envelope Breakdown */}
           <div className="stat-card">
-            <div className="stat-card-label">SESSION PEAK ENVELOPE</div>
-            <div className="envelope-grid">
+            <div className="stat-card-label">
+              PEAKS IN LIVE WINDOW{ring.windowS !== null ? ` (LAST ${String(ring.windowS)} S)` : ''}
+            </div>
+            <div className="envelope-grid" data-testid="traction-peaks">
               <div className="envelope-box">
                 <span className="envelope-tag">PEAK BRAKING</span>
-                <span className="envelope-val num-red">-2.35 G</span>
-                <span className="envelope-loc">T1 Braking Zone</span>
+                <span className="envelope-val num-red">{peakText(peaks.brake, false)}</span>
               </div>
               <div className="envelope-box">
                 <span className="envelope-tag">PEAK LAT LEFT</span>
-                <span className="envelope-val num-cyan">1.94 G</span>
-                <span className="envelope-loc">Eau Rouge / Raidillon</span>
+                <span className="envelope-val num-cyan">{peakText(peaks.left, false)}</span>
               </div>
               <div className="envelope-box">
                 <span className="envelope-tag">PEAK LAT RIGHT</span>
-                <span className="envelope-val num-cyan">1.88 G</span>
-                <span className="envelope-loc">Pouhon (Double-Apex)</span>
+                <span className="envelope-val num-cyan">{peakText(peaks.right, false)}</span>
               </div>
               <div className="envelope-box">
                 <span className="envelope-tag">PEAK ACCEL</span>
-                <span className="envelope-val num-green">+0.88 G</span>
-                <span className="envelope-loc">Kemmel Straight Launch</span>
+                <span className="envelope-val num-green">{peakText(peaks.accel, true)}</span>
               </div>
             </div>
-          </div>
-
-          {/* Driving Technique & Trail-Braking Rating */}
-          <div className="stat-card">
-            <div className="stat-card-label">TRAIL-BRAKING & TECHNIQUE ANALYSIS</div>
-            <div className="technique-item-row">
-              <span className="technique-label">Trail-Braking Transition:</span>
-              <span className="technique-score score-opt">94 / 100 (Optimal Roll-in)</span>
-            </div>
-            <div className="technique-item-row">
-              <span className="technique-label">Friction Circle Area Fill:</span>
-              <span className="technique-score score-good">86.2% Coverage</span>
-            </div>
-            <div className="technique-item-row">
-              <span className="technique-label">Brake Release Linearity:</span>
-              <span className="technique-score score-opt">Continuous (-12% decay/s)</span>
-            </div>
-            <div className="technique-item-row">
-              <span className="technique-label">Apex Min-Speed Balance:</span>
-              <span className="technique-score score-good">+2.4 km/h vs Ref</span>
-            </div>
+            <span className="envelope-loc">{windowPoints} samples in window</span>
           </div>
         </div>
       </div>

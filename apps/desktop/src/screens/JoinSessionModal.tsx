@@ -59,46 +59,35 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
   const [rawError, setRawError] = useState<string | null>(null);
 
   // Relay Server Connection State
-  const [serverHost, setServerHost] = useState('relay.lmuracing.com');
+  const [serverHost, setServerHost] = useState('');
   const [serverPort, setServerPort] = useState(443);
   const [configuredHost, setConfiguredHost] = useState<string | null>(null);
   const [isServerConfigOpen, setIsServerConfigOpen] = useState(false);
   const [savingServer, setSavingServer] = useState(false);
+  const [serverError, setServerError] = useState<string | null>(null);
 
   useEffect(() => {
-    void getConfig().then((snap) => {
-      const h = snap.config.network.relay_host;
-      setConfiguredHost(h || null);
-      if (h) {
-        setServerHost(h);
-        setServerPort(snap.config.network.relay_port || 443);
-      }
-    }).catch(() => {});
+    getConfig()
+      .then((snap) => {
+        const h = snap.config.network.relay_host;
+        setConfiguredHost(h || null);
+        if (h) {
+          setServerHost(h);
+          setServerPort(snap.config.network.relay_port || 443);
+        }
+      })
+      .catch((e: unknown) => {
+        setServerError(`Could not read the relay settings: ${e instanceof Error ? e.message : String(e)}`);
+      });
   }, []);
-
-  const handleQuickConnectGlobal = async () => {
-    setSavingServer(true);
-    try {
-      const snap = await getConfig();
-      const next = {
-        ...snap.config,
-        network: {
-          ...snap.config.network,
-          relay_host: 'relay.lmuracing.com',
-          relay_port: 443,
-        },
-      };
-      await updateSettings(next);
-      await restartApp();
-    } catch (e) {
-      console.error(e);
-      setSavingServer(false);
-    }
-  };
 
   const handleSaveAndRestart = async () => {
     const trimmed = serverHost.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      setServerError('Enter the relay server host or IP first.');
+      return;
+    }
+    setServerError(null);
     setSavingServer(true);
     try {
       const snap = await getConfig();
@@ -107,13 +96,13 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
         network: {
           ...snap.config.network,
           relay_host: trimmed,
-          relay_port: Number(serverPort) || 443,
+          relay_port: serverPort || 443,
         },
       };
       await updateSettings(next);
       await restartApp();
-    } catch (e) {
-      console.error(e);
+    } catch (e: unknown) {
+      setServerError(e instanceof Error ? e.message : String(e));
       setSavingServer(false);
     }
   };
@@ -270,20 +259,13 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
               }}
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <span style={{ fontWeight: 700, fontSize: '12px' }}>🌐 Global Relay Server Setup</span>
+                <span style={{ fontWeight: 700, fontSize: '12px' }}>Relay server setup</span>
                 <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Connect worldwide</span>
               </div>
               <p style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
                 Drivers and engineers connect over the internet through a Relay Server. Select a preset or enter your custom address:
               </p>
               <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
-                <button
-                  type="button"
-                  className={`btn btn-xs ${serverHost === 'relay.lmuracing.com' ? 'btn-primary' : ''}`}
-                  onClick={() => { setServerHost('relay.lmuracing.com'); setServerPort(443); }}
-                >
-                  🌐 Global Cloud (relay.lmuracing.com)
-                </button>
                 <button
                   type="button"
                   className={`btn btn-xs ${serverHost === '127.0.0.1' ? 'btn-primary' : ''}`}
@@ -301,7 +283,7 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
                     className="input"
                     value={serverHost}
                     onChange={(e) => { setServerHost(e.target.value); }}
-                    placeholder="relay.lmuracing.com"
+                    placeholder="relay.example.com"
                     style={{ width: '100%', fontFamily: 'monospace', fontSize: '12px' }}
                   />
                 </div>
@@ -328,6 +310,11 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
                   {savingServer ? 'Saving…' : '💾 Save & Restart to Connect'}
                 </button>
               </div>
+              {serverError !== null && (
+                <div className="alert alert-error" role="alert" style={{ marginTop: '8px' }}>
+                  <span>{serverError}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -365,11 +352,10 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
                   <button
                     type="button"
                     className="btn btn-xs btn-primary"
-                    onClick={() => { void handleQuickConnectGlobal(); }}
-                    disabled={savingServer}
+                    onClick={() => { setIsServerConfigOpen(true); }}
                     style={{ fontWeight: 600 }}
                   >
-                    {savingServer ? 'Connecting…' : '🌐 One-Click Setup: Connect to Global Cloud Relay (relay.lmuracing.com)'}
+                    Set up the relay server
                   </button>
                 </div>
               )}

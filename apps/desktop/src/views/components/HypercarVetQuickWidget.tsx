@@ -1,53 +1,50 @@
 import type { JSX } from 'react';
-import type { HypercarVetState } from '../types';
+import { ch } from '../../generated/channels';
+import { NO_VALUE } from '../../lib/units';
+import { fracPct, useLiveReadings } from '../liveData';
 
 export interface HypercarVetQuickWidgetProps {
-  readonly state?: HypercarVetState | undefined;
-  readonly speedKmh?: number | undefined;
   readonly onOpenFullView?: (() => void) | undefined;
   readonly compact?: boolean | undefined;
 }
 
-export const DEFAULT_HYPERCAR_VET: HypercarVetState = {
-  vetCapacityMj: 900.0,
-  vetRemainingMj: 615.6,
-  targetPerLapMj: 26.50,
-  actualLastLapMj: 26.18,
-  deltaLastLapMj: -0.32,
-  stintLapsRemaining: 23.2,
-  mgukDeployKw: 180.0,
-  mgukRegenKw: -125.0,
-  mgukGateSpeedKmh: 190.0,
-  mgukGateActive: true,
-  batterySocFrac: 0.784,
-  batteryTempC: 44.2,
-  regenHarvestedLapMj: 3.42,
-  deployMode: 'BALANCED',
-};
+const VET_WIDGET_CHANNELS: readonly number[] = [
+  ch.VIRTUAL_ENERGY,
+  ch.VE_PER_LAP,
+  ch.VE_USED_LAST_LAP,
+  ch.VE_LAPS_REMAINING,
+  ch.BATTERY_SOC,
+  ch.REGEN_POWER,
+  ch.HYBRID_MOTOR_TORQUE,
+];
 
-export function HypercarVetQuickWidget({
-  state = DEFAULT_HYPERCAR_VET,
-  speedKmh = 218.4,
-  onOpenFullView,
-  compact = false,
-}: HypercarVetQuickWidgetProps): JSX.Element {
-  const vetPct = (state.vetRemainingMj / state.vetCapacityMj) * 100;
-  const isOverConsuming = state.deltaLastLapMj > 0.15;
-  const isUnderConsuming = state.deltaLastLapMj < -0.15;
-  const isGateActive = speedKmh >= state.mgukGateSpeedKmh;
+/**
+ * Compact virtual-energy summary from live channels: VIRTUAL_ENERGY (fraction of the allowance), per-lap
+ * usage, laps remaining, battery state of charge, regeneration power and hybrid motor torque. LMU reports
+ * virtual energy as a fraction, so no MJ figures are shown.
+ */
+export function HypercarVetQuickWidget({ onOpenFullView, compact = false }: HypercarVetQuickWidgetProps): JSX.Element {
+  const r = useLiveReadings(VET_WIDGET_CHANNELS);
+  const ve = r.num(ch.VIRTUAL_ENERGY);
+  const vePerLap = r.num(ch.VE_PER_LAP);
+  const veLastLap = r.num(ch.VE_USED_LAST_LAP);
+  const veLaps = r.num(ch.VE_LAPS_REMAINING);
+  const soc = r.num(ch.BATTERY_SOC);
+  const regenW = r.num(ch.REGEN_POWER);
+  const motorTorque = r.num(ch.HYBRID_MOTOR_TORQUE);
+
+  const vePct = ve !== null ? ve * 100 : null;
+  // Last lap minus the window average, in percentage points of the allowance (both measured / calculated).
+  const deltaPts = veLastLap !== null && vePerLap !== null ? (veLastLap - vePerLap) * 100 : null;
 
   return (
-    <div
-      className={`hypercar-vet-quick-card ${compact ? 'vet-compact' : ''}`}
-      data-testid="hypercar-vet-quick-widget"
-    >
+    <div className={`hypercar-vet-quick-card ${compact ? 'vet-compact' : ''}`} data-testid="hypercar-vet-quick-widget">
       <div className="vet-quick-header">
         <div className="vet-title-wrap">
           <span className="vet-glyph">⚡</span>
-          <span className="vet-title">HYPERCAR VIRTUAL ENERGY (VET)</span>
+          <span className="vet-title">VIRTUAL ENERGY (VE)</span>
         </div>
         <div className="vet-header-right">
-          <span className="badge badge-subtle">{state.deployMode} MODE</span>
           {onOpenFullView && (
             <button
               type="button"
@@ -61,80 +58,65 @@ export function HypercarVetQuickWidget({
         </div>
       </div>
 
-      {/* Main Virtual Energy Tank Gauge & Target Status */}
       <div className="vet-quick-body">
-        {/* VET Progress & Quantity */}
         <div className="vet-tank-meter">
           <div className="vet-tank-info">
-            <span className="vet-tank-label">STINT ENERGY REMAINING</span>
-            <span className="vet-tank-val num-cyan">
-              {state.vetRemainingMj.toFixed(1)} / {state.vetCapacityMj.toFixed(0)} MJ
+            <span className="vet-tank-label">VIRTUAL ENERGY REMAINING</span>
+            <span className="vet-tank-val num-cyan" data-testid="vet-remaining">
+              {fracPct(ve)}
             </span>
           </div>
 
-          <div className="vet-meter-track" role="progressbar" aria-valuenow={vetPct} aria-valuemin={0} aria-valuemax={100}>
+          {vePct !== null && (
             <div
-              className="vet-meter-fill"
-              style={{
-                width: `${Math.min(100, Math.max(0, vetPct))}%`,
-                backgroundColor: vetPct < 20 ? '#ef4444' : vetPct < 40 ? '#f59e0b' : '#06b6d4',
-              }}
-            />
-          </div>
+              className="vet-meter-track"
+              role="progressbar"
+              aria-valuenow={vePct}
+              aria-valuemin={0}
+              aria-valuemax={100}
+            >
+              <div className="vet-meter-fill" style={{ width: `${Math.min(100, Math.max(0, vePct))}%` }} />
+            </div>
+          )}
 
           <div className="vet-meter-sub">
-            <span className="vet-pct-text">{vetPct.toFixed(1)}% Tank</span>
-            <span className="vet-laps-rem">~{state.stintLapsRemaining.toFixed(1)} Laps Left</span>
+            <span className="vet-laps-rem" data-testid="vet-laps-remaining">
+              {veLaps !== null ? `${veLaps.toFixed(1)} laps left (estimated)` : `Laps left: ${NO_VALUE}`}
+            </span>
           </div>
         </div>
 
-        {/* Delta vs Target Pill */}
         <div className="vet-delta-box">
-          <span className="vet-delta-label">LAP ENERGY DELTA</span>
-          <div
-            className={`vet-delta-pill ${
-              isOverConsuming ? 'delta-over' : isUnderConsuming ? 'delta-under' : 'delta-on-target'
-            }`}
-          >
+          <span className="vet-delta-label">LAST LAP VS AVERAGE</span>
+          <div className="vet-delta-pill" data-testid="vet-lap-delta">
             <span className="vet-delta-sign">
-              {state.deltaLastLapMj > 0 ? `+${state.deltaLastLapMj.toFixed(2)}` : state.deltaLastLapMj.toFixed(2)} MJ
-            </span>
-            <span className="vet-delta-tag">
-              {isOverConsuming
-                ? '⚠️ LIFT & COAST'
-                : isUnderConsuming
-                ? '✅ PUSH ALLOWED'
-                : '🎯 ON TARGET'}
+              {deltaPts !== null ? `${deltaPts > 0 ? '+' : ''}${deltaPts.toFixed(2)} pts` : NO_VALUE}
             </span>
           </div>
           <span className="vet-target-info">
-            Target: {state.targetPerLapMj.toFixed(2)} MJ | Last: {state.actualLastLapMj.toFixed(2)} MJ
+            Avg/lap: {fracPct(vePerLap)} | Last: {fracPct(veLastLap)}
           </span>
         </div>
       </div>
 
-      {/* MGU-K Hybrid Deployment & Axle Gate Status */}
       <div className="vet-mguk-strip">
-        <div className="mguk-gate-chip">
-          <span className="gate-label">MGU-K 190 KM/H GATE:</span>
-          <span className={`gate-status-pill ${isGateActive ? 'gate-active' : 'gate-inhibited'}`}>
-            {isGateActive ? `ACTIVE (${speedKmh.toFixed(0)} KM/H)` : `INHIBITED (<190)`}
-          </span>
-        </div>
-
-        <div className="mguk-power-item">
-          <span className="mguk-power-label">DEPLOY:</span>
-          <span className="mguk-power-val num-green">{state.mgukDeployKw.toFixed(0)} kW</span>
-        </div>
-
         <div className="mguk-power-item">
           <span className="mguk-power-label">REGEN:</span>
-          <span className="mguk-power-val num-cyan">{state.mgukRegenKw.toFixed(0)} kW</span>
+          <span className="mguk-power-val num-cyan" data-testid="vet-regen">
+            {regenW !== null ? `${(regenW / 1000).toFixed(0)} kW` : NO_VALUE}
+          </span>
         </div>
-
+        <div className="mguk-power-item">
+          <span className="mguk-power-label">MOTOR TORQUE:</span>
+          <span className="mguk-power-val num-green">
+            {motorTorque !== null ? `${motorTorque.toFixed(0)} Nm` : NO_VALUE}
+          </span>
+        </div>
         <div className="mguk-power-item">
           <span className="mguk-power-label">BATT SOC:</span>
-          <span className="mguk-power-val">{(state.batterySocFrac * 100).toFixed(1)}%</span>
+          <span className="mguk-power-val" data-testid="vet-soc">
+            {fracPct(soc)}
+          </span>
         </div>
       </div>
     </div>

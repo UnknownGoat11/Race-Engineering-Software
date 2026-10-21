@@ -43,6 +43,16 @@ function formatForceN(n: number | null | undefined): string {
   return `${Math.round(n).toLocaleString()} N`;
 }
 
+/** Damage fraction (0..1) as a percentage; NO_VALUE when the channel is not reported. */
+function formatDamage(frac: number | null): string {
+  return frac === null ? NO_VALUE : `${(frac * 100).toFixed(0)}%`;
+}
+
+function damageClass(frac: number | null): string {
+  if (frac === null) return '';
+  return frac > 0 ? 'susp-dmg-bad' : 'susp-dmg-ok';
+}
+
 export function SuspensionPanel(): JSX.Element {
   const store = useContext(TelemetryStoreContext);
   if (!store) {
@@ -73,7 +83,7 @@ function SuspensionPanelContent(): JSX.Element {
 
   const num = (id: number): number | null => channelMap.get(id) ?? null;
 
-  // Corner Ride Heights (fallback to typical baseline if not provided by sim)
+  // Corner Ride Heights
   const rhFL = num(ch.RIDE_HEIGHT_FL);
   const rhFR = num(ch.RIDE_HEIGHT_FR);
   const rhRL = num(ch.RIDE_HEIGHT_RL);
@@ -96,11 +106,13 @@ function SuspensionPanelContent(): JSX.Element {
   const fRR = num(ch.PUSHROD_FORCE_RR);
 
   // Damage
-  const dmgFL = num(ch.DAMAGE_SUSPENSION_FL) ?? 0;
-  const dmgFR = num(ch.DAMAGE_SUSPENSION_FR) ?? 0;
-  const dmgRL = num(ch.DAMAGE_SUSPENSION_RL) ?? 0;
-  const dmgRR = num(ch.DAMAGE_SUSPENSION_RR) ?? 0;
-  const dmgAero = num(ch.DAMAGE_AERO) ?? 0;
+  // Damage: LMU does not provide these yet (registry `missing`), so they are usually null -> shown as NO_VALUE,
+  // never as "intact".
+  const dmgFL = num(ch.DAMAGE_SUSPENSION_FL);
+  const dmgFR = num(ch.DAMAGE_SUSPENSION_FR);
+  const dmgRL = num(ch.DAMAGE_SUSPENSION_RL);
+  const dmgRR = num(ch.DAMAGE_SUSPENSION_RR);
+  const dmgAero = num(ch.DAMAGE_AERO);
 
   const rakeMm = rhFront != null && rhRear != null ? (rhRear - rhFront) * 1000 : null;
 
@@ -111,11 +123,8 @@ function SuspensionPanelContent(): JSX.Element {
           RAKE {rakeMm >= 0 ? `+${rakeMm.toFixed(1)}` : rakeMm.toFixed(1)} mm
         </StatusBadge>
       )}
-      <StatusBadge
-        level={dmgAero > 0.05 ? 'critical' : 'ok'}
-        glyph={false}
-      >
-        {dmgAero > 0.05 ? `AERO: -${(dmgAero * 100).toFixed(0)}%` : 'AERO: 100%'}
+      <StatusBadge level={dmgAero === null ? 'off' : dmgAero > 0 ? 'critical' : 'ok'} glyph={false}>
+        {`AERO DAMAGE: ${formatDamage(dmgAero)}`}
       </StatusBadge>
     </>
   );
@@ -128,8 +137,8 @@ function SuspensionPanelContent(): JSX.Element {
         <div className="susp-corner-card">
           <div className="susp-corner-head">
             <span className="susp-corner-tag">FL · FRONT LEFT</span>
-            <span className={`susp-dmg-badge ${dmgFL > 0.05 ? 'susp-dmg-bad' : 'susp-dmg-ok'}`}>
-              {dmgFL > 0.05 ? `-${(dmgFL * 100).toFixed(0)}%` : 'INTACT'}
+            <span className={`susp-dmg-badge ${damageClass(dmgFL)}`} data-testid="susp-dmg-fl">
+              {`DMG ${formatDamage(dmgFL)}`}
             </span>
           </div>
           <div className="susp-metric-row">
@@ -150,8 +159,8 @@ function SuspensionPanelContent(): JSX.Element {
         <div className="susp-corner-card">
           <div className="susp-corner-head">
             <span className="susp-corner-tag">FR · FRONT RIGHT</span>
-            <span className={`susp-dmg-badge ${dmgFR > 0.05 ? 'susp-dmg-bad' : 'susp-dmg-ok'}`}>
-              {dmgFR > 0.05 ? `-${(dmgFR * 100).toFixed(0)}%` : 'INTACT'}
+            <span className={`susp-dmg-badge ${damageClass(dmgFR)}`} data-testid="susp-dmg-fr">
+              {`DMG ${formatDamage(dmgFR)}`}
             </span>
           </div>
           <div className="susp-metric-row">
@@ -172,8 +181,8 @@ function SuspensionPanelContent(): JSX.Element {
         <div className="susp-corner-card">
           <div className="susp-corner-head">
             <span className="susp-corner-tag">RL · REAR LEFT</span>
-            <span className={`susp-dmg-badge ${dmgRL > 0.05 ? 'susp-dmg-bad' : 'susp-dmg-ok'}`}>
-              {dmgRL > 0.05 ? `-${(dmgRL * 100).toFixed(0)}%` : 'INTACT'}
+            <span className={`susp-dmg-badge ${damageClass(dmgRL)}`} data-testid="susp-dmg-rl">
+              {`DMG ${formatDamage(dmgRL)}`}
             </span>
           </div>
           <div className="susp-metric-row">
@@ -194,8 +203,8 @@ function SuspensionPanelContent(): JSX.Element {
         <div className="susp-corner-card">
           <div className="susp-corner-head">
             <span className="susp-corner-tag">RR · REAR RIGHT</span>
-            <span className={`susp-dmg-badge ${dmgRR > 0.05 ? 'susp-dmg-bad' : 'susp-dmg-ok'}`}>
-              {dmgRR > 0.05 ? `-${(dmgRR * 100).toFixed(0)}%` : 'INTACT'}
+            <span className={`susp-dmg-badge ${damageClass(dmgRR)}`} data-testid="susp-dmg-rr">
+              {`DMG ${formatDamage(dmgRR)}`}
             </span>
           </div>
           <div className="susp-metric-row">

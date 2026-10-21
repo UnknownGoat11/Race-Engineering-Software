@@ -87,37 +87,14 @@ function DriverInputsPanelContent(): JSX.Element {
     return 'progress-fill--safe';
   }, [rpmPct]);
 
-  // Suggested gear computation (Telemetry Tool v1509 engineer coaching feature)
-  const suggestedGear = useMemo(() => {
-    if (gear == null || isNaN(gear) || Math.round(gear) <= 0) return null;
-    const g = Math.round(gear);
-    if (hasRpmMax && rpmPct != null) {
-      if (rpmPct > 92 && g < 7) return { gear: g + 1, dir: 'up' as const };
-      if (rpmPct < 45 && g > 1) return { gear: g - 1, dir: 'down' as const };
-    }
-    return { gear: g, dir: 'match' as const };
-  }, [gear, hasRpmMax, rpmPct]);
-
   return (
     <Panel title="INPUTS" dq={dq} testId="panel-driver-inputs">
-      {/* Cockpit HUD: Gear, Suggested Gear, and Speed */}
+      {/* Cockpit HUD: Gear and Speed */}
       <div className="inputs-cockpit-grid">
         <div className="inputs-col">
           <div className="card-row-label">GEAR</div>
           <div className={gearClass} data-testid="inputs-gear">
             {formatGear(gear)}
-          </div>
-        </div>
-        <div className="inputs-col inputs-col-sugg">
-          <div className="card-row-label">SUGG</div>
-          <div className="inputs-sugg-val">
-            {suggestedGear ? (
-              <span className={`sugg-chip sugg-chip--${suggestedGear.dir}`} title={`Telemetry Tool suggested gear: ${suggestedGear.gear}`}>
-                {suggestedGear.dir === 'up' ? `▲ ${suggestedGear.gear}` : suggestedGear.dir === 'down' ? `▼ ${suggestedGear.gear}` : `${suggestedGear.gear}`}
-              </span>
-            ) : (
-              NO_VALUE
-            )}
           </div>
         </div>
         <div className="inputs-col">

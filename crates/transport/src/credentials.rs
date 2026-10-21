@@ -20,7 +20,10 @@ use protocol::messages::Secret;
 use thiserror::Error;
 
 /// Default Windows Credential Manager service name of the app.
-pub const DEFAULT_KEYRING_SERVICE: &str = "Race Engineering Tool";
+///
+/// This is a storage key, not a display name: changing it orphans every stored login (users are silently
+/// signed out after an upgrade). Keep it stable across product renames.
+pub const DEFAULT_KEYRING_SERVICE: &str = "LMU Race Engineering";
 /// Format tag of a stored driver session (`v1:<session_id>:<resume token>`).
 const DRIVER_SESSION_FORMAT: &str = "v1";
 /// Separator of the stored driver session fields.

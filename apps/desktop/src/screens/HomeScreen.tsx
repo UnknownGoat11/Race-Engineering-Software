@@ -11,15 +11,6 @@ export interface HomeScreenProps {
   readonly displayName?: string | null;
 }
 
-function generateLocalCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let result = '';
-  for (let i = 0; i < 6; i++) {
-    result += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return result;
-}
-
 export function HomeScreen({
   currentMode,
   onChangeMode,
@@ -30,15 +21,13 @@ export function HomeScreen({
   const [hostRole, setHostRole] = useState<Mode>(currentMode);
   const [joinRole, setJoinRole] = useState<Mode>('engineer');
   const [joinCode, setJoinCode] = useState('');
-  const [localCode, setLocalCode] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Active code is either the relay code from status or a locally generated host code
-  const statusNetwork = status?.network;
-  const networkCode = statusNetwork?.connect_code?.trim();
-  const activeCode = networkCode && networkCode.length > 0 ? networkCode : localCode;
+  // Only a code issued by the relay is ever shown: engineers can join with nothing else.
+  const networkCode = status?.network.connect_code?.trim();
+  const activeCode = networkCode !== undefined && networkCode.length > 0 ? networkCode : null;
 
   const handleCopyCode = async (code: string): Promise<void> => {
     try {
@@ -60,14 +49,11 @@ export function HomeScreen({
         await onChangeMode(hostRole);
       }
       if (hostRole === 'driver') {
-        try {
-          await driverNewCode();
-        } catch {
-          // Ignore network requirement in standalone/offline mode
-        }
-        setLocalCode(generateLocalCode());
+        // The code arrives through core status once the relay issues it; a failure is shown, never replaced.
+        await driverNewCode();
       } else {
-        setLocalCode(generateLocalCode());
+        // Engineers do not host: they join a driver's session with the driver's code.
+        onEnterSession('pitwall');
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
