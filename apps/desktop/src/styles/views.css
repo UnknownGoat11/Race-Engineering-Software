@@ -166,7 +166,6 @@
   color: #ffffff;
   font-size: 12px;
   font-family: var(--font-ui);
-  outline: none;
 }
 
 .view-search-clear {
@@ -1044,7 +1043,6 @@
 .limiter-on {
   background: #ef4444;
   color: #ffffff;
-  animation: pulse-border 1s infinite;
 }
 
 .limiter-off {
@@ -2481,7 +2479,6 @@
   padding: 1px 4px;
   border-radius: 3px;
   margin-left: 4px;
-  animation: pulse 2s infinite;
 }
 
 .tyre-chassis-summary-strip {

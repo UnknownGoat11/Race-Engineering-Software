@@ -74,4 +74,16 @@ describe('TrackGeometryBuilder', () => {
     expect(builder.getTrackLengthSource()).toBe('observed');
     expect(builder.getTrackLength()).toBeGreaterThanOrEqual(4000);
   });
+
+  it('never invents a track name: the default id is an em dash (v1.3 U18)', () => {
+    const builder = new TrackGeometryBuilder({ trackLengthM: 1000, binSizeM: 25 });
+    for (let d = 0; d < 1000; d += 10) {
+      const a = (d / 1000) * 2 * Math.PI;
+      builder.ingest(Math.cos(a) * 100, Math.sin(a) * 100, d);
+    }
+    const map = builder.build();
+    expect(map).not.toBeNull();
+    expect(map?.trackId).toBe('—');
+    expect(map?.trackId).not.toBe('Live Circuit');
+  });
 });

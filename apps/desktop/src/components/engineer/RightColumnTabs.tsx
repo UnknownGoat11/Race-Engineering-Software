@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react';
 import { ch } from '../../generated/channels';
-import { formatDelta, NO_VALUE } from '../../lib/units';
+import { formatDelta, formatLapsText, NO_VALUE } from '../../lib/units';
 import { useChannelValues } from '../../telemetry/hooks';
 import { BrakePanel } from '../telemetry/BrakePanel';
 import { DriverInputsPanel } from '../telemetry/DriverInputsPanel';
@@ -32,6 +32,7 @@ export function RightColumnTabs({
 
   const deltaPb = typeof samples[0]?.value === 'number' ? samples[0].value : null;
   const fuelLaps = typeof samples[1]?.value === 'number' ? samples[1].value : null;
+  // Laps, not litres (audit U07): both values are lap estimates.
   const fuelMargin = typeof samples[2]?.value === 'number' ? samples[2].value : null;
 
   const handleSelectTab = (newTab: RightTab): void => {
@@ -49,20 +50,20 @@ export function RightColumnTabs({
             {deltaPb != null ? formatDelta(deltaPb) : NO_VALUE}
           </span>
         </span>
-        <span className="mini-row-sep">&bull;</span>
+        <span className="mini-row-sep" aria-hidden="true">&bull;</span>
         <span className="mini-row-item">
           <span className="mini-row-label">Fuel</span>
           <span className="num mini-row-value">
-            {fuelLaps != null ? `${fuelLaps.toFixed(1)} L` : NO_VALUE}
+            {formatLapsText(fuelLaps)}
           </span>
         </span>
         {fuelMargin != null && (
           <>
-            <span className="mini-row-sep">&bull;</span>
+            <span className="mini-row-sep" aria-hidden="true">&bull;</span>
             <span className="mini-row-item">
               <span className="mini-row-label">Margin</span>
               <span className="num mini-row-value">
-                {fuelMargin >= 0 ? `+${fuelMargin.toFixed(1)}` : fuelMargin.toFixed(1)} L
+                {formatLapsText(fuelMargin, { signed: true })}
               </span>
             </span>
           </>
@@ -112,28 +113,6 @@ export function RightColumnTabs({
           Power
         </button>
 
-        {/* Fallback buttons for harness steps and tests expecting legacy names */}
-        <button
-          type="button"
-          className="sr-only"
-          onClick={() => { handleSelectTab('timing_fuel'); }}
-        >
-          Timing &amp; Fuel
-        </button>
-        <button
-          type="button"
-          className="sr-only"
-          onClick={() => { handleSelectTab('tyres_brakes'); }}
-        >
-          Tyres &amp; Brakes
-        </button>
-        <button
-          type="button"
-          className="sr-only"
-          onClick={() => { handleSelectTab('power'); }}
-        >
-          Inputs &amp; Energy
-        </button>
       </div>
 
       {/* Panel Contents for Selected Tab */}

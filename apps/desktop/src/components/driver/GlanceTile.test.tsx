@@ -90,51 +90,32 @@ describe('GlanceTile', () => {
     expect(screen.getByTestId('driver-connect-code')).toHaveTextContent('SESSION FULL');
   });
 
-  it('triggers onClick on click and on Enter key press', () => {
+  it('is a labelled group with a separate Details button, not a button itself (A02)', () => {
     const onClick = vi.fn();
     render(
-      <GlanceTile
-        id="lmu"
-        label="LMU"
-        level="ok"
-        word="LIVE"
-        onClick={onClick}
-      />,
-    );
-
-    const tile = screen.getByRole('button');
-    fireEvent.click(tile);
-    expect(onClick).toHaveBeenCalledTimes(1);
-
-    fireEvent.keyDown(tile, { key: 'Enter' });
-    expect(onClick).toHaveBeenCalledTimes(2);
-
-    fireEvent.keyDown(tile, { key: ' ' });
-    expect(onClick).toHaveBeenCalledTimes(3);
-  });
-
-  it('does not trigger tile onClick when interacting with child elements', () => {
-    const onTileClick = vi.fn();
-    const onChildClick = vi.fn();
-    render(
-      <GlanceTile
-        id="code"
-        label="ENGINEER CODE"
-        level="ok"
-        word="8F3A2C"
-        onClick={onTileClick}
-      >
-        <button type="button" onClick={onChildClick} data-testid="inner-btn">
-          Copy
+      <GlanceTile id="code" label="ENGINEER CODE" level="ok" word="8F3A2C" reason="Expires in 4:59" onClick={onClick}>
+        <button type="button" data-testid="inner-btn">
+          Copy code
         </button>
       </GlanceTile>,
     );
 
-    const btn = screen.getByTestId('inner-btn');
-    fireEvent.click(btn);
+    const tile = screen.getByRole('group', { name: 'ENGINEER CODE' });
+    expect(tile).toHaveTextContent('Expires in 4:59');
+    expect(tile).not.toHaveAttribute('tabindex');
+    // Only real buttons are interactive: the inner button and the Details button.
+    expect(screen.getAllByRole('button')).toHaveLength(2);
 
-    expect(onChildClick).toHaveBeenCalledTimes(1);
-    expect(onTileClick).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('inner-btn'));
+    expect(onClick).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'ENGINEER CODE details' }));
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('draws no glyph for an off tile (no box that reads as a missing font)', () => {
+    const { container } = render(<GlanceTile id="recording" label="RECORDING" level="off" word="OFF" />);
+    expect(container.querySelector('.glance-glyph')).toBeNull();
   });
 
   it('applies adaptive word size modifiers based on word length and word count to avoid collisions', () => {

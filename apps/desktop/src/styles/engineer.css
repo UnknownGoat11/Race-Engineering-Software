@@ -8,8 +8,8 @@
  * Layout & Workspace Grid (§3.2, §3.3, §3.4)
  * ------------------------------------------------------------------------- */
 .pitwall {
-  display: grid;
-  grid-template-rows: 36px 32px auto 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   min-height: 0;
   background-color: var(--surface-app);
@@ -19,14 +19,21 @@
   overflow: hidden;
 }
 
-/* 1920x1080 4-column primary pitwall grid */
+.pitwall > .pitwall-bar,
+.pitwall > .strategy-strip,
+.pitwall > .pitwall-state-banner,
+.pitwall > .pitwall-action-banner {
+  flex-shrink: 0;
+}
+
+/* 1920x1080 4-column primary pitwall grid (tower 384 px, audit V05/U16) */
 .pitwall-grid {
   display: grid;
-  grid-template-columns: minmax(280px, 340px) minmax(450px, 1fr) 280px 272px;
+  grid-template-columns: 384px minmax(720px, 1fr) 280px 272px;
   column-gap: 8px;
   padding: 8px 12px 12px;
+  flex: 1 1 auto;
   min-height: 0;
-  height: 100%;
   box-sizing: border-box;
   overflow: hidden;
   min-width: 0;
@@ -49,12 +56,13 @@
   overflow: hidden;
 }
 
+/* Map + log: 320 px, so the graph keeps >= 470 px of panes at 1920 (lane C pane budget). */
 .pitwall-centre-top {
   display: grid;
-  grid-template-columns: 584px 1fr;
+  grid-template-columns: 584px minmax(0, 1fr);
   column-gap: 8px;
-  height: 340px;
-  min-height: 340px;
+  height: 320px;
+  min-height: 320px;
   flex-shrink: 0;
 }
 
@@ -99,10 +107,6 @@
 
 /* Responsive 3-column pitwall grid for standard desktop / laptop resolutions */
 @media (max-width: 1799px) {
-  .pitwall {
-    grid-template-rows: 32px 28px auto 1fr;
-  }
-
   .pitwall-grid {
     grid-template-columns: minmax(220px, 272px) minmax(380px, 1fr) minmax(280px, 320px);
     column-gap: 6px;
@@ -121,8 +125,8 @@
   .pitwall-centre-top {
     display: flex;
     flex-direction: column;
-    height: 240px;
-    min-height: 240px;
+    height: 200px;
+    min-height: 200px;
     flex-shrink: 0;
   }
 
@@ -146,10 +150,6 @@
 
 /* 2560x1440 scaled grid (§3.4) */
 @media (min-width: 2400px) {
-  .pitwall {
-    grid-template-rows: 48px 43px auto 1fr;
-  }
-
   .pitwall-grid {
     grid-template-columns: 512px minmax(960px, 1fr) 373px 363px;
     column-gap: 11px;
@@ -165,10 +165,10 @@
   }
 
   .pitwall-centre-top {
-    grid-template-columns: 780px 1fr;
+    grid-template-columns: 780px minmax(0, 1fr);
     column-gap: 11px;
-    height: 450px;
-    min-height: 450px;
+    height: 430px;
+    min-height: 430px;
     flex-shrink: 0;
   }
 
@@ -194,8 +194,7 @@
   padding: 0 12px;
   background-color: var(--surface-panel);
   border-bottom: 1px solid var(--border-subtle);
-  height: 100%;
-  min-height: 36px;
+  height: 36px;
   box-sizing: border-box;
   font-size: var(--type-body-size);
   gap: 12px;
@@ -203,7 +202,7 @@
 
 @media (max-width: 1799px) {
   .pitwall-bar {
-    min-height: 32px;
+    height: 32px;
     padding: 0 8px;
     gap: 8px;
   }
@@ -211,7 +210,7 @@
 
 @media (min-width: 2400px) {
   .pitwall-bar {
-    min-height: 48px;
+    height: 48px;
     padding: 0 16px;
   }
 }
@@ -245,11 +244,21 @@
 
 .pitwall-sep {
   color: var(--text-disabled);
-  font-size: 10px;
+  font-size: var(--type-caption-size);
 }
 
+/* A caution pill flashes once when it appears (200 ms), never loops (audit A05). */
 .pitwall-flag-pill {
-  animation: pulse-border 1.5s infinite ease-in-out;
+  animation: pitwall-flash 200ms ease-out 1;
+}
+
+@keyframes pitwall-flash {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .pitwall-network-meta {
@@ -264,8 +273,7 @@
 
 .pitwall-meta-sub {
   color: var(--text-tertiary);
-  text-transform: uppercase;
-  font-size: 10px;
+  font-size: var(--type-caption-size);
 }
 
 .pitwall-rtt-value,
@@ -275,8 +283,13 @@
 }
 
 .pitwall-settings-btn {
-  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
   padding: 0 6px;
+}
+
+.pitwall-gear-icon {
+  display: block;
 }
 
 /* -------------------------------------------------------------------------
@@ -288,8 +301,7 @@
   padding: 0 12px;
   background-color: var(--surface-app);
   border-bottom: 1px solid var(--border-subtle);
-  height: 100%;
-  min-height: 32px;
+  height: 32px;
   box-sizing: border-box;
   font-size: var(--type-label-size);
   overflow-x: auto;
@@ -300,7 +312,7 @@
 
 @media (max-width: 1799px) {
   .strategy-strip {
-    min-height: 28px;
+    height: 28px;
     padding: 0 8px;
     gap: 6px;
   }
@@ -308,7 +320,7 @@
 
 @media (min-width: 2400px) {
   .strategy-strip {
-    min-height: 43px;
+    height: 43px;
     padding: 0 16px;
   }
 }
@@ -327,9 +339,14 @@
 
 .strategy-label {
   color: var(--text-tertiary);
-  text-transform: uppercase;
-  font-size: 11px;
+  font-size: var(--type-caption-size);
   font-weight: 500;
+}
+
+/* Words in the strip (weather, flag) use the UI font; only numbers are mono (audit V18). */
+.strategy-text {
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
 .strategy-value {
@@ -338,15 +355,18 @@
   font-family: var(--font-mono);
 }
 
-.strategy-limit {
+/* The resource that limits the stint (audit V09): a small amber LIMIT badge. */
+.pitwall .strategy-limit-badge {
+  min-height: 16px;
+  padding: 0 var(--space-1);
   color: var(--status-warn);
-  font-weight: 700;
-  margin-left: 2px;
+  border-color: var(--status-warn);
+  background: var(--status-warn-bg);
 }
 
 .strategy-sep {
   color: var(--text-disabled);
-  font-size: 10px;
+  font-size: var(--type-caption-size);
 }
 
 .pitwall-action-banner {
@@ -383,15 +403,16 @@
 }
 
 .pitwall-state-banner-incompatible,
-.pitwall-state-banner-ended {
-  background-color: var(--status-critical-bg, #2e1214);
+.pitwall-state-banner-ended,
+.pitwall-state-banner-red {
+  background-color: var(--status-critical-bg);
   border-bottom: 1px solid var(--status-critical);
 }
 
 .pitwall-state-banner-away,
 .pitwall-state-banner-stale,
 .pitwall-state-banner-caution {
-  background-color: var(--status-warn-bg, #2e2412);
+  background-color: var(--status-warn-bg);
   border-bottom: 1px solid var(--status-warn);
 }
 
@@ -445,12 +466,23 @@
 
 .alert-strip-row-critical {
   border-color: var(--status-critical);
-  background-color: var(--status-critical-bg, #2e1214);
+  background-color: var(--status-critical-bg);
 }
 
 .alert-strip-row-warning {
   border-color: var(--status-warn);
-  background-color: var(--status-warn-bg, #2e2412);
+  background-color: var(--status-warn-bg);
+}
+
+.alert-strip-age {
+  flex-shrink: 0;
+  font-size: var(--type-caption-size);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.alert-strip-row .btn {
+  flex-shrink: 0;
 }
 
 .alert-strip-badge {
@@ -467,7 +499,7 @@
 }
 
 .alert-dismiss-btn {
-  font-size: 11px;
+  font-size: var(--type-caption-size);
 }
 
 .alert-overflow-badge {
@@ -521,7 +553,7 @@
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  font-size: 11px;
+  font-size: var(--type-caption-size);
   padding: 3px 6px;
   border-radius: var(--radius-1, 2px);
   background-color: var(--surface-hover);
@@ -530,14 +562,16 @@
 .events-log-time {
   font-family: var(--font-mono);
   color: var(--text-tertiary);
-  font-size: 10px;
+  font-size: var(--type-caption-size);
   flex-shrink: 0;
   line-height: 1.4;
 }
 
-.events-log-badge {
-  font-size: 9px;
-  padding: 1px 4px;
+.pitwall .events-log-badge {
+  min-height: 16px;
+  font-family: var(--font-ui);
+  font-size: var(--type-badge-size);
+  padding: 0 4px;
   flex-shrink: 0;
   line-height: 1.4;
 }
@@ -589,7 +623,7 @@
   background-color: var(--surface-panel);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-1, 2px);
-  font-size: 11px;
+  font-size: var(--type-caption-size);
   box-sizing: border-box;
 }
 
@@ -601,8 +635,7 @@
 
 .mini-row-label {
   color: var(--text-tertiary);
-  text-transform: uppercase;
-  font-size: 10px;
+  font-size: var(--type-caption-size);
 }
 
 .mini-row-value {
@@ -613,7 +646,7 @@
 
 .mini-row-sep {
   color: var(--text-disabled);
-  font-size: 10px;
+  font-size: var(--type-caption-size);
 }
 
 .segmented-tablist {
@@ -631,9 +664,10 @@
 
 .segmented-tab-btn {
   flex: 1;
+  min-width: 0;
   text-align: center;
   white-space: nowrap;
-  font-size: 11px;
+  font-size: var(--type-caption-size);
 }
 
 .tab-panel-content {
@@ -670,19 +704,18 @@
   gap: 16px;
   border: 1px solid var(--border-subtle);
   background-color: var(--surface-panel);
-  border-radius: var(--radius-2, 4px);
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  border-radius: var(--radius-1);
 }
 
 .not-connected-title {
-  font-size: 18px;
+  font-size: var(--type-value-md-size);
   font-weight: 700;
   color: var(--text-primary);
   margin: 0;
 }
 
 .not-connected-hint {
-  font-size: 13px;
+  font-size: var(--type-body-size);
   color: var(--text-secondary);
   margin: 0;
   line-height: 1.4;
@@ -711,16 +744,28 @@
   padding: 4px 8px;
 }
 
+.pitwall-graph-header {
+  flex-wrap: wrap;
+  row-gap: 4px;
+  column-gap: 8px;
+  flex-shrink: 0;
+}
+
 .pitwall-graph-header-left {
   display: flex;
   align-items: center;
   gap: 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .pitwall-graph-header-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .pitwall-graph-mode-actions,
@@ -739,8 +784,10 @@
 }
 
 .pitwall-custom-badge {
-  font-size: 9px;
-  padding: 1px 5px;
+  min-height: 16px;
+  font-family: var(--font-ui);
+  text-transform: none;
+  padding: 0 var(--space-1);
 }
 
 .pitwall-channel-select-btn {
@@ -750,89 +797,135 @@
 }
 
 /* -------------------------------------------------------------------------
- * Live 12-minisector delta ribbon
+ * Live 12-minisector delta row (one 24 px row, audit V03 / V17e)
  * ------------------------------------------------------------------------- */
 .engineer-minisector-ribbon {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 24px;
+  padding: 0 var(--space-2);
   background: var(--surface-panel);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-1);
-  padding: 4px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  box-sizing: border-box;
   flex-shrink: 0;
 }
 
-.ms-ribbon-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 10px;
-  font-family: var(--font-ui);
-  letter-spacing: 0.04em;
-  color: var(--text-secondary);
-}
-
 .ms-ribbon-tag {
-  font-weight: 700;
-  color: var(--text-tertiary);
-}
-
-.ms-ribbon-status {
+  flex-shrink: 0;
+  font-size: var(--type-caption-size);
   font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 .ms-ribbon-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 4px;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
 }
 
 .ms-ribbon-cell {
+  height: 18px;
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 2px 0;
-  border-radius: 2px;
-  font-family: var(--font-data);
-  line-height: 1.1;
+  border-radius: var(--radius-1);
+  font-size: var(--type-caption-size);
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text-secondary);
   border: 1px solid transparent;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.ms-ribbon-cell.ms-nodata {
+  color: var(--text-disabled);
 }
 
 .ms-ribbon-cell.ms-purple {
-  background: rgba(192, 132, 252, 0.15);
-  color: #c084fc;
-  border-color: rgba(192, 132, 252, 0.4);
+  color: var(--timing-best-overall);
+  border-color: var(--timing-best-overall);
 }
 
 .ms-ribbon-cell.ms-faster {
-  background: rgba(34, 197, 94, 0.12);
-  color: #22c55e;
-  border-color: rgba(34, 197, 94, 0.35);
+  color: var(--delta-faster);
+  border-color: var(--delta-faster);
 }
 
 .ms-ribbon-cell.ms-slower {
-  background: rgba(239, 68, 68, 0.12);
-  color: #ef4444;
-  border-color: rgba(239, 68, 68, 0.35);
+  color: var(--delta-slower);
+  border-color: var(--delta-slower);
 }
 
 .ms-ribbon-cell.ms-cell-active {
-  border-color: #38bdf8;
-  outline: 1px solid rgba(56, 189, 248, 0.6);
-  font-weight: 700;
+  outline: 1px solid var(--player-highlight);
+  outline-offset: -1px;
 }
 
-.ms-cell-label {
-  font-size: 9px;
-  opacity: 0.85;
+/* -------------------------------------------------------------------------
+ * Track map header: car count (dimmed once the session has ended, U18)
+ * ------------------------------------------------------------------------- */
+.pitwall-car-count-ended {
+  color: var(--text-disabled);
 }
 
-.ms-cell-delta {
-  font-size: 10px;
-  font-weight: 700;
+/* -------------------------------------------------------------------------
+ * Pitwall badges (status / data quality). Glyph + word, colour never alone.
+ * ------------------------------------------------------------------------- */
+.pitwall .badge-subtle {
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+  background: transparent;
 }
 
+.pitwall .badge-status-ok {
+  color: var(--status-ok);
+  border-color: var(--status-ok);
+  background: var(--status-ok-bg);
+}
 
+.pitwall .badge-status-warn {
+  color: var(--status-warn);
+  border-color: var(--status-warn);
+  background: var(--status-warn-bg);
+}
+
+.pitwall .badge-status-critical {
+  color: var(--status-critical);
+  border-color: var(--status-critical);
+  background: var(--status-critical-bg);
+}
+
+/* SYNTHETIC: magenta, dashed, hatched (owner approval, audit V09). */
+.pitwall .badge-dq-synthetic {
+  color: var(--dq-synthetic);
+  border: 1px dashed var(--dq-synthetic);
+  background: repeating-linear-gradient(135deg, var(--dq-synthetic-bg) 0 4px, transparent 4px 8px);
+}
+
+/* 1366: the graph toolbar stays one row next to the title (every pixel goes to the plot, audit V03). */
+@media (max-width: 1799px) {
+  .pitwall-graph-header {
+    padding: 4px 8px;
+    column-gap: 6px;
+  }
+
+  .pitwall-graph-header-actions,
+  .pitwall-graph-mode-actions,
+  .pitwall-graph-worksheet-actions {
+    gap: 2px;
+  }
+
+  .pitwall-graph-header .btn-xs {
+    padding: 0 5px;
+  }
+
+  .pitwall-graph-separator {
+    margin: 0 2px;
+  }
+}

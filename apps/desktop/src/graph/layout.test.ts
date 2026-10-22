@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { Unit } from '../generated/channels';
 import { unitAxisDisplay } from '../lib/units';
 import {
+  AXIS_TEXT_HEIGHT_CSS,
   EDGE_MARGIN_CSS,
+  LABEL_EDGE_MARGIN_CSS,
+  MIN_PANE_PLOT_CSS,
   TOP_MARGIN_CSS,
+  Y_TITLE_GAP_CSS,
+  Y_TITLE_MIN_PLOT_CSS,
   X_AXIS_HEIGHT_CSS,
   Y_AXIS_WIDTH_CSS,
   axisColumnLeft,
@@ -13,7 +18,11 @@ import {
   computeLayout,
   computePaneHeights,
   computeStackedPaneLayouts,
+  allocateWithMinimum,
+  drawableTickLabels,
+  planStackedPanes,
   tickTarget,
+  yLabelTop,
   type AxisMember,
   offScaleOf,
 } from './layout';
@@ -193,4 +202,94 @@ describe('computeStackedPaneLayouts (REDESIGN.md §4 W5.1)', () => {
   });
 });
 
+describe('computeLayout x axis row and compact plots (V02)', () => {
+  it('reserves the x axis row only when asked (one x axis per stacked graph)', () => {
+    const withAxis = computeLayout(800, 200, 1, 0, true);
+    const without = computeLayout(800, 200, 1, 0, false);
+    expect(withAxis.xAxis).toBe(true);
+    expect(without.xAxis).toBe(false);
+    expect(withAxis.plot.top + withAxis.plot.height).toBe(200 - X_AXIS_HEIGHT_CSS);
+    expect(without.plot.top + without.plot.height).toBe(200 - LABEL_EDGE_MARGIN_CSS);
+  });
 
+  it('drops the y unit titles and their margin on a low plot instead of overflowing', () => {
+    const tall = computeLayout(800, TOP_MARGIN_CSS + X_AXIS_HEIGHT_CSS + Y_TITLE_MIN_PLOT_CSS, 1, 0);
+    expect(tall.yTitles).toBe(true);
+    expect(tall.plot.top).toBe(TOP_MARGIN_CSS);
+    const low = computeLayout(800, TOP_MARGIN_CSS + X_AXIS_HEIGHT_CSS + Y_TITLE_MIN_PLOT_CSS - 1, 1, 0);
+    expect(low.yTitles).toBe(false);
+    expect(low.plot.top).toBe(LABEL_EDGE_MARGIN_CSS);
+    // Everything stays inside the canvas.
+    expect(low.plot.top + low.plot.height).toBeLessThanOrEqual(low.height - X_AXIS_HEIGHT_CSS);
+  });
+
+  it('keeps the unit title clear of the top tick label', () => {
+    const l = computeLayout(800, 200, 1, 0);
+    // The top tick label is centred on the plot edge; its box starts half a text line above it.
+    const topLabelTop = l.plot.top - AXIS_TEXT_HEIGHT_CSS / 2;
+    const titleBottom = l.plot.top - Y_TITLE_GAP_CSS;
+    const titleTop = titleBottom - AXIS_TEXT_HEIGHT_CSS;
+    expect(titleBottom).toBeLessThanOrEqual(topLabelTop);
+    expect(titleTop).toBeGreaterThanOrEqual(0);
+    expect(yLabelTop(l)).toBe(titleBottom);
+    expect(yLabelTop(computeLayout(800, 60, 1, 0))).toBe(0);
+  });
+});
+
+describe('drawableTickLabels', () => {
+  it('keeps labels inside the bounds and one text height apart', () => {
+    // 5 ticks 10 px apart: only every other one fits with 12 px text.
+    expect(drawableTickLabels([100, 90, 80, 70, 60], 0, 200, 12)).toEqual([0, 2, 4]);
+  });
+
+  it('drops a label that would reach above the title line or below the canvas', () => {
+    expect(drawableTickLabels([20, 50, 197], 16, 200, 12)).toEqual([1]);
+    expect(drawableTickLabels([22, 50], 16, 200, 12)).toEqual([0, 1]);
+    expect(drawableTickLabels([Number.NaN, 50], 0, 200, 12)).toEqual([1]);
+  });
+});
+
+describe('allocateWithMinimum', () => {
+  it('shares by weight and pins small shares at the minimum, summing to the total', () => {
+    expect(allocateWithMinimum(400, [3, 1], 10)).toEqual([300, 100]);
+    const pinned = allocateWithMinimum(300, [35, 15, 20, 15, 15], 48);
+    expect(pinned.reduce((a, b) => a + b, 0)).toBe(300);
+    expect(Math.min(...pinned)).toBeGreaterThanOrEqual(48);
+    expect(pinned[0]).toBeGreaterThan(pinned[1] ?? 0);
+  });
+
+  it('splits evenly when the total cannot give every share its minimum', () => {
+    expect(allocateWithMinimum(30, [1, 9], 20)).toEqual([15, 15]);
+  });
+});
+
+describe('planStackedPanes (V02: panes share the height, never overflow)', () => {
+  const chrome = { pane: 26, gap: 4 };
+  const weights = [35, 15, 20, 15, 15];
+  const sum = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0);
+
+  it('shows every pane with at least the minimum plot when they fit, filling the space exactly', () => {
+    const plan = planStackedPanes(600, weights, chrome);
+    expect(plan.visible).toBe(5);
+    expect(sum(plan.heights) + chrome.gap * 4).toBe(600);
+    // Plot height = pane height - chrome - canvas margins; the bottom pane carries the x axis row.
+    plan.heights.forEach((h, i) => {
+      const margins = LABEL_EDGE_MARGIN_CSS + (i === 4 ? X_AXIS_HEIGHT_CSS : LABEL_EDGE_MARGIN_CSS);
+      expect(h - chrome.pane - margins).toBeGreaterThanOrEqual(MIN_PANE_PLOT_CSS);
+    });
+    // The heaviest pane gets the tallest plot.
+    expect(plan.heights[0]).toBe(Math.max(...plan.heights));
+  });
+
+  it('leaves out trailing panes that do not fit rather than overflowing', () => {
+    const plan = planStackedPanes(300, weights, chrome);
+    expect(plan.visible).toBe(3);
+    expect(sum(plan.heights) + chrome.gap * (plan.visible - 1)).toBe(300);
+  });
+
+  it('always shows the first pane, shrunk to the space when even it does not fit', () => {
+    expect(planStackedPanes(40, weights, chrome)).toEqual({ visible: 1, heights: [40] });
+    expect(planStackedPanes(0, weights, chrome)).toEqual({ visible: 1, heights: [0] });
+    expect(planStackedPanes(500, [], chrome)).toEqual({ visible: 0, heights: [] });
+  });
+});

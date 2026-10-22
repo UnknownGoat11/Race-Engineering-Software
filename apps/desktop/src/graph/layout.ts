@@ -16,8 +16,25 @@ import type { XRange, YScaleSetting } from './types';
 export const Y_AXIS_WIDTH_CSS = 52;
 /** Height under the plot for x tick labels, CSS px. */
 export const X_AXIS_HEIGHT_CSS = 22;
-/** Space above the plot for the y axis titles, CSS px. */
-export const TOP_MARGIN_CSS = 16;
+/**
+ * Space above the plot for the y axis titles, CSS px. The title's box ends `Y_TITLE_GAP_CSS` above the plot, so
+ * the top tick label (centred on the plot's top edge, half a text line high above it) never touches it.
+ */
+export const TOP_MARGIN_CSS = 20;
+/** Distance from the bottom of a y axis title to the plot's top edge, CSS px. */
+export const Y_TITLE_GAP_CSS = 8;
+/** Height of one line of axis text, CSS px (the chrome font is 11 px). */
+export const AXIS_TEXT_HEIGHT_CSS = 12;
+/**
+ * Space at a plot edge without a y title (top) or without x tick labels (bottom), CSS px: half a text line plus
+ * one, so a tick label centred on the edge is not cut by the canvas.
+ */
+export const LABEL_EDGE_MARGIN_CSS = 7;
+/**
+ * Least plot height (measured with the full title margin) at which y axes draw their unit titles; a lower plot is
+ * compact: no unit title (the pane's readout carries the unit) and the smaller top margin.
+ */
+export const Y_TITLE_MIN_PLOT_CSS = 60;
 /** Space at a plot edge without an axis, CSS px. */
 export const EDGE_MARGIN_CSS = 8;
 /** About one y tick per this many CSS px of plot height. */
@@ -69,6 +86,10 @@ export interface GraphLayout {
   readonly width: number;
   readonly height: number;
   readonly plot: PlotRect;
+  /** The x tick labels and title are drawn under the plot (false: a stacked pane above the bottom one). */
+  readonly xAxis: boolean;
+  /** The y axes draw their unit titles above the plot (false: compact, see `Y_TITLE_MIN_PLOT_CSS`). */
+  readonly yTitles: boolean;
 }
 
 /** Side(s) of a fixed axis range that visible data exceeds. */
@@ -147,13 +168,47 @@ export function buildYAxes(
   return axes;
 }
 
-/** Layout for a graph of `width × height` CSS px with `leftAxes` / `rightAxes` y axis columns. */
-export function computeLayout(width: number, height: number, leftAxes: number, rightAxes: number): GraphLayout {
+/**
+ * Layout for a graph of `width × height` CSS px with `leftAxes` / `rightAxes` y axis columns. `xAxis` false leaves
+ * out the x tick label row (only the bottom pane of a stacked graph draws it). A plot lower than
+ * `Y_TITLE_MIN_PLOT_CSS` becomes compact (no y unit titles, smaller top margin) instead of overflowing.
+ */
+export function computeLayout(width: number, height: number, leftAxes: number, rightAxes: number, xAxis = true): GraphLayout {
   const left = leftAxes > 0 ? leftAxes * Y_AXIS_WIDTH_CSS : EDGE_MARGIN_CSS;
   const right = rightAxes > 0 ? rightAxes * Y_AXIS_WIDTH_CSS : EDGE_MARGIN_CSS;
   const plotWidth = Math.max(0, Math.floor(width - left - right));
-  const plotHeight = Math.max(0, Math.floor(height - TOP_MARGIN_CSS - X_AXIS_HEIGHT_CSS));
-  return { width, height, plot: { left, top: TOP_MARGIN_CSS, width: plotWidth, height: plotHeight } };
+  const bottom = xAxis ? X_AXIS_HEIGHT_CSS : LABEL_EDGE_MARGIN_CSS;
+  const yTitles = height - TOP_MARGIN_CSS - bottom >= Y_TITLE_MIN_PLOT_CSS;
+  const top = yTitles ? TOP_MARGIN_CSS : LABEL_EDGE_MARGIN_CSS;
+  const plotHeight = Math.max(0, Math.floor(height - top - bottom));
+  return { width, height, plot: { left, top, width: plotWidth, height: plotHeight }, xAxis, yTitles };
+}
+
+/**
+ * Indices of the y ticks (centres `pys`, CSS px, in tick order) whose labels can be drawn without overlap: each
+ * label box (`textHeight` high, centred on its tick) lies inside `minY…maxY` and is at least one text height from
+ * the previous drawn label.
+ */
+export function drawableTickLabels(
+  pys: readonly number[],
+  minY: number,
+  maxY: number,
+  textHeight: number = AXIS_TEXT_HEIGHT_CSS,
+): number[] {
+  const out: number[] = [];
+  let last: number | null = null;
+  pys.forEach((py, i) => {
+    if (!Number.isFinite(py) || py - textHeight / 2 < minY || py + textHeight / 2 > maxY) return;
+    if (last !== null && Math.abs(py - last) < textHeight) return;
+    out.push(i);
+    last = py;
+  });
+  return out;
+}
+
+/** Topmost y (CSS px) a y tick label may reach in `layout`: below the unit titles when they are drawn. */
+export function yLabelTop(layout: GraphLayout): number {
+  return layout.yTitles ? layout.plot.top - Y_TITLE_GAP_CSS : 0;
 }
 
 /** Left edge (CSS px) of the column of `axis` in `layout`. */
@@ -243,3 +298,81 @@ export function computeStackedPaneLayouts(
   });
 }
 
+/** Least plot height of a stacked pane before trailing panes are hidden, CSS px. */
+export const MIN_PANE_PLOT_CSS = 48;
+/** Height of a stacked pane's header row (title and legend; each legend row is a >= 24 px checkbox target, A08). */
+export const PANE_HEADER_HEIGHT_CSS = 24;
+
+/** Fixed (non-plot) heights of a stacked graph's panes. */
+export interface PaneChrome {
+  /** Header row, borders and padding of one pane, CSS px. */
+  readonly pane: number;
+  /** Space between two panes, CSS px. */
+  readonly gap: number;
+}
+
+/** Heights of the visible panes of a stacked graph. */
+export interface StackedPanePlan {
+  /** Number of leading panes shown (the rest do not fit at `MIN_PANE_PLOT_CSS`). */
+  readonly visible: number;
+  /** Outer height of each visible pane, CSS px; with the gaps they never exceed the available height. */
+  readonly heights: readonly number[];
+}
+
+/** Canvas margins (top + bottom) of a pane around its plot, with the compact top margin. */
+function paneCanvasMargins(bottom: boolean): number {
+  return LABEL_EDGE_MARGIN_CSS + (bottom ? X_AXIS_HEIGHT_CSS : LABEL_EDGE_MARGIN_CSS);
+}
+
+/**
+ * Shares `available` CSS px among stacked panes: as many leading panes as fit with a plot of at least
+ * `MIN_PANE_PLOT_CSS` each (always at least one; the last visible pane carries the x axis row), with the plot
+ * heights in proportion to `weights` as far as every plot keeps its minimum. The heights plus gaps never exceed
+ * `available`, so the graph does not clip its own content.
+ */
+export function planStackedPanes(available: number, weights: readonly number[], chrome: PaneChrome): StackedPanePlan {
+  const n = weights.length;
+  if (n === 0) return { visible: 0, heights: [] };
+  const space = Math.max(0, Math.floor(available));
+  const fixed = (i: number, count: number): number => chrome.pane + paneCanvasMargins(i === count - 1);
+  let visible = n;
+  for (; visible > 1; visible--) {
+    let need = chrome.gap * (visible - 1);
+    for (let i = 0; i < visible; i++) need += fixed(i, visible) + MIN_PANE_PLOT_CSS;
+    if (need <= space) break;
+  }
+  let plotSpace = space - chrome.gap * (visible - 1);
+  for (let i = 0; i < visible; i++) plotSpace -= fixed(i, visible);
+  // Only a single pane can be short of its minimum (the loop above keeps more panes only when they fit).
+  if (plotSpace < 0) return { visible: 1, heights: [space] };
+  const shown = weights.slice(0, visible).map((w) => (Number.isFinite(w) && w > 0 ? w : 0));
+  const plots = allocateWithMinimum(plotSpace, shown, MIN_PANE_PLOT_CSS);
+  return { visible, heights: plots.map((p, i) => p + fixed(i, visible)) };
+}
+
+/**
+ * Integer shares of `total` in proportion to `weights`, each at least `min` while the total allows it (a share
+ * that would fall below `min` is pinned there and the rest is shared among the others). Sums to `total`.
+ */
+export function allocateWithMinimum(total: number, weights: readonly number[], min: number): number[] {
+  const n = weights.length;
+  if (n === 0) return [];
+  if (total < min * n) return computePaneHeights(total, weights.map(() => 1));
+  const pinned = new Set<number>();
+  for (;;) {
+    const free = total - pinned.size * min;
+    const open = weights.map((_, i) => i).filter((i) => !pinned.has(i));
+    const weightSum = open.reduce((sum, i) => sum + (weights[i] ?? 0), 0);
+    const share = (i: number): number => (weightSum > 0 ? ((weights[i] ?? 0) / weightSum) * free : free / open.length);
+    const below = open.filter((i) => share(i) < min);
+    if (below.length === 0) {
+      const openHeights = computePaneHeights(free, open.map((i) => (weightSum > 0 ? (weights[i] ?? 0) : 1)));
+      const out = weights.map(() => min);
+      open.forEach((i, k) => {
+        out[i] = openHeights[k] ?? 0;
+      });
+      return out;
+    }
+    for (const i of below) pinned.add(i);
+  }
+}

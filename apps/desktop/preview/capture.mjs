@@ -13,7 +13,8 @@
 //   - canvases: every visible <canvas> for blank content (a single flat colour), sampled from a screenshot;
 //   - clipping: every visible element with `overflow: hidden | clip` (either axis) and every `[data-clip-check]`
 //     element whose content is larger than its box (`scrollWidth > clientWidth + 1` or
-//     `scrollHeight > clientHeight + 1`), reported as `clipped: [{ selector, text, axis, ... }]`;
+//     `scrollHeight > clientHeight + 1`), reported as `clipped: [{ selector, text, axis, ... }]`. A horizontal
+//     ellipsis on an element with a non-empty title (truncation with the full text as a tooltip) is not reported;
 //   - page overflow (document scrollbars) and console errors;
 //   - with --diff <baselineDir>: a per-pixel diff against <baselineDir>/<size>/<id>.png, computed in the browser
 //     like the canvas check. Writes <id>.diff.png (changed pixels red over a dimmed copy of the new shot) and
@@ -218,6 +219,8 @@ async function checkClipping(page) {
       const x = overX && (clipX || optIn);
       const y = overY && (clipY || optIn);
       if (!x && !y) continue;
+      // Intentional single-line truncation that keeps the full text in a tooltip is not a clip bug.
+      if (x && !y && style.textOverflow === 'ellipsis' && (el.getAttribute('title') ?? '') !== '') continue;
       const text = (el.innerText ?? el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 80);
       out.push({
         selector: describe(el),

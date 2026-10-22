@@ -36,31 +36,31 @@ function setup(): (lap: number, progress: number, delta: number) => void {
 }
 
 describe('MinisectorRibbon', () => {
-  it('shows no data in every cell before any minisector is measured (no hardcoded deltas, no fixed purple)', () => {
-    setup();
-    for (let i = 1; i <= 12; i++) {
-      const cell = screen.getByTestId(`ms-cell-${String(i)}`);
-      expect(cell).toHaveTextContent(NO_VALUE);
-      expect(cell.className).not.toContain('ms-purple');
-    }
-    expect(screen.getByTestId('ms-active')).toHaveTextContent(NO_VALUE);
+  it('renders nothing before any minisector is measured (no all-"—" ribbon, no hardcoded deltas)', () => {
+    const send = setup();
+    expect(screen.queryByTestId('engineer-minisector-ribbon')).not.toBeInTheDocument();
+    send(3, 0.01, 0);
+    send(3, 0.05, 0.05);
+    expect(screen.queryByTestId('engineer-minisector-ribbon')).not.toBeInTheDocument();
   });
 
   it('measures a minisector as the change of the live PB delta between its entry and exit', () => {
     const send = setup();
     send(3, 0.01, 0); // first sample: entry into M1 not observed
     send(3, 0.05, 0.05);
-    send(3, 0.1, 0.1); // enters M2 at +0.100
-    expect(screen.getByTestId('ms-cell-1')).toHaveTextContent(NO_VALUE);
+    send(3, 0.1, 0.1); // enters M2 at +0.100; M1 not measured -> still nothing to show
+    expect(screen.queryByTestId('engineer-minisector-ribbon')).not.toBeInTheDocument();
     send(3, 0.17, 0.0); // leaves M2 at 0.000 -> M2 = -0.100
+    expect(screen.getByTestId('ms-cell-1')).toHaveTextContent(NO_VALUE);
+    expect(screen.getByTestId('ms-cell-1').className).not.toContain('ms-purple');
     const m2 = screen.getByTestId('ms-cell-2');
     expect(m2).toHaveTextContent('-0.100');
     expect(m2.className).toContain('ms-faster');
-    expect(screen.getByTestId('ms-active')).toHaveTextContent('M3');
+    expect(screen.getByTestId('ms-cell-3').className).toContain('ms-cell-active');
     send(3, 0.26, 0.2); // leaves M3 at +0.200 -> M3 = +0.200
     expect(screen.getByTestId('ms-cell-3')).toHaveTextContent('+0.200');
     expect(screen.getByTestId('ms-cell-3').className).toContain('ms-slower');
-    send(4, 0.01, 0); // new lap: row resets
-    expect(screen.getByTestId('ms-cell-2')).toHaveTextContent(NO_VALUE);
+    send(4, 0.01, 0); // new lap: row resets, nothing measured yet
+    expect(screen.queryByTestId('engineer-minisector-ribbon')).not.toBeInTheDocument();
   });
 });

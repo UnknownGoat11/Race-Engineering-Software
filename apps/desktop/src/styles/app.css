@@ -246,12 +246,14 @@ code {
 /* ---------------------------------------------------------------- Shell */
 
 .shell {
-  display: grid;
-  grid-template-rows: var(--header-height) auto 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100%;
 }
 
 .shell-header {
+  flex: 0 0 var(--header-height);
+  height: var(--header-height);
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -322,6 +324,37 @@ code {
   white-space: nowrap;
 }
 
+/* Status badges, shared by the shell, pitwall and analysis screens. */
+.badge-subtle {
+  color: var(--text-secondary);
+  border-color: var(--border-subtle);
+  background: transparent;
+}
+
+.badge-status-ok {
+  color: var(--status-ok);
+  border-color: var(--status-ok);
+  background: var(--status-ok-bg);
+}
+
+.badge-status-warn {
+  color: var(--status-warn);
+  border-color: var(--status-warn);
+  background: var(--status-warn-bg);
+}
+
+.badge-status-critical {
+  color: var(--status-critical);
+  border-color: var(--status-critical);
+  background: var(--status-critical-bg);
+}
+
+.badge-dq-synthetic {
+  color: var(--dq-synthetic);
+  border: 1px dashed var(--dq-synthetic);
+  background: repeating-linear-gradient(135deg, var(--dq-synthetic-bg) 0 4px, transparent 4px 8px);
+}
+
 .badge-mode {
   border-color: var(--border-strong);
   color: var(--text-primary);
@@ -342,16 +375,27 @@ code {
 }
 
 .shell-banner {
+  flex: 0 0 auto;
   padding: var(--space-2) var(--space-4) 0;
 }
 
 .shell-content {
+  flex: 1 1 auto;
   overflow: auto;
   min-height: 0;
 }
 
 .shell-content--page {
   padding: var(--space-4);
+}
+
+.shell-keepalive {
+  height: 100%;
+  min-height: 0;
+}
+
+.shell-keepalive[hidden] {
+  display: none;
 }
 
 .shell-content--screen {

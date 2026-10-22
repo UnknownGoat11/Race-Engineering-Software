@@ -29,7 +29,7 @@ describe('RightColumnTabs', () => {
       </TelemetryStoreContext.Provider>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Tyres & Brakes' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Tyres+Brakes' }));
     expect(screen.getByTestId('panel-tyres')).toBeInTheDocument();
     expect(screen.getByTestId('panel-brakes')).toBeInTheDocument();
   });
@@ -41,8 +41,21 @@ describe('RightColumnTabs', () => {
       </TelemetryStoreContext.Provider>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Inputs & Energy' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Power' }));
     expect(screen.getByTestId('panel-energy')).toBeInTheDocument();
     expect(screen.getByTestId('panel-driver-inputs')).toBeInTheDocument();
+  });
+
+  it('the tab row holds exactly the four real tabs (no hidden fallback buttons, U01)', () => {
+    render(
+      <TelemetryStoreContext.Provider value={store}>
+        <RightColumnTabs />
+      </TelemetryStoreContext.Provider>,
+    );
+    const tablist = screen.getByRole('tablist');
+    expect(tablist.querySelectorAll('button')).toHaveLength(4);
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Timing+Fuel', 'Tyres+Brakes', 'Chassis', 'Power']);
+    expect(screen.queryByText('Tyres & Brakes')).not.toBeInTheDocument();
+    expect(screen.getByTestId('pinned-mini-row')).not.toHaveTextContent(/\d L\b/);
   });
 });

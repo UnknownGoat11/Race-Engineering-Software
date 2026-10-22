@@ -3,6 +3,7 @@
  * Mirrors `crates/race-engines/src/track.rs`.
  */
 import { classColorVar } from '../../lib/classes';
+import { NO_VALUE } from '../../lib/units';
 import { applyTransform } from './transform';
 import type { MapPoint, MapTransform, TrackLengthSource, TrackMap, VehicleClass } from './types';
 
@@ -152,7 +153,8 @@ export class TrackGeometryBuilder {
   readonly minBinsCoveredRatio: number;
   private trackLengthM: number | null = null;
   private lengthSource: TrackLengthSource = 'observed';
-  private trackName = 'Live Circuit';
+  /** Unknown until LMU reports it: never an invented name (v1.3 U18). */
+  private trackName: string = NO_VALUE;
   private readonly bins = new Map<number, BinAccumulator>();
   private maxObservedDistM = 0;
   private lastIngestedDistM: number | null = null;

@@ -3,6 +3,7 @@ import type { CompetitorEntryDto, ScoringStateDto } from '../../hooks/useScoring
 import { formatGap, formatLapGap, formatLapTime, NO_VALUE } from '../../lib/units';
 import { parseVehicleClass, vehicleClassCode, classColorVar } from '../../lib/classes';
 import { useScopeDq, type ScopeDq } from './presentation';
+import { extractCarNumber } from '../trackmap/carNumber';
 import '../../styles/common.css';
 import './tower.css';
 
@@ -17,7 +18,8 @@ export interface TimingTowerProps {
   /**
    * Tower layout variant:
    * - 'full': 1920 primary layout with all columns (P, CLS, #, DRIVER, INT, GAP, LAST, PIT).
-   * - 'compact': 1366 layout with Last & Pit count dropped (P, CLS, #, DRIVER, INT, GAP).
+   * - 'compact': 1366 layout with Int, Last & Pit count dropped (P, CLS, #, DRIVER, GAP); the pit badge moves
+   *   into the driver cell. The same set applies automatically when the tower container is < 380 px wide.
    * - 'rail': < 1280 collapsed 56px rail (P, class stripe, #) that expands as an overlay on click/focus.
    * Defaults to 'full' (with container-query responsive collapsing).
    */
@@ -30,16 +32,13 @@ export interface TimingTowerProps {
 }
 
 /**
- * Extracts car number from vehicle name string.
- * Common formats: "#51 Ferrari 499P", "Oreca 07 #81", "#92", or standalone number.
+ * Lap-down label for the tower's fixed 8ch Gap/Int cells (v1.3 V05): "+1L", "+3L", never "+1 LAP".
+ * Missing / zero / non-integer laps stay "—" (same truth rules as formatLapGap).
  */
-function extractCarNumber(vehicleName: string | null | undefined): string {
-  if (!vehicleName) return NO_VALUE;
-  const match = /#(\d+)/.exec(vehicleName);
-  if (match?.[1]) return match[1];
-  const numMatch = /\b\d{1,3}\b/.exec(vehicleName);
-  if (numMatch?.[0]) return numMatch[0];
-  return NO_VALUE;
+function formatTowerLapGap(laps: number | null | undefined): string {
+  const full = formatLapGap(laps);
+  if (full === NO_VALUE || laps == null) return NO_VALUE;
+  return `${laps < 0 ? '-' : '+'}${Math.abs(laps)}L`;
 }
 
 /**
@@ -123,7 +122,7 @@ function computeGapsAndIntervals(
         const lapDiff = leaderLaps - currentLaps;
 
         if (lapDiff > 0) {
-          gaps[i] = formatLapGap(lapDiff);
+          gaps[i] = formatTowerLapGap(lapDiff);
         } else if (current?.time_behind_leader_s != null && classLeader?.time_behind_leader_s != null) {
           const delta = current.time_behind_leader_s - classLeader.time_behind_leader_s;
           gaps[i] = delta <= 0 ? 'LDR' : formatGap(delta);
@@ -136,7 +135,7 @@ function computeGapsAndIntervals(
         const intLapDiff = prevLaps - currentLaps;
 
         if (intLapDiff > 0) {
-          intervals[i] = formatLapGap(intLapDiff);
+          intervals[i] = formatTowerLapGap(intLapDiff);
         } else if (current?.time_behind_leader_s != null && prev?.time_behind_leader_s != null) {
           const delta = current.time_behind_leader_s - prev.time_behind_leader_s;
           intervals[i] = delta <= 0 ? 'LDR' : formatGap(delta);
@@ -153,7 +152,7 @@ function computeGapsAndIntervals(
 
         // Overall Gap
         if (current?.laps_behind_leader != null && current.laps_behind_leader > 0) {
-          gaps[i] = formatLapGap(current.laps_behind_leader);
+          gaps[i] = formatTowerLapGap(current.laps_behind_leader);
         } else if (current?.time_behind_leader_s != null) {
           gaps[i] = formatGap(current.time_behind_leader_s);
         } else {
@@ -162,7 +161,7 @@ function computeGapsAndIntervals(
 
         // Overall Interval
         if (current?.laps_behind_next != null && current.laps_behind_next > 0) {
-          intervals[i] = formatLapGap(current.laps_behind_next);
+          intervals[i] = formatTowerLapGap(current.laps_behind_next);
         } else if (current?.time_behind_next_s != null) {
           intervals[i] = formatGap(current.time_behind_next_s);
         } else {
@@ -195,7 +194,9 @@ export function TimingTower({
   const effectiveDq = dq ?? contextDq;
 
   const isRail = variant === 'rail';
-  const showLastAndPit = variant !== 'compact';
+  const isCompact = variant === 'compact';
+  const showLastAndPit = !isCompact;
+  const showInt = !isCompact;
 
   const classes = useMemo(() => {
     if (!scoring) return [];
@@ -387,7 +388,7 @@ export function TimingTower({
       <div className="standings-tower" data-testid="timing-tower">
         <div className="standings-header">
           <div className="standings-title-row">
-            <span className="card-header-title">STANDINGS TOWER</span>
+            <span className="card-header-title">Standings</span>
             {effectiveDq === 'stale' && (
               <span className="status-badge-stale" data-testid="tower-stale-badge">STALE</span>
             )}
@@ -409,7 +410,7 @@ export function TimingTower({
   }
 
   // Helper to render table row cells for full / compact variants
-  const renderRowCells = (v: CompetitorEntryDto, idx: number, isPinned = false) => {
+  const renderRowCells = (v: CompetitorEntryDto, idx: number) => {
     const isDriver = v.is_player;
     const posDisplay = isFiltered ? (v.class_place ?? idx + 1) : (v.place ?? NO_VALUE);
     const carNum = extractCarNumber(v.vehicle_name);
@@ -439,17 +440,23 @@ export function TimingTower({
           {carNum}
         </td>
         <td className="standings-col-driver">
-          <div className="standings-driver-cell" title={v.driver ?? 'Unknown'}>
-            <span className="standings-driver-name">{v.driver ?? 'Unknown'}</span>
-            {isDriver && <span className="driver-pill" data-testid="driver-pill">DRIVER</span>}
-            {isPinned && <span className="pinned-badge" title="Pinned driver row">📌</span>}
-            {v.in_pits && <span className="pit-badge pit-badge-in">PIT</span>}
-            {v.in_garage_stall && <span className="pit-badge pit-badge-garage">GAR</span>}
+          <div className="standings-driver-cell" title={v.driver ?? undefined}>
+            <span className="standings-driver-name" title={v.driver ?? undefined}>
+              {v.driver ?? NO_VALUE}
+            </span>
+            {/* Inline pit badge: shown only when the Pit column is not (compact / narrow tower), see tower.css */}
+            {v.in_pits ? (
+              <span className="pit-badge pit-badge-in pit-badge--inline">PIT</span>
+            ) : v.in_garage_stall ? (
+              <span className="pit-badge pit-badge-garage pit-badge--inline">GAR</span>
+            ) : null}
           </div>
         </td>
-        <td className="standings-col-gap">
-          {intVal === 'LDR' ? <span className="gap-ldr">LDR</span> : intVal}
-        </td>
+        {showInt && (
+          <td className="standings-col-gap standings-col-int">
+            {intVal === 'LDR' ? <span className="gap-ldr">LDR</span> : intVal}
+          </td>
+        )}
         <td className="standings-col-gap">
           {gapVal === 'LDR' ? <span className="gap-ldr">LDR</span> : gapVal}
         </td>
@@ -577,7 +584,7 @@ export function TimingTower({
   // Full or Compact or Rail-Expanded Tower
   const towerClassNames = [
     'standings-tower',
-    variant === 'compact' ? 'standings-tower--compact' : '',
+    isCompact ? 'standings-tower--compact' : '',
     isRailExpanded ? 'standings-tower--rail-expanded' : '',
   ]
     .filter(Boolean)
@@ -604,7 +611,7 @@ export function TimingTower({
               ◀
             </button>
           )}
-          <span className="card-header-title">STANDINGS TOWER</span>
+          <span className="card-header-title">Standings</span>
           {effectiveDq === 'stale' && (
             <span className="status-badge-stale" data-testid="tower-stale-badge">STALE</span>
           )}
@@ -660,7 +667,9 @@ export function TimingTower({
               <th className="standings-col-class" scope="col"><abbr title="Class">CLS</abbr></th>
               <th className="standings-col-num" scope="col"><abbr title="Car Number">#</abbr></th>
               <th className="standings-col-driver" scope="col">DRIVER</th>
-              <th className="standings-col-gap" scope="col"><abbr title="Interval to car ahead">INT</abbr></th>
+              {showInt && (
+                <th className="standings-col-gap standings-col-int" scope="col"><abbr title="Interval to car ahead">INT</abbr></th>
+              )}
               <th className="standings-col-gap" scope="col"><abbr title="Gap to leader">GAP</abbr></th>
               {showLastAndPit && (
                 <>
@@ -690,7 +699,7 @@ export function TimingTower({
                   }
                 }}
               >
-                {renderRowCells(playerVehicle, playerIndex, true)}
+                {renderRowCells(playerVehicle, playerIndex)}
               </tr>
             )}
           </thead>
@@ -732,7 +741,7 @@ export function TimingTower({
                     handleRowKeyDown(e, v, idx, false);
                   }}
                 >
-                  {renderRowCells(v, idx, false)}
+                  {renderRowCells(v, idx)}
                 </tr>
               );
             })}
@@ -759,7 +768,7 @@ export function TimingTower({
                   }
                 }}
               >
-                {renderRowCells(playerVehicle, playerIndex, true)}
+                {renderRowCells(playerVehicle, playerIndex)}
               </tr>
             </tfoot>
           )}

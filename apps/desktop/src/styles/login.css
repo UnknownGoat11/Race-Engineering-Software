@@ -10,34 +10,21 @@
   min-height: 100vh;
   width: 100%;
   padding: var(--space-6, 32px);
-  background:
-    radial-gradient(ellipse at 50% 20%, rgba(34, 211, 238, 0.08) 0%, transparent 60%),
-    radial-gradient(circle at 80% 80%, rgba(77, 124, 255, 0.05) 0%, transparent 50%),
-    linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px),
-    #090b0e;
-  background-size: 100% 100%, 100% 100%, 32px 32px, 32px 32px, auto;
-  color: var(--color-text, #eef1f4);
+  background: var(--surface-app);
+  color: var(--text-primary);
   box-sizing: border-box;
 }
 
 .login-card {
   width: 100%;
   max-width: 460px;
-  background: rgba(16, 20, 26, 0.85);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-top: 2px solid #22d3ee;
-  border-radius: 12px;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
   padding: 32px 36px;
   display: flex;
   flex-direction: column;
   gap: 20px;
-  box-shadow:
-    0 24px 60px -10px rgba(0, 0, 0, 0.8),
-    0 0 30px rgba(34, 211, 238, 0.06),
-    inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
   box-sizing: border-box;
 }
 
@@ -55,28 +42,8 @@
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #22d3ee;
+  color: var(--text-secondary);
   margin-bottom: 2px;
-}
-
-.login-pulse-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #22d3ee;
-  box-shadow: 0 0 8px #22d3ee;
-  animation: pulse-glow 2s infinite ease-in-out;
-}
-
-@keyframes pulse-glow {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.4;
-    transform: scale(0.85);
-  }
 }
 
 .login-title {
@@ -85,9 +52,8 @@
   font-weight: 800;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: #ffffff;
+  color: var(--text-primary);
   margin: 0;
-  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
 }
 
 .login-role-badge {
@@ -96,27 +62,27 @@
   justify-content: space-between;
   gap: 8px;
   padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.03);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 6px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
 }
 
 .login-role-text {
   font-size: 12px;
-  color: #8b95a3;
+  color: var(--text-secondary);
 }
 
 .login-role-text strong {
-  color: #eef1f4;
+  color: var(--text-primary);
   letter-spacing: 0.05em;
 }
 
 .login-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  background: rgba(8, 10, 14, 0.65);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 8px;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
   padding: 4px;
   gap: 4px;
   margin-top: 4px;
@@ -125,29 +91,27 @@
 .login-tab-btn {
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 6px;
-  color: #8b95a3;
+  border-radius: var(--radius-1, 2px);
+  color: var(--text-secondary);
   padding: 9px 12px;
   font-family: inherit;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: background-color 120ms ease-out, color 120ms ease-out;
   text-align: center;
 }
 
 .login-tab-btn:hover:not(:disabled) {
-  color: #eef1f4;
-  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  background: var(--surface-hover);
 }
 
+/* Selected tab: neutral fill, strong border and text, not colour alone. */
 .login-tab-btn[aria-selected='true'] {
-  color: #22d3ee;
-  background: rgba(34, 211, 238, 0.12);
-  border-color: rgba(34, 211, 238, 0.3);
-  box-shadow: 0 0 16px rgba(34, 211, 238, 0.15);
+  color: var(--text-primary);
+  background: var(--surface-selected);
+  border-color: var(--border-strong);
 }
 
 .login-form {
@@ -163,35 +127,31 @@
 }
 
 .login-label {
-  font-size: 11px;
-  font-weight: 700;
-  color: #8b95a3;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
 .login-input {
   height: 42px;
   padding: 0 14px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  background: rgba(7, 9, 12, 0.7);
-  color: #ffffff;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-1, 2px);
+  background: var(--surface-inset);
+  color: var(--text-primary);
   font-family: inherit;
   font-size: 14px;
   box-sizing: border-box;
-  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+  transition: border-color 120ms ease-out;
 }
 
 .login-input:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.22);
+  border-color: var(--border-strong);
 }
 
+/* Focus: the global :focus-visible ring applies (A03); only the border follows. */
 .login-input:focus {
-  border-color: #22d3ee;
-  background: rgba(10, 13, 18, 0.9);
-  outline: none;
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.2);
+  border-color: var(--border-focus);
 }
 
 .login-input:disabled {
@@ -201,7 +161,7 @@
 
 .login-hint {
   font-size: 11px;
-  color: #6a7380;
+  color: var(--text-tertiary);
 }
 
 .login-actions {
@@ -214,27 +174,6 @@
 .login-actions .btn-primary {
   width: 100%;
   height: 44px;
-  background: linear-gradient(135deg, #22d3ee 0%, #0284c7 100%);
-  color: #06090e;
-  font-weight: 700;
-  font-size: 13px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  box-shadow: 0 4px 18px rgba(34, 211, 238, 0.35);
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.login-actions .btn-primary:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 24px rgba(34, 211, 238, 0.5);
-  filter: brightness(1.08);
-}
-
-.login-actions .btn-primary:active:not(:disabled) {
-  transform: translateY(0);
 }
 
 .login-footer {
@@ -243,10 +182,10 @@
   justify-content: space-between;
   margin-top: 4px;
   padding-top: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-top: 1px solid var(--border-subtle);
 }
 
 .login-footer-text {
-  font-size: 11px;
-  color: #6a7380;
+  font-size: 12px;
+  color: var(--text-tertiary);
 }

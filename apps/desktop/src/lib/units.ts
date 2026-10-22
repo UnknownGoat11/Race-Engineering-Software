@@ -903,3 +903,42 @@ export function formatCountdown(secondsLeft: MaybeNumber): string {
   const m = Math.floor(total / SECONDS_PER_MINUTE);
   return padSlot(`${m}:${pad2(total % SECONDS_PER_MINUTE)}`, SLOT_WIDTH.countdown);
 }
+
+/** "lap" for exactly 1, "laps" otherwise (units of lap counts and lap-based estimates, never "L" = litres). */
+export function lapsUnit(laps: number): string {
+  return Math.abs(laps) === 1 ? 'lap' : 'laps';
+}
+
+/**
+ * A lap-based estimate with its unit, unpadded (strips, mini rows): 13.66 → "13.7 laps", with `signed` a margin
+ * "+1.5 laps" / "±0.0 laps". Missing → "—" (no unit).
+ */
+export function formatLapsText(laps: MaybeNumber, options?: { readonly signed?: boolean }): string {
+  if (!isFiniteNumber(laps)) return NO_VALUE;
+  const text = formatLaps(laps, options).trim();
+  return joinUnit(text, lapsUnit(Number(text.replace('±', ''))));
+}
+
+/** A whole lap count with its unit: 1 → "1 lap", 12.8 → "12 laps" (truncated). Missing/negative → "—". */
+export function formatLapCountText(laps: MaybeNumber): string {
+  if (!isFiniteNumber(laps) || laps < 0) return NO_VALUE;
+  const whole = Math.floor(laps);
+  return joinUnit(String(whole), lapsUnit(whole));
+}
+
+/** Weather word from a measured rain fraction (0..1): "Dry" only when 0 was measured, "Wet" above; unknown → null. */
+export function formatWeather(rainFrac: MaybeNumber): string | null {
+  if (!isFiniteNumber(rainFrac) || rainFrac < 0) return null;
+  // Measures rain falling, not track wetness: a drying track after rain still reads "No rain".
+  return rainFrac > 0 ? 'Rain' : 'No rain';
+}
+
+/** Age of an event from wall times (ms): "under 1 min ago", "4 min ago", "2 h ago"; unknown/future → null. */
+export function formatAgoText(sinceMs: MaybeNumber, nowMs: number): string | null {
+  if (!isFiniteNumber(sinceMs) || nowMs < sinceMs) return null;
+  const minutes = Math.floor((nowMs - sinceMs) / (SECONDS_PER_MINUTE * 1000));
+  if (minutes < 1) return 'under 1 min ago';
+  const minutesPerHour = SECONDS_PER_HOUR / SECONDS_PER_MINUTE;
+  if (minutes < minutesPerHour) return `${String(minutes)} min ago`;
+  return `${String(Math.floor(minutes / minutesPerHour))} h ago`;
+}

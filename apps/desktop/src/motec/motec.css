@@ -1,49 +1,72 @@
-/* MoTeC Telemetry Import & Comparison Styles */
+/* MoTeC telemetry import and comparison bar. Tokens only (styles/tokens.css); amber stays reserved for warnings. */
 
 .motec-bar-container {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 10px;
-  background: #0f172a;
-  border: 1px solid #1e293b;
-  border-left: 4px solid #f59e0b; /* MoTeC Orange */
-  border-radius: 6px;
-  padding: 8px 14px;
-  margin-bottom: 12px;
-  font-size: 12px;
-  color: #e2e8f0;
+  gap: var(--space-2);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-left: 2px solid var(--graph-reference);
+  border-radius: var(--radius-1);
+  padding: var(--space-1) var(--space-2);
+  margin-bottom: var(--space-2);
+  font-family: var(--font-ui);
+  font-size: var(--type-label-size);
+  color: var(--text-primary);
+}
+
+/* Pitwall graph: one tight row, never wrapping into the plot space. */
+.motec-bar-compact {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  margin-bottom: var(--space-1);
+  flex-shrink: 0;
+}
+
+.motec-bar-compact .motec-bar-left,
+.motec-bar-compact .motec-session-info {
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.motec-bar-drop {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
 }
 
 .motec-bar-left {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-2);
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .motec-brand-badge {
-  background: #f59e0b;
-  color: #0b0f19;
-  font-weight: 800;
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
-  padding: 3px 6px;
-  border-radius: 3px;
-  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-control);
+  font-weight: 700;
+  font-size: var(--type-badge-size);
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-1);
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
 }
 
 .motec-session-info {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
 .motec-file-name {
   font-weight: 600;
-  color: #f8fafc;
+  color: var(--text-primary);
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -51,88 +74,86 @@
 }
 
 .motec-meta-pill {
-  background: #1e293b;
-  padding: 2px 8px;
-  border-radius: 4px;
-  color: #cbd5e1;
-  font-size: 11px;
+  background: var(--surface-panel-header);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-1);
+  color: var(--text-secondary);
+  font-size: var(--type-caption-size);
+  white-space: nowrap;
 }
 
 .motec-meta-pill strong {
-  color: #38bdf8;
+  color: var(--text-primary);
+}
+
+.motec-synthetic-pill {
+  color: var(--dq-synthetic);
+  border: 1px dashed var(--dq-synthetic);
+  background: repeating-linear-gradient(135deg, var(--dq-synthetic-bg) 0 4px, transparent 4px 8px);
 }
 
 .motec-line-indicator {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  background: rgba(245, 158, 11, 0.12);
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  padding: 2px 8px;
-  border-radius: 4px;
+  gap: var(--space-1);
+  white-space: nowrap;
 }
 
 .motec-color-swatch {
   display: inline-block;
   width: 16px;
-  height: 4px;
-  background-color: #f59e0b;
-  border-radius: 2px;
-  box-shadow: 0 0 6px rgba(245, 158, 11, 0.8);
+  height: 0;
+  border-top: 2px dashed var(--graph-reference);
 }
 
 .motec-swatch-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: #fbbf24;
+  font-size: var(--type-caption-size);
+  color: var(--text-secondary);
 }
 
 .motec-prompt-text {
-  color: #94a3b8;
-  font-style: italic;
+  color: var(--text-secondary);
 }
 
 .motec-live-delta-pill {
   display: flex;
   align-items: center;
-  gap: 6px;
-  background: #020617;
-  border: 1px solid #334155;
-  padding: 3px 10px;
-  border-radius: 4px;
-  font-family: var(--font-mono, monospace);
+  gap: var(--space-1);
+  border: 1px solid var(--border-subtle);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-1);
 }
 
 .motec-live-delta-pill .delta-label {
-  color: #94a3b8;
-  font-size: 11px;
+  color: var(--text-secondary);
+  font-size: var(--type-caption-size);
 }
 
 .motec-live-delta-pill .delta-val {
   font-weight: 700;
-  font-size: 12px;
+  font-size: var(--type-label-size);
 }
 
 .delta-faster {
-  color: #22c55e;
+  color: var(--delta-faster);
 }
 
 .delta-slower {
-  color: #ef4444;
+  color: var(--delta-slower);
 }
 
 .motec-bar-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-1);
+  flex-shrink: 0;
 }
 
 .motec-error-banner {
   width: 100%;
-  color: #f87171;
-  background: rgba(239, 68, 68, 0.1);
-  padding: 4px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  margin-top: 4px;
+  color: var(--status-critical);
+  background: var(--status-critical-bg);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-1);
+  font-size: var(--type-caption-size);
 }

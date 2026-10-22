@@ -340,8 +340,68 @@ describe('TelemetryGraph', () => {
     const paneTitles = Array.from(container.querySelectorAll('.telemetry-graph__pane-title')).map((el) => el.textContent);
     expect(paneTitles).toEqual(['Speed', 'Delta', 'Throttle & Brake', 'Gear & RPM', 'Steering']);
 
-    const proportions = Array.from(container.querySelectorAll('.telemetry-graph__pane-proportion')).map((el) => el.textContent);
-    expect(proportions).toEqual(['(35%)', '(15%)', '(20%)', '(15%)', '(15%)']);
+    // One compact header row per pane: no "(35%)" proportion text (V02).
+    expect(container.querySelector('.telemetry-graph__pane-proportion')).toBeNull();
+    expect(container.textContent).not.toContain('35%');
+    // Exactly one x axis row: only the bottom pane draws the x tick labels.
+    const xAxisPanes = Array.from(panes).map((el) => el.getAttribute('data-x-axis'));
+    expect(xAxisPanes).toEqual(['false', 'false', 'false', 'false', 'true']);
+  });
+
+  it('makes each legend row the label of its checkbox (A08) and toggles once per click', () => {
+    const s = setup();
+    const source = new LiveRingSource(s.store, { xMode: 'time', dataKind: 'lmu' });
+    const { container } = render(
+      <TelemetryGraph
+        source={source}
+        xMode="time"
+        panes={WORKSHEETS.driver.panes}
+        renderer={() => new FakeRenderer()}
+        scheduleFrame={new FakeFrames().schedule}
+      />,
+    );
+    const box = screen.getByRole('checkbox', { name: 'Show Speed' });
+    const row = box.closest('label');
+    expect(row).toHaveClass('telemetry-graph__legend-row');
+    expect(row?.querySelector('.telemetry-graph__swatch')).not.toBeNull();
+    // Clicking the name (not the box) toggles the series exactly once.
+    const name = row?.querySelector('.telemetry-readout, .telemetry-graph__series-name');
+    expect(name).not.toBeNull();
+    if (name instanceof HTMLElement) fireEvent.click(name);
+    expect(box).not.toBeChecked();
+    expect(container.querySelectorAll('.telemetry-graph__readout-click')).toHaveLength(0);
+  });
+
+  it('shows only the panes that fit their minimum plot, names the rest and moves the x axis to the last shown pane', () => {
+    const s = setup();
+    const source = new LiveRingSource(s.store, { xMode: 'time', dataKind: 'lmu' });
+    const height = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      // 300 px for the panes: room for 3 panes at the 48 px minimum plot (see layout.planStackedPanes).
+      return this.classList.contains('telemetry-graph__panes') ? 300 : 0;
+    });
+    try {
+      const { container } = render(
+        <TelemetryGraph
+          source={source}
+          xMode="time"
+          panes={WORKSHEETS.driver.panes}
+          renderer={() => new FakeRenderer()}
+          scheduleFrame={new FakeFrames().schedule}
+        />,
+      );
+      const panes = Array.from(container.querySelectorAll<HTMLElement>('.telemetry-graph__pane'));
+      expect(panes.map((el) => el.getAttribute('data-pane-id'))).toEqual(['speed', 'delta', 'inputs']);
+      expect(panes.map((el) => el.getAttribute('data-x-axis'))).toEqual(['false', 'false', 'true']);
+      // Pane heights fill, and never exceed, the measured space.
+      const total = panes.reduce((sum, el) => sum + Number.parseFloat(el.style.getPropertyValue('--dyn-height')), 0);
+      expect(total).toBeLessThanOrEqual(300);
+      expect(total).toBeGreaterThan(290);
+      const chip = container.querySelector('.telemetry-graph__hidden-panes');
+      expect(chip?.textContent).toContain('+2 panes');
+      expect(chip?.textContent).toContain('Gear & RPM, Steering');
+    } finally {
+      height.mockRestore();
+    }
   });
 
   it('automatically derives dashed reference overlays from live source reference lap on lap axes (G01, G02)', () => {

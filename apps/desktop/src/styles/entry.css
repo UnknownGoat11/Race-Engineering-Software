@@ -333,3 +333,33 @@
   padding: 2px 4px;
   border-radius: var(--radius-sm);
 }
+
+/* Relay badge: the host name is shown as typed (no upper-casing), in the data font. */
+.settings-page .settings-relay-badge {
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: var(--font-data);
+}
+
+/* Advanced relay settings (host, port, timeout): collapsed once a server is set up. */
+.settings-advanced {
+  margin-bottom: var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  padding: var(--space-2) var(--space-3);
+}
+
+.settings-advanced[open] {
+  padding-bottom: var(--space-3);
+}
+
+.settings-advanced__summary {
+  cursor: pointer;
+  font-size: var(--type-label-size);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.settings-advanced[open] > .settings-advanced__summary {
+  margin-bottom: var(--space-3);
+}

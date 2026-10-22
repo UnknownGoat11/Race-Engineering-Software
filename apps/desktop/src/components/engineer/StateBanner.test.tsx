@@ -40,8 +40,18 @@ describe('StateBanner', () => {
 
   it('renders caution banner when FCY is active', () => {
     const liveView: EngineerView = { kind: 'live', ageS: 0.1, degraded: false };
-    render(<StateBanner view={liveView} fcyActive={true} />);
+    render(<StateBanner view={liveView} caution="fcy" cautionDetail="Pending" />);
     expect(screen.getByTestId('state-banner-caution')).toBeInTheDocument();
-    expect(screen.getByText('FULL COURSE YELLOW')).toBeInTheDocument();
+    expect(screen.getByText('FCY / SC')).toBeInTheDocument();
+    // Only what LMU reports: no invented "neutralized pace" claims.
+    expect(screen.getByTestId('state-banner-caution')).toHaveTextContent('Full-course yellow or safety car · Pending');
+  });
+
+  it('no banner for a measured green or an unknown caution', () => {
+    const liveView: EngineerView = { kind: 'live', ageS: 0.1, degraded: false };
+    const { container, rerender } = render(<StateBanner view={liveView} caution="none" />);
+    expect(container.firstChild).toBeNull();
+    rerender(<StateBanner view={liveView} caution={null} />);
+    expect(container.firstChild).toBeNull();
   });
 });

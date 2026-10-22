@@ -567,7 +567,8 @@ export function recordingTile(
 ): Tile {
   if (status === null) return tile('recording', 'off', NO_VALUE, null, 'No status from the app yet.');
   const r = status.recording;
-  if (status.origin === 'synthetic') return tile('recording', 'off', 'OFF', null, 'The demo is not recorded.');
+  // Demo: the band and the LMU tile already say "not recorded or streamed" (C04).
+  if (status.origin === 'synthetic') return tile('recording', 'off', NO_VALUE, null, null);
   const c = recordingStateLabel(r.state);
   const free = r.disk_free_bytes;
   const freeText = free === null ? null : `${formatByteSize(free)} free`;
@@ -606,11 +607,8 @@ export function streamingSummary(
 ): Tile {
   if (status === null) return tile('streaming', 'off', NO_VALUE, null, 'No status from the app yet.');
   const n: NetworkStatusDto = status.network;
-  const demo = status.origin === 'synthetic';
-  if (demo) {
-    const c = networkStateLabel('NOT_CONFIGURED', { demo: true });
-    return tile('streaming', 'off', c.word, null, c.helper);
-  }
+  // Demo: no reason line, the band says it (C04).
+  if (status.origin === 'synthetic') return tile('streaming', 'off', NO_VALUE, null, null);
   const c = networkStateLabel(n.state);
   const rtt = n.rtt_ms === null ? NO_VALUE : `RTT ${joinUnit(formatRtt(n.rtt_ms).trim(), 'ms')}`;
   if (n.relogin_required) {
@@ -672,9 +670,8 @@ export function engineersTile(
   const n = status.network;
   const max = Number.isInteger(n.engineers_max) && n.engineers_max > 0 ? String(n.engineers_max) : NO_VALUE;
   const word = `${n.engineers_connected} / ${max}`;
-  if (status.origin === 'synthetic' || n.state === 'NOT_CONFIGURED') {
-    return tile('engineers', 'off', word, null, status.origin === 'synthetic' ? 'Not available in demo.' : null);
-  }
+  if (status.origin === 'synthetic') return tile('engineers', 'off', NO_VALUE, null, null);
+  if (n.state === 'NOT_CONFIGURED') return tile('engineers', 'off', word, null, null);
   const names = n.engineers.map((e) => `${engineerName(e)} · ${engineerLinkLabel(e.link).label}`).join(', ');
   const weak = n.engineers.filter((e) => e.link !== 'healthy');
   const base = windowBaseline(history, nowMs, windowMs);
@@ -701,7 +698,7 @@ export function codeTile(status: CoreStatus | null, nowUnixS: number): CodeTile 
   ): CodeTile => ({ id: 'code', level, word, detail: null, reason, action: null, code, expiresInS, sessionFull });
   if (status === null) return make('off', NO_VALUE, null, null, false, 'No status from the app yet.');
   const n = status.network;
-  if (status.origin === 'synthetic') return make('off', NO_VALUE, null, null, false, 'Not available in demo.');
+  if (status.origin === 'synthetic') return make('off', NO_VALUE, null, null, false, null);
   const full = n.engineers_max > 0 && n.engineers_connected >= n.engineers_max;
   if (full) {
     return make('off', 'SESSION FULL', null, null, true, `Session full (${n.engineers_connected}/${n.engineers_max}). Remove an engineer to add another.`);
@@ -718,6 +715,18 @@ export function codeTile(status: CoreStatus | null, nowUnixS: number): CodeTile 
   }
   const reason = left === null ? 'Single use: one code per engineer.' : `Expires in ${formatCountdown(left).trim()} · single use`;
   return make('ok', code, code, left, false, reason);
+}
+
+/**
+ * Detail line of the pipeline attention row. Never "0 dropped" (U12): when no new drop was seen but the history
+ * does not cover the whole window yet, the earlier drops have no known time, so the line says so.
+ */
+export function pipelineAttentionDetail(pipeline: PipelineHealth, windowMs: number = ATTENTION_WINDOW_MS): string | null {
+  const inWindow = pipeline.dropsInWindow;
+  if (inWindow !== null && inWindow > 0) return `${inWindow} dropped in the last ${Math.round(windowMs / 1000)} s`;
+  const total = pipeline.totals === null ? 0 : DROP_KEYS.reduce((sum, k) => sum + (pipeline.totals?.[k] ?? 0), 0);
+  if (total > 0) return `${total} dropped since start (timing unknown)`;
+  return null;
 }
 
 const TILE_TITLES: Readonly<Record<TileId, string>> = {
@@ -760,10 +769,7 @@ export function deriveDriverTiles(
       id: 'pipeline',
       level: pipeline.level,
       title: pipeline.label,
-      detail:
-        pipeline.dropsInWindow === null
-          ? null
-          : `${pipeline.dropsInWindow} dropped in the last ${Math.round(windowMs / 1000)} s`,
+      detail: pipelineAttentionDetail(pipeline, windowMs),
       action: null,
     });
   }

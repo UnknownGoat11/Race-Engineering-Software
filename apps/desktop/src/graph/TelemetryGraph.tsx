@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX } from 'react';
 import { ProvenanceBadge } from '../components/telemetry/ProvenanceBadge';
 import { SampleReadout } from '../components/telemetry/ValueReadout';
 import { channelDef } from '../telemetry/registry';
@@ -6,6 +6,7 @@ import type { ScheduleFrame } from '../telemetry/store';
 import { GraphEngine, referenceKey, seriesColorSlot, seriesKey, type AxisSummary, type GraphReadout } from './engine';
 import { GRAPH_SOURCE_LABELS, graphSourceText, seriesSourceLabel, type GraphSourceLabel } from './provenance';
 import type { SeriesRenderer } from './renderer';
+import { PANE_HEADER_HEIGHT_CSS, planStackedPanes, type PaneChrome } from './layout';
 import { GraphSyncGroup } from './syncBus';
 import type {
   GraphDataSource,
@@ -458,6 +459,8 @@ function PaneGraph({
   scheduleFrame,
   onEngine,
   onToggleSeries,
+  xAxis,
+  height,
 }: {
   readonly pane: WorksheetPane;
   readonly source: GraphDataSource;
@@ -473,6 +476,10 @@ function PaneGraph({
   readonly scheduleFrame?: ScheduleFrame | undefined;
   readonly onEngine?: ((engine: GraphEngine | null) => void) | undefined;
   readonly onToggleSeries?: ((channelId: number, enabled: boolean) => void) | undefined;
+  /** This pane draws the graph's one x tick label row (the bottom visible pane). */
+  readonly xAxis: boolean;
+  /** Outer height from the pane plan (CSS px), or null to share the height by weight in CSS (not measured yet). */
+  readonly height: number | null;
 }): JSX.Element {
   const plotRef = useRef<HTMLDivElement>(null);
   const paneSeries = pane.series;
@@ -507,6 +514,7 @@ function PaneGraph({
         references: effectiveReferences,
         markers: markers ?? NO_MARKERS,
         syncGroup,
+        xAxis,
         ...(renderer === undefined ? {} : { renderer }),
         ...(initialSpan === undefined ? {} : { initialSpan }),
         ...(scheduleFrame === undefined ? {} : { scheduleFrame }),
@@ -529,9 +537,10 @@ function PaneGraph({
       syncGroup,
       yScales: yScales ?? NO_SCALES,
       xDomain: xDomain ?? null,
+      xAxis,
       ...(maxGapS === undefined ? {} : { maxGapS }),
     });
-  }, [engine, source, xMode, effectiveSeries, effectiveReferences, markers, syncGroup, yScales, xDomain, maxGapS]);
+  }, [engine, source, xMode, effectiveSeries, effectiveReferences, markers, syncGroup, yScales, xDomain, xAxis, maxGapS]);
 
   useEffect(() => {
     if (onEngine === undefined) return undefined;
@@ -560,14 +569,16 @@ function PaneGraph({
   return (
     <div
       className="telemetry-graph__pane"
-      style={{ '--dyn-flex': `${pane.proportion} 1 0px` }}
+      style={{
+        '--dyn-flex': height === null ? `${pane.proportion} 1 0px` : 'none',
+        '--dyn-height': height === null ? 'auto' : `${height}px`,
+      }}
       data-pane-id={pane.id}
+      data-x-axis={xAxis}
     >
+      {/* One row: TITLE · swatch name value unit. Each legend row is the label of its checkbox (A08 target). */}
       <div className="telemetry-graph__pane-header">
-        <div className="telemetry-graph__pane-title-group">
-          <span className="telemetry-graph__pane-title">{pane.title}</span>
-          <span className="telemetry-graph__pane-proportion">({pane.proportion}%)</span>
-        </div>
+        <span className="telemetry-graph__pane-title">{pane.title}</span>
         <ul className="telemetry-graph__legend" aria-label={`${pane.title} channels`}>
           {paneSeries.map((s, i) => {
             const enabled = !disabled.has(s.channelId);
@@ -575,13 +586,11 @@ function PaneGraph({
             const sample = snapshot.readouts[seriesKey(s.channelId)] ?? null;
             const sLabel = labelOf(source, s.channelId);
             return (
-              <li
-                key={s.channelId}
-                className="telemetry-graph__legend-item"
-                data-enabled={enabled}
-                title={`Source: ${sLabel} · Click to ${enabled ? 'hide' : 'show'}`}
-              >
-                <label className="telemetry-graph__toggle" title={enabled ? `Hide ${label}` : `Show ${label}`}>
+              <li key={s.channelId} className="telemetry-graph__legend-item" data-enabled={enabled}>
+                <label
+                  className="telemetry-graph__toggle telemetry-graph__legend-row"
+                  title={`Source: ${sLabel} · Click to ${enabled ? 'hide' : 'show'} ${label}`}
+                >
                   <input
                     type="checkbox"
                     checked={enabled}
@@ -591,28 +600,12 @@ function PaneGraph({
                     aria-label={`Show ${label}`}
                   />
                   <span className="telemetry-graph__swatch" data-slot={seriesColorSlot(s, i)} aria-hidden="true" />
-                </label>
-                {enabled && sample !== null ? (
-                  <span
-                    className="telemetry-graph__readout-click"
-                    onClick={() => {
-                      toggle(s.channelId);
-                    }}
-                    title={`Click to hide ${label}`}
-                  >
+                  {enabled && sample !== null ? (
                     <LegendReadout readout={sample} label={label} at={snapshot.cursorLabel} />
-                  </span>
-                ) : (
-                  <span
-                    className="telemetry-graph__series-name"
-                    onClick={() => {
-                      toggle(s.channelId);
-                    }}
-                    title={`Click to show ${label}`}
-                  >
-                    {label}
-                  </span>
-                )}
+                  ) : (
+                    <span className="telemetry-graph__series-name">{label}</span>
+                  )}
+                </label>
               </li>
             );
           })}
@@ -622,7 +615,7 @@ function PaneGraph({
             return (
               <li
                 key={`ref-${r.key}`}
-                className="telemetry-graph__legend-item"
+                className="telemetry-graph__legend-item telemetry-graph__legend-row"
                 data-reference="true"
                 title={`Source: ${rLabel}`}
               >
@@ -644,6 +637,35 @@ function PaneGraph({
       <div ref={plotRef} className="telemetry-graph__plot" />
     </div>
   );
+}
+
+/** Measured pane space of a stacked graph (null until measured, e.g. in jsdom). */
+interface PaneSpace {
+  readonly available: number;
+  readonly chrome: PaneChrome;
+}
+
+/** Reads the space of `panesEl` for its panes: its height, the gap between panes and one pane's fixed chrome. */
+function measurePaneSpace(panesEl: HTMLElement): PaneSpace | null {
+  const available = panesEl.clientHeight;
+  if (!(available > 0)) return null;
+  const style = getComputedStyle(panesEl);
+  const gap = Number.parseFloat(style.rowGap);
+  const first = panesEl.querySelector<HTMLElement>('.telemetry-graph__pane');
+  const plot = first?.querySelector<HTMLElement>('.telemetry-graph__plot');
+  // Header row, borders and padding of a pane: everything but its plot.
+  const paneChrome = first != null && plot != null ? first.offsetHeight - plot.offsetHeight : Number.NaN;
+  return {
+    available,
+    chrome: {
+      gap: Number.isFinite(gap) ? gap : 0,
+      pane: Number.isFinite(paneChrome) && paneChrome > 0 ? paneChrome : PANE_HEADER_HEIGHT_CSS + 2,
+    },
+  };
+}
+
+function sameSpace(a: PaneSpace | null, b: PaneSpace | null): boolean {
+  return a === b || (a !== null && b !== null && a.available === b.available && a.chrome.gap === b.chrome.gap && a.chrome.pane === b.chrome.pane);
 }
 
 /** Stacked multi-pane telemetry graph synchronized across panes. */
@@ -683,6 +705,33 @@ function StackedTelemetryGraph(props: TelemetryGraphProps & { readonly panes: re
     () => primaryEngine?.getSnapshot() ?? null,
   );
 
+  // The panes share the measured height by weight; panes that do not fit at their minimum plot are left out
+  // (named in the header) rather than overflowing the graph.
+  const panesRef = useRef<HTMLDivElement>(null);
+  const [space, setSpace] = useState<PaneSpace | null>(null);
+  useLayoutEffect(() => {
+    const el = panesRef.current;
+    if (el === null) return undefined;
+    const measure = (): void => {
+      const next = measurePaneSpace(el);
+      setSpace((prev) => (sameSpace(prev, next) ? prev : next));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+  const weightsKey = panes.map((p) => p.proportion).join(',');
+  const plan = useMemo(
+    () => (space === null ? null : planStackedPanes(space.available, weightsKey.split(',').map(Number), space.chrome)),
+    [space, weightsKey],
+  );
+  const visible = plan?.visible ?? panes.length;
+  const hiddenPanes = panes.slice(visible);
+
   const scrolling = X_AXIS_SPECS[xMode].viewKind === 'scroll';
   const live = primarySnapshot?.origin === 'live';
   const labelOf = (from: GraphDataSource, id: number): GraphSourceLabel =>
@@ -718,6 +767,7 @@ function StackedTelemetryGraph(props: TelemetryGraphProps & { readonly panes: re
     () => allChannels.map((id) => labelOf(source, id)),
     [allChannels, source],
   );
+  const sourceText = graphSourceText(sourceLabels);
 
   return (
     <section
@@ -726,10 +776,24 @@ function StackedTelemetryGraph(props: TelemetryGraphProps & { readonly panes: re
     >
       <header className="telemetry-graph__header">
         {title !== undefined && <h3 className="telemetry-graph__title">{title}</h3>}
-        <span className="telemetry-graph__source">{graphSourceText(sourceLabels)}</span>
+        <span className="telemetry-graph__source" title={sourceText}>
+          {sourceText}
+        </span>
         {primarySnapshot?.cursorLabel && (
           <span className="telemetry-graph__cursor" aria-live="off">
             Cursor {primarySnapshot.cursorLabel}
+          </span>
+        )}
+        {hiddenPanes.length > 0 && (
+          <span
+            className="telemetry-graph__hidden-panes"
+            title={`Not enough height for: ${hiddenPanes.map((p) => p.title).join(', ')}. Give the graph more height to show them.`}
+          >
+            +{hiddenPanes.length} {hiddenPanes.length === 1 ? 'pane' : 'panes'}
+            <span className="telemetry-visually-hidden">
+              {' '}
+              hidden: {hiddenPanes.map((p) => p.title).join(', ')}
+            </span>
           </span>
         )}
         {modeText !== null && (
@@ -749,8 +813,8 @@ function StackedTelemetryGraph(props: TelemetryGraphProps & { readonly panes: re
           </button>
         )}
       </header>
-      <div className="telemetry-graph__panes">
-        {panes.map((pane, index) => (
+      <div ref={panesRef} className="telemetry-graph__panes">
+        {panes.slice(0, visible).map((pane, index) => (
           <PaneGraph
             key={pane.id}
             pane={pane}
@@ -767,6 +831,8 @@ function StackedTelemetryGraph(props: TelemetryGraphProps & { readonly panes: re
             scheduleFrame={scheduleFrame}
             onEngine={index === 0 ? setPrimaryEngine : undefined}
             onToggleSeries={onToggleSeries}
+            xAxis={index === visible - 1}
+            height={plan?.heights[index] ?? null}
           />
         ))}
       </div>

@@ -133,10 +133,46 @@ dialog.modal-dialog::backdrop {
   margin-bottom: 16px;
 }
 
-/* Join error block (sentence case alert) */
-.join-error-block {
-  border-left: 3px solid var(--color-error);
-  background-color: rgba(239, 68, 68, 0.12);
+/* Join error: a plain alert in the UI font, title + helper; raw backend text behind "Details" (E02). */
+.join-error {
+  margin-bottom: 16px;
+  font-family: var(--font-ui);
+}
+
+.join-error-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.join-error-helper {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.join-error-action {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.join-error-details {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.join-error-details > summary {
+  cursor: pointer;
+}
+
+.join-error-details code {
+  display: block;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+/* Identity card: data-version mismatch line (E03), amber = warning. */
+.identity-card-warn {
+  color: var(--status-warn);
 }
 
 /* Driver Identity Card Definition List (D-022, OR-3) */

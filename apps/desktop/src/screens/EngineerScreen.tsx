@@ -3,16 +3,18 @@
  * Professional race engineering pitwall workstation:
  * - Full-bleed pitwall layout (pitwall bar at y0, shell header hidden)
  * - Pitwall Bar (36px): stream state pill, driver/car/track metadata, FCY/SC, RTT, stream age, controls
- * - Strategy Strip (32px): session clock, completed laps, stint laps, fuel laps left, VE laps left, tyre stint, track/air temps, weather
+ * - Strategy Strip (32px): session clock, completed laps, stint laps, fuel laps left, VE laps left, tyre stint, track/air temps, weather, flag
+ * - Scoring comes from `useScoring` (adapter `toScoringView` over the real `core:scoring` JSON, audit U02)
  * - State Banner (28px): incompatible, ended, driver away, stale, FCY caution
  * - Primary 1920x1080 4-column ergonomic pitwall grid (content height 992px, zero tabs):
  *   - Column 1 (384px): Standings Tower
- *   - Column 2 (936px / 1fr): Alert strip (0-2x28px +N), Track Map (584x340) | Events Log (344px), Telemetry Graph
+ *   - Column 2 (1fr): Alert strip (0-1x28px +N), Track Map (584x340) | Session log, Minisector row (24px, only
+ *     with a value), Telemetry Graph (MoTeC bar only on drag-over / error / loaded file)
  *   - Column 3 (Right-A, 280px): Timing (240px), Fuel & Energy (352px), Driver Inputs (176px)
  *   - Column 4 (Right-B, 272px): Tyres (456px), Brakes (224px), Hybrid Energy (296px)
  * - Responsive 1366x768 3-column pitwall grid:
  *   - Column 1 (272px): Timing Tower
- *   - Column 2 (766px): Full-width Track Map (240px), Telemetry Graph (>=300px plot)
+ *   - Column 2 (1fr): Full-width Track Map (240px), Telemetry Graph (>=300px plot); no minisector row
  *   - Column 3 (300px): RightColumnTabs with pinned mini-row (24px) + segmented tabs (28px)
  */
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type JSX } from 'react';
@@ -43,7 +45,8 @@ import { ch, FrequencyClass } from '../generated/channels';
 import { LiveRingSource, type LiveRingSourceOptions } from '../graph/liveSource';
 import { TelemetryGraph } from '../graph/TelemetryGraph';
 import type { GraphSeries, XAxisMode } from '../graph/types';
-import { MotecImportBar } from '../motec/MotecImportBar';
+import { useMotecDropZone } from '../motec/motecDropZone';
+import { MotecAddButton, MotecImportBar } from '../motec/MotecImportBar';
 import { useMotecReferences } from '../motec/useMotecStore';
 import {
   getWorksheet,
@@ -58,7 +61,7 @@ import { parseVehicleClass } from '../lib/classes';
 import { engineerDisconnect, engineerRequestSnapshot, type Origin } from '../lib/ipc';
 import { COPY } from '../lib/labels';
 import { deriveEngineerView, mayShowDriverIdentity } from '../lib/statusModel';
-import { NO_VALUE } from '../../src/lib/units';
+import { NO_VALUE } from '../lib/units';
 import { connectTauriTelemetry } from '../telemetry/bridge';
 import { TelemetryStoreContext } from '../telemetry/hooks';
 import { TelemetryStore } from '../telemetry/store';
@@ -82,13 +85,15 @@ function useIsWide(breakpoint = 1800): boolean {
 
 export interface EngineerScreenProps {
   readonly onOpenSettings?: (() => void) | undefined;
+  readonly onOpenAnalysis?: (() => void) | undefined;
 }
 
-export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Element {
+export function EngineerScreen({ onOpenSettings, onOpenAnalysis }: EngineerScreenProps): JSX.Element {
   const isWide = useIsWide();
   const { status, error: coreError } = useCoreStatus();
   const scoring = useScoring();
-  const { alerts, dismissAlert, clearAllAlerts } = useAlerts();
+  const { alerts, log: alertLog, dismissAlert, clearAllAlerts } = useAlerts();
+  const motecDrop = useMotecDropZone();
 
   // Selection & presets
   const [selectedSlotId, setSelectedSlotId] = useState<number | null>(null);
@@ -290,10 +295,10 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
     }
   }, [view]);
 
-  // Clear active alerts on session end (T06)
+  // Clear active alerts on session end (T06); the session log keeps its history (U11)
   useEffect(() => {
     if (view.kind === 'ended') {
-      clearAllAlerts();
+      clearAllAlerts({ log: false });
     }
   }, [view.kind, clearAllAlerts]);
 
@@ -310,7 +315,7 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
     setActionError(null);
     try {
       await engineerRequestSnapshot();
-      announce('Refresh requested', 'polite');
+      announce('Resync requested', 'polite');
       setActionNotice('Snapshot requested from driver.');
       setTimeout(() => {
         setActionNotice(null);
@@ -324,8 +329,9 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
   const handleDisconnect = async () => {
     setActionError(null);
     try {
+      // The "Not connected" panel follows; the engineer opens Join when ready (audit E05).
       await engineerDisconnect();
-      setShowJoinModal(true);
+      setShowJoinModal(false);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setActionError(`Disconnect failed: ${msg}`);
@@ -342,6 +348,8 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
           id: v.slot_id,
           x: v.pos_x_m,
           z: v.pos_z_m,
+          // The track map draws only the car number from this name and keeps the full name for the tooltip
+          // (trackmap/carNumber.ts carMarkerLabel, audit U10).
           carNumber: v.vehicle_name ?? '',
           driverName: v.driver ?? '',
           vehicleClass: parseVehicleClass(v.class_name),
@@ -371,6 +379,17 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
   const trackName = showIdentity ? (scoring?.session.track_name ?? status?.session.track ?? NO_VALUE) : NO_VALUE;
   const { map } = useTrackGeometry(store, scoring, null, typeof trackName === 'string' && trackName !== NO_VALUE ? trackName : null);
 
+  // Session caution from the raw LMU yellow flag state / game phase (useScoring.cautionOf, audit U02)
+  const caution = scoring?.session.caution ?? null;
+  // The yellow-state label is caution detail only for an actual yellow state (1-7); a caution from the game phase
+  // alone (state 0 "No caution" or -1 "Invalid") is described by the caution itself.
+  const yellowRaw = scoring?.session.yellow_flag_raw ?? null;
+  const yellowDetail =
+    yellowRaw !== null && yellowRaw >= 1 && yellowRaw <= 7 ? (scoring?.session.yellow_flag_state ?? null) : null;
+  const cautionText = caution === 'red' ? 'Red flag' : caution === 'fcy' ? 'FCY / SC' : null;
+  const isEnded = view.kind === 'ended';
+  const carCount = competitors.length + (playerVehicle ? 1 : 0);
+
   // Driver, vehicle, track identity metadata (T09, OR-3: never show fake placeholders before confirm)
   const driverDisplayName = showIdentity
     ? (engineerStatus?.driver_name ?? playerVehicle?.driver ?? NO_VALUE)
@@ -383,9 +402,9 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
 
   return (
     <TelemetryStoreContext.Provider value={store}>
+      {/* Live region announcer per A02, A11, EN14: outside the pitwall layout, so it never takes a row (V01) */}
+      <Announcer politeMessage={politeMessage} assertiveMessage={assertiveMessage} />
       <div className="pitwall">
-        {/* Live region announcer per A02, A11, EN14 */}
-        <Announcer politeMessage={politeMessage} assertiveMessage={assertiveMessage} />
 
         {/* Top Pitwall Bar (y0, 36px), Strategy Strip (y36, 32px), State Banner (y68, 28px) */}
         {!hideHeader && isWatchingOrEnded && (
@@ -401,32 +420,37 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
               currentLap={playerVehicle?.laps != null ? playerVehicle.laps + 1 : null}
               currentSector={playerVehicle?.sector ?? null}
               sessionTimeRemainingS={scoring?.session.session_time_remaining_s ?? null}
-              fcyActive={scoring?.session.yellow_flag_state === 'fcy' || scoring?.session.yellow_flag_state === 'fcy_standby'}
-              scActive={scoring?.session.yellow_flag_state === 'safety_car'}
+              caution={caution}
               rttMs={status?.network.rtt_ms ?? null}
               streamAgeS={engineerStatus.stream_age_s ?? null}
               isConnected={isWatchingOrEnded}
+              ended={isEnded}
+              onClose={() => { void handleDisconnect(); }}
               onRefreshAllData={() => { void handleRequestSnapshot(); }}
               onLeaveSession={() => { void handleDisconnect(); }}
               onOpenSettings={onOpenSettings}
+              onOpenAnalysis={onOpenAnalysis}
             />
             <StrategyStrip
               sessionClockS={scoring?.session.session_time_remaining_s ?? null}
               completedLaps={playerVehicle?.laps ?? null}
               trackTempC={scoring?.session.track_temp_c ?? null}
               airTempC={scoring?.session.ambient_temp_c ?? null}
-              weather={scoring?.session.raining != null && scoring.session.raining > 0 ? 'Wet' : 'Dry'}
+              rainFrac={scoring?.session.raining ?? null}
               flagText={
-                scoring?.session.yellow_flag_state && scoring.session.yellow_flag_state !== 'none'
-                  ? scoring.session.yellow_flag_state.toUpperCase()
-                  : null
+                cautionText !== null
+                  ? yellowDetail !== null
+                    ? `${cautionText} · ${yellowDetail}`
+                    : cautionText
+                  : (scoring?.session.yellow_flag_state ?? null)
               }
+              flagLevel={caution === 'red' ? 'critical' : caution === 'fcy' ? 'warn' : null}
             />
             <StateBanner
               view={view}
               driverName={driverDisplayName !== NO_VALUE ? driverDisplayName : (engineerStatus.driver_name ?? null)}
-              fcyActive={scoring?.session.yellow_flag_state === 'fcy' || scoring?.session.yellow_flag_state === 'fcy_standby'}
-              scActive={scoring?.session.yellow_flag_state === 'safety_car'}
+              caution={caution}
+              cautionDetail={yellowDetail}
               onRejoin={() => { setShowJoinModal(true); }}
             />
           </>
@@ -469,6 +493,14 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
             onCancel={() => {
               setShowJoinModal(false);
             }}
+            onOpenSettings={
+              onOpenSettings
+                ? () => {
+                    setShowJoinModal(false);
+                    onOpenSettings();
+                  }
+                : undefined
+            }
           />
         )}
 
@@ -524,16 +556,22 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                 <AlertsBanner
                   alerts={alerts}
                   onDismiss={dismissAlert}
-                  onClearAll={clearAllAlerts}
+                  onClearAll={(shownIds) => {
+                    for (const id of shownIds) dismissAlert(id);
+                  }}
                 />
 
                 {/* Track Map & Events Log in Centre Top (340px) */}
                 <div className="pitwall-centre-top">
                   <div className="card pitwall-map-panel">
                     <div className="card-header pitwall-card-header">
-                      <span className="card-header-title">LIVE VECTOR TRACK MAP</span>
-                      <span className="card-row-label">
-                        {competitors.length + (playerVehicle ? 1 : 0)} CARS ON TRACK
+                      <span className="card-header-title">Track map</span>
+                      <span
+                        className={`card-row-label pitwall-car-count ${isEnded ? 'pitwall-car-count-ended' : ''}`}
+                        data-testid="pitwall-car-count"
+                      >
+                        <span className="num">{carCount}</span> {carCount === 1 ? 'car' : 'cars'}
+                        {isEnded ? '' : ' on track'}
                       </span>
                     </div>
                     <div className="pitwall-map-body">
@@ -546,25 +584,27 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                       />
                     </div>
                   </div>
-                  <EventsLog alerts={alerts} onDismissAlert={dismissAlert} />
+                  <EventsLog log={alertLog} />
                 </div>
 
-                {/* 12-minisector live delta ribbon */}
-                <PanelErrorBoundary name="Minisector Ribbon">
-                  <MinisectorRibbon />
-                </PanelErrorBoundary>
+                {/* 12-minisector live delta row: wide layout only, and only once it has a value (V03) */}
+                {isWide && (
+                  <PanelErrorBoundary name="Minisector Ribbon">
+                    <MinisectorRibbon />
+                  </PanelErrorBoundary>
+                )}
 
                 {/* Synchronized Telemetry Graph */}
-                <div className="card pitwall-graph-panel">
-                  <div className="card-header pitwall-card-header">
+                <div className="card pitwall-graph-panel" {...motecDrop.dropZoneProps}>
+                  <div className="card-header pitwall-card-header pitwall-graph-header">
                     <div className="pitwall-graph-header-left">
-                      <span className="card-header-title">SYNCHRONIZED TELEMETRY GRAPH</span>
+                      <span className="card-header-title">Telemetry</span>
                       {worksheetId === 'custom' && (
                         <span
-                          className="status-badge status-badge-live pitwall-custom-badge"
+                          className="badge pitwall-custom-badge"
                           data-testid="preset-custom-badge"
                         >
-                          CUSTOM ({customSeries.length} CH)
+                          Custom · <span className="num">{customSeries.length}</span> ch
                         </span>
                       )}
                     </div>
@@ -590,7 +630,7 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                           }}
                           data-testid="xaxis-mode-lapTime"
                         >
-                          Lap Time
+                          Lap time
                         </button>
                         <button
                           type="button"
@@ -687,23 +727,23 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                             Custom
                           </button>
                         )}
+                        <MotecAddButton />
                         <button
                           type="button"
                           className="btn btn-xs pitwall-channel-select-btn"
                           onClick={() => {
                             setShowChannelModal(true);
                           }}
-                          title="Configure / select channels to plot"
+                          title="Choose the channels to plot"
                           data-testid="open-channel-selector-btn"
                         >
-                          <span aria-hidden="true">⚙</span>
-                          <span>Channels...</span>
+                          Channels…
                         </button>
                       </div>
                     </div>
                   </div>
                   <div className="pitwall-graph-body">
-                    <MotecImportBar />
+                    <MotecImportBar compact dragActive={motecDrop.dragActive} />
                     <PanelErrorBoundary name="Telemetry Graph">
                       <TelemetryGraph
                         source={liveSource}
@@ -747,12 +787,6 @@ export function EngineerScreen({ onOpenSettings }: EngineerScreenProps): JSX.Ele
                     </PanelErrorBoundary>
                   </div>
 
-                  {/* Fallback buttons for preview harness steps expecting tab text at wide resolution */}
-                  <div className="sr-only" aria-hidden="true">
-                    <button type="button" tabIndex={-1}>Timing &amp; Fuel</button>
-                    <button type="button" tabIndex={-1}>Tyres &amp; Brakes</button>
-                    <button type="button" tabIndex={-1}>Inputs &amp; Energy</button>
-                  </div>
                 </>
               ) : (
                 /* Compact Right Column (< 1800px, e.g. 1366x768): Pinned Mini-Row + Segmented Tabs */

@@ -6,16 +6,18 @@ import { formatAgeShort } from '../../lib/units';
 export interface StateBannerProps {
   readonly view: EngineerView;
   readonly driverName?: string | null | undefined;
-  readonly fcyActive?: boolean | undefined;
-  readonly scActive?: boolean | undefined;
+  /** Session caution from scoring (`fcy` = full-course yellow or safety car; LMU does not tell them apart). */
+  readonly caution?: 'fcy' | 'red' | 'none' | null | undefined;
+  /** Decoded LMU yellow flag state ("Pending", "Pits closed", …), shown as the caution detail. */
+  readonly cautionDetail?: string | null | undefined;
   readonly onRejoin?: (() => void) | undefined;
 }
 
 export function StateBanner({
   view,
   driverName,
-  fcyActive,
-  scActive,
+  caution,
+  cautionDetail,
   onRejoin,
 }: StateBannerProps): JSX.Element | null {
   if (view.kind === 'incompatible') {
@@ -111,20 +113,21 @@ export function StateBanner({
     );
   }
 
-  if (fcyActive || scActive) {
-    const title = fcyActive ? 'FULL COURSE YELLOW' : 'SAFETY CAR';
-    const text = fcyActive
-      ? 'FCY active · Neutralized pace across entire track'
-      : 'Safety Car deployed · Form queue behind SC';
+  if (caution === 'fcy' || caution === 'red') {
+    const red = caution === 'red';
+    const detail = cautionDetail != null ? ` · ${cautionDetail}` : '';
     return (
       <div
-        className="pitwall-state-banner pitwall-state-banner-caution"
+        className={`pitwall-state-banner ${red ? 'pitwall-state-banner-red' : 'pitwall-state-banner-caution'}`}
         data-testid="state-banner-caution"
         role="status"
       >
         <div className="state-banner-content">
-          <span className="badge badge-status-warn">{title}</span>
-          <span className="state-banner-text">{text}</span>
+          <span className={`badge ${red ? 'badge-status-critical' : 'badge-status-warn'}`}>{red ? 'RED FLAG' : 'FCY / SC'}</span>
+          <span className="state-banner-text">
+            {red ? 'Race halted' : 'Full-course yellow or safety car'}
+            {detail}
+          </span>
         </div>
       </div>
     );

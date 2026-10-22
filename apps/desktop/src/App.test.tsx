@@ -124,10 +124,10 @@ describe('App', () => {
 
     expect(await screen.findByTestId('header-mode')).toHaveTextContent('ENGINEER');
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
-    fireEvent.click(screen.getByRole('button', { name: 'DRIVER MODE' }));
+    fireEvent.click(screen.getByTestId('settings-mode-driver'));
     fireEvent.click(screen.getByRole('button', { name: 'Apply mode change' }));
 
-    expect(await screen.findByText('Current: DRIVER')).toBeInTheDocument();
+    expect(await screen.findByText('Current: Driver')).toBeInTheDocument();
     expect(screen.getByTestId('header-mode')).toHaveTextContent('DRIVER');
     expect(ipc.setMode).toHaveBeenCalledWith('driver');
   });
@@ -273,7 +273,7 @@ describe('App', () => {
 
     expect(await screen.findByTestId('header-mode')).toHaveTextContent('DRIVER');
     fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
-    fireEvent.click(screen.getByRole('button', { name: 'ENGINEER MODE' }));
+    fireEvent.click(screen.getByTestId('settings-mode-engineer'));
 
     // Busy state uses ConfirmAction
     const applyTrigger = await screen.findByTestId('settings-apply-mode-trigger');
@@ -290,5 +290,61 @@ describe('App', () => {
     await waitFor(() => {
       expect(ipc.setMode).toHaveBeenCalledWith('engineer');
     });
+  });
+
+  it('lands a driver on the driver page with no lobby and no Analysis entry (N01, N02)', async () => {
+    vi.mocked(ipc.getConfig).mockResolvedValue(snapshot('driver'));
+
+    render(<App />);
+
+    expect(await screen.findByTestId('driver-screen')).toBeInTheDocument();
+    const nav = screen.getByRole('navigation', { name: 'Main' });
+    const labels = Array.from(nav.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels).toEqual(['Driver', 'Settings']);
+    expect(screen.getByRole('button', { name: 'Driver' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByText('Lobby')).not.toBeInTheDocument();
+  });
+
+  it('lands an engineer on the pitwall and offers Analysis without a version badge (N01, N02)', async () => {
+    vi.mocked(ipc.getConfig).mockResolvedValue(snapshot('engineer'));
+
+    render(<App />);
+
+    const nav = await screen.findByRole('navigation', { name: 'Main' });
+    const labels = Array.from(nav.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels).toEqual(['Pitwall', 'Analysis', 'Settings']);
+    expect(screen.getByRole('button', { name: 'Pitwall' })).toHaveAttribute('aria-current', 'page');
+    expect(nav).not.toHaveTextContent(/V1\./);
+  });
+
+  it('keeps the engineer pitwall mounted (hidden) while Settings is open, so its alerts survive', async () => {
+    vi.mocked(ipc.getConfig).mockResolvedValue(snapshot('engineer'));
+
+    render(<App />);
+
+    const keepalive = await screen.findByTestId('engineer-keepalive');
+    expect(keepalive).not.toHaveAttribute('hidden');
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(screen.getByTestId('engineer-keepalive')).toBe(keepalive);
+    expect(keepalive).toHaveAttribute('hidden');
+    fireEvent.click(screen.getByRole('button', { name: 'Pitwall' }));
+    expect(screen.getByTestId('engineer-keepalive')).toBe(keepalive);
+    expect(keepalive).not.toHaveAttribute('hidden');
+  });
+
+  it('shows the relay host as typed and hides host, port and timeout under Advanced once set up (C07, V14)', async () => {
+    const configured = snapshot('driver');
+    vi.mocked(ipc.getConfig).mockResolvedValue({
+      ...configured,
+      config: { ...configured.config, network: { ...configured.config.network, relay_host: 'relay.example.test', relay_port: 7443 } },
+    });
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }));
+    expect(screen.getByTestId('settings-relay-badge')).toHaveTextContent('Configured: relay.example.test:7443');
+    expect(screen.getByTestId('settings-advanced')).not.toHaveAttribute('open');
+    expect(screen.getByTestId('relay-preset-localhost')).toHaveTextContent('Localhost (127.0.0.1:443)');
+    expect(screen.queryByText(/Schema v/)).not.toBeInTheDocument();
   });
 });

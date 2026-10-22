@@ -77,7 +77,7 @@
 
 .standings-title-row .card-header-title {
   font-family: var(--font-ui, sans-serif);
-  font-size: 11px;
+  font-size: var(--type-panel-title-size, 11px);
   font-weight: 700;
   letter-spacing: 0.06em;
   color: var(--text-secondary, #a9b2be);
@@ -90,8 +90,8 @@
   background: transparent;
   border: none;
   color: var(--text-secondary, #a9b2be);
-  font-family: var(--font-data, monospace);
-  font-size: 10px;
+  font-family: var(--font-ui, sans-serif);
+  font-size: var(--type-caption-size, 11px);
   font-weight: 700;
   cursor: pointer;
   padding: 2px 4px;
@@ -108,7 +108,7 @@
 }
 
 .standings-rail-glyph {
-  font-size: 8px;
+  font-size: var(--type-caption-size, 11px);
   color: var(--text-tertiary, #8b95a3);
 }
 
@@ -129,9 +129,9 @@
 
 .standings-filter-chip {
   padding: 1px 5px !important;
-  font-size: 10px !important;
+  font-size: var(--type-caption-size, 11px) !important;
   font-weight: 700 !important;
-  font-family: var(--font-data, monospace) !important;
+  font-family: var(--font-data, monospace) !important; /* class codes (HY, P2, GT3) */
   background: transparent !important;
   color: var(--text-secondary, #a9b2be) !important;
   border: 1px solid transparent !important;
@@ -159,14 +159,14 @@
   padding: 24px;
   text-align: center;
   color: var(--text-tertiary, #8b95a3);
-  font-family: var(--font-data, monospace);
-  font-size: 11px;
+  font-family: var(--font-ui, sans-serif);
+  font-size: var(--type-caption-size, 11px);
 }
 
 /* Scroll Container */
 .standings-table-container {
   overflow-y: auto;
-  overflow-x: auto;
+  overflow-x: hidden;
   flex: 1;
   min-height: 0;
   position: relative;
@@ -197,7 +197,7 @@
   border-bottom: 1px solid var(--border-subtle, #1e242b);
   font-family: var(--font-ui, sans-serif);
   font-weight: 700;
-  font-size: 10px;
+  font-size: var(--type-caption-size, 11px);
   letter-spacing: 0.04em;
   white-space: nowrap;
   user-select: none;
@@ -220,7 +220,8 @@
   color: var(--text-primary, #eef1f4);
   vertical-align: middle;
   white-space: nowrap;
-  font-size: 11px;
+  overflow: hidden;
+  font-size: var(--type-caption-size, 11px);
   box-sizing: border-box;
 }
 
@@ -252,7 +253,7 @@
   cursor: help;
 }
 
-/* Driver car highlight per C2: --surface-selected + 2px white left rule + DRIVER chip */
+/* Driver car highlight per C2: --surface-selected + 2px white left rule + bold white name (no chip, v1.3 V05) */
 .standings-row-driver {
   background-color: var(--surface-selected, #1e242b) !important;
 }
@@ -283,22 +284,25 @@
   box-shadow: 0 -3px 6px rgba(0, 0, 0, 0.45);
 }
 
-/* Columns */
+/* Columns (v1.3 V05). table-layout: fixed takes widths from the header row, so every numeric column is wide
+ * enough for its longest value at 11 px tabular mono: Gap/Int/Last = 8ch ("+123.456", "1:52.345") + padding.
+ * Numbers are never ellipsized; only the driver name truncates. */
 .standings-col-pos {
-  width: 22px;
+  width: 24px;
   text-align: center;
   font-weight: 700;
   color: var(--text-secondary, #a9b2be);
+  padding: 0 2px !important;
 }
 
 .standings-col-class {
-  width: 26px;
+  width: 32px;
   text-align: center;
-  padding: 1px !important;
+  padding: 0 1px !important;
 }
 
 .standings-col-num {
-  width: 22px;
+  width: 28px;
   text-align: right;
   color: var(--text-secondary, #a9b2be);
   font-weight: 600;
@@ -327,62 +331,52 @@
   font-family: var(--font-ui, sans-serif);
 }
 
-.standings-col-gap {
-  width: 44px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
+.standings-col-gap,
 .standings-col-time {
-  width: 50px;
+  width: calc(8ch + 8px);
   text-align: right;
+  font-family: var(--font-data, monospace);
   font-variant-numeric: tabular-nums;
+  text-overflow: clip;
 }
 
 .standings-col-pit {
-  width: 22px;
+  width: 34px;
   text-align: center;
 }
 
-/* Badges & Chips */
+/* Badges & Chips (11 px floor, A06) */
 .class-chip {
   display: inline-block;
-  font-size: 9px;
+  font-family: var(--font-data, monospace);
+  font-size: var(--type-badge-size, 11px);
   font-weight: 800;
-  padding: 1px 3px;
+  padding: 1px 2px;
   border-radius: 2px;
   line-height: 1;
   text-align: center;
   background-color: rgba(0, 0, 0, 0.35);
   border: 1px solid currentColor;
-  letter-spacing: 0.02em;
-}
-
-.driver-pill {
-  background-color: var(--player-highlight, #ffffff);
-  color: #0b0e14;
-  font-size: 8px;
-  font-weight: 800;
-  padding: 1px 3px;
-  border-radius: 2px;
-  letter-spacing: 0.04em;
-  line-height: 1;
-  flex-shrink: 0;
-}
-
-.pinned-badge {
-  font-size: 9px;
-  line-height: 1;
-  flex-shrink: 0;
+  letter-spacing: 0;
 }
 
 .pit-badge {
-  font-size: 8px;
+  font-family: var(--font-data, monospace);
+  font-size: var(--type-badge-size, 11px);
   font-weight: 700;
-  padding: 1px 3px;
+  padding: 1px 2px;
   border-radius: 2px;
   line-height: 1;
   flex-shrink: 0;
+}
+
+/* The driver-cell copy of the pit badge only shows when the Pit column is hidden (compact / narrow). */
+.pit-badge--inline {
+  display: none;
+}
+
+.standings-tower--compact .pit-badge--inline {
+  display: inline-block;
 }
 
 .pit-badge-in {
@@ -399,7 +393,7 @@
 
 .pit-stops-count {
   color: var(--text-tertiary, #8b95a3);
-  font-size: 10px;
+  font-size: var(--type-caption-size, 11px);
 }
 
 .gap-ldr {
@@ -428,7 +422,7 @@
 }
 
 .status-badge-stale {
-  font-size: 9px;
+  font-size: var(--type-badge-size, 11px);
   font-weight: 700;
   color: var(--dq-stale, #b49cff);
   border: 1px solid var(--dq-stale, #b49cff);
@@ -438,7 +432,7 @@
 }
 
 .status-badge-ended {
-  font-size: 9px;
+  font-size: var(--type-badge-size, 11px);
   font-weight: 700;
   color: var(--text-tertiary, #8b95a3);
   border: 1px solid var(--border-subtle, #1e242b);
@@ -448,7 +442,7 @@
 }
 
 .status-badge-untrusted {
-  font-size: 9px;
+  font-size: var(--type-badge-size, 11px);
   font-weight: 700;
   color: var(--status-critical, #ff4d4d);
   border: 1px solid var(--status-critical, #ff4d4d);
@@ -457,34 +451,34 @@
   line-height: 1;
 }
 
-/* Compact variant (explicit or container-query < 350px, e.g. 1366 272px tower) */
+/* Compact variant (explicit, or container < 380 px, e.g. the 272 px tower at 1366): drop Int, Last and Pit,
+ * keep Gap at full width and move the pit badge into the driver cell (v1.3 U16). */
 .standings-tower--compact .standings-col-last,
-.standings-tower--compact .standings-col-pit {
+.standings-tower--compact .standings-col-pit,
+.standings-tower--compact .standings-col-int {
   display: none !important;
 }
 
 .standings-tower--compact .standings-table td {
   height: 20px;
   line-height: 20px;
-  font-size: 10px;
-  padding: 0 2px;
 }
 
-@container standings (max-width: 349px) {
+/* 380 px: below it the full column set would squeeze the driver name under ~80 px (tower is 384 px at >=1800) */
+@container standings (max-width: 379px) {
   .standings-col-last,
-  .standings-col-pit {
+  .standings-col-pit,
+  .standings-col-int {
     display: none !important;
+  }
+
+  .pit-badge--inline {
+    display: inline-block;
   }
 
   .standings-table td {
     height: 20px;
     line-height: 20px;
-    font-size: 10px;
-    padding: 0 2px;
-  }
-
-  .standings-col-gap {
-    width: 42px;
   }
 }
 

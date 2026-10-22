@@ -207,7 +207,7 @@ describe('JoinSessionModal', () => {
     });
   });
 
-  it('shifts focus to identity card heading on phase transition', async () => {
+  it('puts the initial focus on the safe "Not this driver" button on phase transition (V15)', async () => {
     vi.mocked(ipc.engineerJoin).mockResolvedValue(MOCK_CARD);
 
     render(<JoinSessionModal />);
@@ -220,7 +220,59 @@ describe('JoinSessionModal', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('driver-identity-card')).toBeInTheDocument();
-      expect(screen.getByText('CONFIRM DRIVER IDENTITY')).toHaveFocus();
+      expect(screen.getByTestId('btn-cancel-identity')).toHaveFocus();
     });
+    // The schema line is shown only on a mismatch (E03).
+    expect(screen.queryByTestId('identity-schema-mismatch')).not.toBeInTheDocument();
+  });
+
+  it('shows the data-version line only when the driver app uses another schema (E03)', async () => {
+    vi.mocked(ipc.engineerJoin).mockResolvedValue({ ...MOCK_CARD, schema_version: 2 });
+
+    render(<JoinSessionModal />);
+    fireEvent.change(screen.getByTestId('join-code-input'), { target: { value: '8F3A2C' } });
+    fireEvent.click(screen.getByTestId('btn-join-session'));
+
+    expect(await screen.findByTestId('identity-schema-mismatch')).toHaveTextContent('v2');
+  });
+
+  it('titles the modal "Join a driver" and has no relay server editor (E01)', () => {
+    render(<JoinSessionModal />);
+    expect(screen.getByRole('dialog', { name: 'Join a driver' })).toBeInTheDocument();
+    expect(screen.getByText('Ask the driver for the 6-character code on their Engineer code tile.')).toBeInTheDocument();
+    expect(screen.queryByText(/Server/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: /host/i })).not.toBeInTheDocument();
+  });
+
+  it('offers "Open settings" when no server is set up (E01)', async () => {
+    vi.mocked(ipc.engineerJoin).mockRejectedValue(
+      new IpcError('engineer_join', 'relay_not_configured', 'relay host is empty'),
+    );
+    const onOpenSettings = vi.fn();
+    render(<JoinSessionModal onOpenSettings={onOpenSettings} />);
+
+    fireEvent.change(screen.getByTestId('join-code-input'), { target: { value: '8F3A2C' } });
+    fireEvent.click(screen.getByTestId('btn-join-session'));
+
+    fireEvent.click(await screen.findByTestId('join-open-settings'));
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the title and helper once, with the raw backend text only behind Details (E02)', async () => {
+    vi.mocked(ipc.engineerJoin).mockRejectedValue(
+      new IpcError('engineer_join', 'session_full', 'Driver already has 2 engineers connected'),
+    );
+    render(<JoinSessionModal />);
+
+    fireEvent.change(screen.getByTestId('join-code-input'), { target: { value: '8F3A2C' } });
+    fireEvent.click(screen.getByTestId('btn-join-session'));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveClass('alert', 'alert-error');
+    expect(alert).not.toHaveClass('status-badge');
+    const details = alert.querySelector('details');
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute('open');
+    expect(details).toHaveTextContent('Driver already has 2 engineers connected');
   });
 });

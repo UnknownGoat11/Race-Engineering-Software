@@ -62,7 +62,7 @@
 
 .trackmap-stale-tag {
   font-family: var(--font-data, monospace);
-  font-size: 10px;
+  font-size: var(--type-caption-size, 11px);
   font-weight: 700;
   color: var(--dq-stale, #b49cff);
   background: rgba(180, 156, 255, 0.15);
@@ -109,7 +109,7 @@
 
 .trackmap-legend-code {
   font-family: var(--font-data, monospace);
-  font-size: 10px;
+  font-size: var(--type-caption-size, 11px);
   font-weight: 700;
   color: var(--text-secondary, #a9b2be);
   letter-spacing: 0.04em;
@@ -126,7 +126,7 @@
 .trackmap-controls .btn {
   height: 20px;
   padding: 0 6px;
-  font-size: 11px;
+  font-size: var(--type-caption-size, 11px);
   line-height: 18px;
 }
 
@@ -167,7 +167,7 @@
 }
 
 .trackmap-start-finish {
-  stroke: #ffffff;
+  stroke: var(--text-primary, #eef1f4);
   stroke-width: 3.5px;
   stroke-linecap: square;
 }
@@ -178,9 +178,28 @@
   stroke-dasharray: 2 2;
 }
 
+/* Sector / start-finish / pit markers: neutral tokens, no status or class hue (v1.3 V04) */
+.trackmap-sector-dot {
+  fill: var(--text-tertiary, #8b95a3);
+}
+
+.trackmap-start-finish-dot {
+  fill: var(--text-primary, #eef1f4);
+}
+
+.trackmap-pit-dot {
+  fill: var(--surface-inset, #07090b);
+  stroke: var(--text-secondary, #a9b2be);
+  stroke-width: 1.5px;
+}
+
+.trackmap-pit-text {
+  fill: var(--text-secondary, #a9b2be);
+}
+
 .trackmap-sector-text {
   font-family: var(--font-data, monospace);
-  font-size: 10px;
+  font-size: var(--type-caption-size, 11px);
   font-weight: 600;
   fill: var(--text-tertiary, #8b95a3);
   text-anchor: middle;
@@ -191,12 +210,12 @@
 /* Vehicle Markers */
 .trackmap-car-halo {
   fill: rgba(255, 255, 255, 0.12);
-  stroke: #ffffff;
+  stroke: var(--player-highlight, #ffffff);
   stroke-width: 1.5px;
 }
 
 .trackmap-car-driver {
-  fill: #ffffff;
+  fill: var(--player-highlight, #ffffff);
   stroke: var(--surface-app, #0b0d10);
   stroke-width: 2px;
 }
@@ -221,10 +240,12 @@
   opacity: 0.5;
 }
 
+/* Marker label = car number only (U10/V04): 11 px bold mono fits 3 digits inside the 20 px dot */
 .trackmap-car-label {
   font-family: var(--font-data, monospace);
-  font-size: 9px;
-  font-weight: 800;
+  font-size: var(--type-caption-size, 11px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
   fill: var(--text-inverse, #0b0d10);
   text-anchor: middle;
   dominant-baseline: central;
@@ -233,10 +254,11 @@
 }
 
 .trackmap-driver-label {
-  font-family: var(--font-data, monospace);
-  font-size: 9px;
-  font-weight: 900;
-  fill: #000000;
+  fill: var(--text-inverse, #0b0d10);
+}
+
+.trackmap-car-heading {
+  stroke: var(--player-highlight, #ffffff);
 }
 
 .trackmap-competitor-group.stale .trackmap-car-label {
@@ -276,7 +298,7 @@
 
 .lap-dist-builder-progress {
   font-family: var(--font-data, monospace);
-  font-size: 11px;
+  font-size: var(--type-caption-size, 11px);
   color: var(--text-tertiary, #8b95a3);
 }
 
@@ -297,7 +319,7 @@
   top: 0;
   bottom: 0;
   width: 3px;
-  background-color: #ffffff;
+  background-color: var(--text-primary, #eef1f4);
   z-index: 2;
 }
 
@@ -317,7 +339,7 @@
 
 .lap-dist-sector-label {
   font-family: var(--font-data, monospace);
-  font-size: 10px;
+  font-size: var(--type-caption-size, 11px);
   color: var(--text-tertiary, #8b95a3);
   font-weight: 600;
 }
@@ -325,7 +347,8 @@
 .lap-dist-car-chip {
   position: absolute;
   top: 7px;
-  width: 20px;
+  min-width: 20px;
+  padding: 0 2px;
   height: 20px;
   border-radius: var(--radius-sm, 2px);
   border: 1.5px solid transparent;
@@ -334,10 +357,11 @@
   align-items: center;
   justify-content: center;
   font-family: var(--font-data, monospace);
-  font-size: 9px;
+  font-size: var(--type-caption-size, 11px);
   font-weight: 700;
   color: var(--text-inverse, #0b0d10);
   box-sizing: border-box;
+  white-space: nowrap;
   z-index: 3;
 }
 
@@ -365,7 +389,7 @@
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  border: 2px solid #ffffff;
+  border: 2px solid var(--player-highlight, #ffffff);
   background: rgba(255, 255, 255, 0.2);
 }
 
@@ -373,8 +397,8 @@
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #ffffff;
-  border: 1px solid #000000;
+  background: var(--player-highlight, #ffffff);
+  border: 1px solid var(--surface-app, #0b0d10);
   z-index: 6;
 }
 

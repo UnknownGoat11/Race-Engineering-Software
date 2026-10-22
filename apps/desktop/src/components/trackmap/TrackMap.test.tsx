@@ -4,6 +4,7 @@ import {
   applyTransform,
   computeBounds,
   fitMapTransform,
+  fitPointsFor,
   inverseTransform,
 } from './transform';
 import { buildSvgPath, classToColor, positionAt, wrapDistance } from './trackGeometry';
@@ -369,9 +370,107 @@ describe('TrackMap Component', () => {
     const carGroup = screen.getByTestId('competitor-92');
     const circle = carGroup.querySelector('circle');
     expect(circle).toBeInTheDocument();
-    // Radius 9 means diameter 18px >= 12px
+    // Radius 10 means diameter 20px >= 12px
     const r = Number(circle?.getAttribute('r'));
     expect(r).toBeGreaterThanOrEqual(6);
     expect(carGroup).toHaveTextContent('92');
+  });
+
+  it('labels a marker with the car number only, even when given a full vehicle name (v1.3 U10/V04)', () => {
+    render(
+      <TrackMap
+        map={TEST_MAP}
+        driverPosition={{ x: 100, z: 0 }}
+        driverCarNumber="#7 Toyota GR010"
+        competitors={[
+          {
+            id: 23,
+            carNumber: '#23 Mercedes-AMG LMGT3',
+            driverName: 'A. Driver',
+            vehicleClass: 'gt3',
+            x: 250,
+            z: 125,
+          },
+          {
+            id: 24,
+            carNumber: '51',
+            driverName: 'B. Driver',
+            vehicleClass: 'hypercar',
+            x: 0,
+            z: 250,
+          },
+        ]}
+      />,
+    );
+
+    const car23 = screen.getByTestId('competitor-23');
+    expect(car23.querySelector('text')?.textContent).toBe('23');
+    // Full name only in the SVG tooltip
+    expect(car23.querySelector('title')?.textContent).toBe('#23 Mercedes-AMG LMGT3 · A. Driver');
+    const car51 = screen.getByTestId('competitor-51');
+    expect(car51.querySelector('text')?.textContent).toBe('51');
+    expect(car51.querySelector('title')?.textContent).toBe('#51 · B. Driver');
+
+    const driver = screen.getByTestId('driver-marker');
+    expect(driver.querySelector('text')?.textContent).toBe('7');
+    expect(driver.querySelector('title')?.textContent).toBe('#7 Toyota GR010');
+  });
+
+  it('draws pit IN/OUT with neutral token classes, not warning amber or LMP2 blue (v1.3 V04)', () => {
+    render(<TrackMap map={TEST_MAP} />);
+    for (const id of ['pit-entry', 'pit-exit']) {
+      const g = screen.getByTestId(id);
+      const circle = g.querySelector('circle');
+      expect(circle).toHaveClass('trackmap-pit-dot');
+      expect(circle?.getAttribute('fill')).toBeNull();
+      expect(g.querySelector('text')?.getAttribute('fill')).toBeNull();
+      expect(g.innerHTML).not.toMatch(/#f5b83d|#4c9dff/i);
+    }
+  });
+
+  it('keeps every car inside the viewport while generated geometry is partial (v1.3 V04)', () => {
+    const partial: TrackMapData = { ...TEST_MAP, source: 'generated', pitEntry: null, pitExit: null };
+    render(
+      <TrackMap
+        map={partial}
+        driverPosition={{ x: -400, z: 125 }}
+        competitors={[
+          { id: 1, carNumber: '9', driverName: 'Far', vehicleClass: 'lmp2', x: 900, z: 700 },
+        ]}
+      />,
+    );
+    const positions = [
+      screen.getByTestId('competitor-9').querySelector('circle'),
+      screen.getByTestId('driver-marker').querySelector('circle'),
+    ];
+    for (const c of positions) {
+      const cx = Number(c?.getAttribute('cx'));
+      const cy = Number(c?.getAttribute('cy'));
+      expect(cx).toBeGreaterThanOrEqual(0);
+      expect(cx).toBeLessThanOrEqual(800);
+      expect(cy).toBeGreaterThanOrEqual(0);
+      expect(cy).toBeLessThanOrEqual(600);
+    }
+  });
+});
+
+describe('fitPointsFor (v1.3 V04)', () => {
+  const geometry = [
+    { x: 0, z: 0 },
+    { x: 10, z: 10 },
+  ];
+
+  it('uses the geometry alone when it is complete (verified)', () => {
+    expect(fitPointsFor(geometry, [{ x: 500, z: 500 }], true)).toBe(geometry);
+  });
+
+  it('adds every car with a finite position while geometry is partial', () => {
+    const pts = fitPointsFor(
+      geometry,
+      [{ x: 500, z: -20 }, { x: null, z: 3 }, { x: Number.NaN, z: 1 }, {}],
+      false,
+    );
+    expect(pts).toEqual([...geometry, { x: 500, z: -20 }]);
+    expect(computeBounds(pts)).toEqual({ minX: 0, maxX: 500, minZ: -20, maxZ: 10 });
   });
 });

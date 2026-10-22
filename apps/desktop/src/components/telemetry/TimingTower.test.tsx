@@ -58,7 +58,7 @@ describe('TimingTower Component', () => {
     const v1 = makeVehicle({ slot_id: 1, place: 1, vehicle_name: '#51 Ferrari 499P' });
     const v2 = makeVehicle({ slot_id: 2, place: 2, vehicle_name: 'Oreca 07 #81' });
     const v3 = makeVehicle({ slot_id: 3, place: 3, vehicle_name: '#92' });
-    const v4 = makeVehicle({ slot_id: 4, place: 4, vehicle_name: 'BMW M4 44' });
+    const v4 = makeVehicle({ slot_id: 4, place: 4, vehicle_name: '44' });
     const v5 = makeVehicle({ slot_id: 5, place: 5, vehicle_name: null });
 
     render(<TimingTower scoring={makeScoring([v1, v2, v3, v4, v5])} />);
@@ -94,8 +94,42 @@ describe('TimingTower Component', () => {
     render(<TimingTower scoring={makeScoring([v1, v2])} />);
 
     const chaserCells = screen.getByTestId('standings-row-2').querySelectorAll('td');
-    expect(chaserCells[4]?.textContent).toBe('+1 LAP');
-    expect(chaserCells[5]?.textContent).toBe('+1 LAP');
+    // v1.3 V05: lap-down reads "+1L" so it fits the fixed 8ch Gap/Int cells
+    expect(chaserCells[4]?.textContent).toBe('+1L');
+    expect(chaserCells[5]?.textContent).toBe('+1L');
+  });
+
+  it('formats multi-lap deficits compactly and keeps missing laps as em dash', () => {
+    const v1 = makeVehicle({ slot_id: 1, place: 1 });
+    const v2 = makeVehicle({ slot_id: 2, place: 2, laps_behind_leader: 3, laps_behind_next: 2 });
+    const v3 = makeVehicle({
+      slot_id: 3,
+      place: 3,
+      laps_behind_leader: null,
+      laps_behind_next: null,
+      time_behind_leader_s: null,
+      time_behind_next_s: null,
+    });
+    render(<TimingTower scoring={makeScoring([v1, v2, v3])} />);
+
+    const c2 = screen.getByTestId('standings-row-2').querySelectorAll('td');
+    expect(c2[4]?.textContent).toBe('+2L');
+    expect(c2[5]?.textContent).toBe('+3L');
+    const c3 = screen.getByTestId('standings-row-3').querySelectorAll('td');
+    expect(c3[4]?.textContent).toBe('—');
+    expect(c3[5]?.textContent).toBe('—');
+  });
+
+  it('uses "+1L" for class-filtered lap deficits too', () => {
+    const h1 = makeVehicle({ slot_id: 1, place: 1, class_place: 1, laps: 12, class_name: 'Hypercar' });
+    const g1 = makeVehicle({ slot_id: 2, place: 2, class_place: 1, laps: 11, class_name: 'LMGT3', time_behind_leader_s: 10 });
+    const g2 = makeVehicle({ slot_id: 3, place: 3, class_place: 2, laps: 10, class_name: 'LMGT3', time_behind_leader_s: 20 });
+    render(<TimingTower scoring={makeScoring([h1, g1, g2])} />);
+    fireEvent.click(screen.getByRole('button', { name: 'GT3' }));
+
+    const cells = screen.getByTestId('standings-row-3').querySelectorAll('td');
+    expect(cells[4]?.textContent).toBe('+1L');
+    expect(cells[5]?.textContent).toBe('+1L');
   });
 
   it('calculates best-lap gaps in qualifying session (T23)', () => {
@@ -118,11 +152,12 @@ describe('TimingTower Component', () => {
     expect(r3Cells[5]?.textContent).toBe('+0.850');
   });
 
-  it('renders DRIVER badge on player car and NEVER YOU (EN13)', () => {
+  it('marks the player row by row class only: no DRIVER chip and NEVER YOU (EN13, v1.3 V05)', () => {
     const player = makeVehicle({ slot_id: 5, place: 3, driver: 'Player One', is_player: true });
     render(<TimingTower scoring={makeScoring([player])} />);
 
-    expect(screen.getByTestId('driver-pill')).toHaveTextContent('DRIVER');
+    expect(screen.queryByTestId('driver-pill')).toBeNull();
+    expect(screen.getByTestId('standings-row-5').querySelector('.standings-driver-name')?.textContent).toBe('Player One');
     expect(screen.queryByText('YOU')).toBeNull();
     expect(screen.getByTestId('standings-row-5')).toHaveClass('standings-row-driver');
   });
@@ -268,17 +303,32 @@ describe('TimingTower Component', () => {
       expect(row.querySelector('.standings-col-pit')?.textContent).toBe('2');
     });
 
-    it('drops Last and Pit columns in compact variant (1366)', () => {
+    it('drops Int, Last and Pit columns but keeps Gap in compact variant (1366, v1.3 U16)', () => {
       const v = makeVehicle({ slot_id: 1, last_lap_s: 98.5, num_pitstops: 2 });
       render(<TimingTower scoring={makeScoring([v])} variant="compact" />);
 
       const headers = screen.getAllByRole('columnheader');
       const headerTexts = headers.map((h) => h.textContent.trim());
-      expect(headerTexts).toEqual(['P', 'CLS', '#', 'DRIVER', 'INT', 'GAP']);
+      expect(headerTexts).toEqual(['P', 'CLS', '#', 'DRIVER', 'GAP']);
 
       const row = screen.getByTestId('standings-row-1');
+      expect(row.querySelector('.standings-col-int')).toBeNull();
       expect(row.querySelector('.standings-col-last')).toBeNull();
       expect(row.querySelector('.standings-col-pit')).toBeNull();
+      expect(row.querySelector('.standings-col-gap')?.textContent).toBe('LDR');
+    });
+
+    it('keeps the pit badge in its own cell, never inside the Gap/Int text', () => {
+      const v1 = makeVehicle({ slot_id: 1, place: 1 });
+      const v2 = makeVehicle({ slot_id: 2, place: 2, in_pits: true, laps_behind_leader: 1, laps_behind_next: 1 });
+      render(<TimingTower scoring={makeScoring([v1, v2])} />);
+
+      const row = screen.getByTestId('standings-row-2');
+      for (const gap of row.querySelectorAll('.standings-col-gap')) {
+        expect(gap.textContent).toBe('+1L');
+      }
+      expect(row.querySelector('.standings-col-pit')?.textContent).toBe('PIT');
+      expect(row.querySelector('.standings-col-driver .pit-badge--inline')?.textContent).toBe('PIT');
     });
 
     it('renders 56px rail mode with only P and # columns (rail)', () => {
@@ -346,7 +396,8 @@ describe('TimingTower Component', () => {
       expect(pinnedRow).toHaveAttribute('data-pinned', 'top');
       expect(pinnedRow).toHaveClass('standings-row-pinned--top');
       expect(pinnedRow.querySelector('.standings-driver-name')?.textContent).toBe('P. Driver');
-      expect(pinnedRow.querySelector('.driver-pill')).toHaveTextContent('DRIVER');
+      expect(pinnedRow.querySelector('.driver-pill')).toBeNull();
+      expect(pinnedRow.textContent).not.toContain('📌');
 
       // Clicking pinned row triggers slot selection
       fireEvent.click(pinnedRow);

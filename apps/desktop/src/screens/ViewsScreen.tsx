@@ -178,7 +178,6 @@ export function ViewsScreen({ initialViewId = 'driving' }: ViewsScreenProps): JS
               {activeDef.glyph} {activeDef.title}
             </span>
             <span className="badge badge-subtle">{activeDef.category.toUpperCase()}</span>
-            <span className="badge badge-mode">V1.1</span>
           </div>
         </div>
 

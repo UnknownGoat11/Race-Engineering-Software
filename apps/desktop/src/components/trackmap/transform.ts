@@ -2,13 +2,39 @@
  * Mathematical coordinate transforms for track map rendering (spec §23–24, §155).
  * Directly matches `crates/race-engines/src/track.rs`.
  */
-import type { MapBounds, MapPoint, MapTransform } from './types';
+import type { MapBounds, MapTransform } from './types';
+
+/** Any world-space (x, z) position: a geometry point, a car, a marker. */
+export interface WorldXZ {
+  readonly x: number;
+  readonly z: number;
+}
+
+/**
+ * Points the viewport must contain (v1.3 V04). For a verified circuit that is the geometry alone. For generated
+ * (online-reconstructed, possibly partial) geometry it is the union of the geometry and every car with a finite
+ * world position, so no car is drawn outside the map while the outline is still incomplete.
+ */
+export function fitPointsFor(
+  geometry: readonly WorldXZ[],
+  cars: readonly { readonly x?: number | null; readonly z?: number | null }[],
+  geometryIsComplete: boolean,
+): readonly WorldXZ[] {
+  if (geometryIsComplete) return geometry;
+  const extra: WorldXZ[] = [];
+  for (const c of cars) {
+    if (c.x != null && c.z != null && Number.isFinite(c.x) && Number.isFinite(c.z)) {
+      extra.push({ x: c.x, z: c.z });
+    }
+  }
+  return extra.length === 0 ? geometry : [...geometry, ...extra];
+}
 
 /**
  * Computes axis-aligned bounds [minX, maxX, minZ, maxZ] of points.
  * Returns null if points array is empty or contains no finite coordinates.
  */
-export function computeBounds(points: readonly { readonly x: number; readonly z: number }[]): MapBounds | null {
+export function computeBounds(points: readonly WorldXZ[]): MapBounds | null {
   if (points.length === 0) {
     return null;
   }
@@ -41,7 +67,7 @@ export function computeBounds(points: readonly { readonly x: number; readonly z:
  */
 export function fitMapTransform(
   bounds: MapBounds,
-  points: readonly MapPoint[],
+  points: readonly WorldXZ[],
   width: number,
   height: number,
   padding = 24,

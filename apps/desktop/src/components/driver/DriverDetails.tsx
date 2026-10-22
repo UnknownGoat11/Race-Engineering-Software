@@ -50,7 +50,7 @@ export function DriverDetails({
       data-testid="driver-details"
     >
       <summary className="driver-details-summary">
-        <span aria-hidden="true">▸ </span>Details (Diagnostics &amp; Pipeline)
+        Diagnostics
       </summary>
 
       <div className="driver-details-grid">

@@ -134,89 +134,97 @@ function SuspensionPanelContent(): JSX.Element {
       {/* 2x2 Corner Suspension & Ride Heights */}
       <div className="suspension-corners-grid">
         {/* FL */}
-        <div className="susp-corner-card">
+        <div className="susp-corner-card" role="group" aria-label="Front left suspension">
           <div className="susp-corner-head">
-            <span className="susp-corner-tag">FL · FRONT LEFT</span>
+            <span className="susp-corner-tag" title="Front left">
+              FL
+            </span>
             <span className={`susp-dmg-badge ${damageClass(dmgFL)}`} data-testid="susp-dmg-fl">
               {`DMG ${formatDamage(dmgFL)}`}
             </span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Ride Height:</span>
-            <span className="susp-metric-val num-cyan">{formatMm(rhFL)}</span>
+            <span className="susp-metric-lbl">Ride height</span>
+            <span className="susp-metric-val">{formatMm(rhFL)}</span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Deflection:</span>
+            <span className="susp-metric-lbl">Deflection</span>
             <span className="susp-metric-val">{formatMm(dFL)}</span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Pushrod:</span>
+            <span className="susp-metric-lbl">Pushrod</span>
             <span className="susp-metric-val">{formatForceN(fFL)}</span>
           </div>
         </div>
 
         {/* FR */}
-        <div className="susp-corner-card">
+        <div className="susp-corner-card" role="group" aria-label="Front right suspension">
           <div className="susp-corner-head">
-            <span className="susp-corner-tag">FR · FRONT RIGHT</span>
+            <span className="susp-corner-tag" title="Front right">
+              FR
+            </span>
             <span className={`susp-dmg-badge ${damageClass(dmgFR)}`} data-testid="susp-dmg-fr">
               {`DMG ${formatDamage(dmgFR)}`}
             </span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Ride Height:</span>
-            <span className="susp-metric-val num-cyan">{formatMm(rhFR)}</span>
+            <span className="susp-metric-lbl">Ride height</span>
+            <span className="susp-metric-val">{formatMm(rhFR)}</span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Deflection:</span>
+            <span className="susp-metric-lbl">Deflection</span>
             <span className="susp-metric-val">{formatMm(dFR)}</span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Pushrod:</span>
+            <span className="susp-metric-lbl">Pushrod</span>
             <span className="susp-metric-val">{formatForceN(fFR)}</span>
           </div>
         </div>
 
         {/* RL */}
-        <div className="susp-corner-card">
+        <div className="susp-corner-card" role="group" aria-label="Rear left suspension">
           <div className="susp-corner-head">
-            <span className="susp-corner-tag">RL · REAR LEFT</span>
+            <span className="susp-corner-tag" title="Rear left">
+              RL
+            </span>
             <span className={`susp-dmg-badge ${damageClass(dmgRL)}`} data-testid="susp-dmg-rl">
               {`DMG ${formatDamage(dmgRL)}`}
             </span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Ride Height:</span>
-            <span className="susp-metric-val num-cyan">{formatMm(rhRL)}</span>
+            <span className="susp-metric-lbl">Ride height</span>
+            <span className="susp-metric-val">{formatMm(rhRL)}</span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Deflection:</span>
+            <span className="susp-metric-lbl">Deflection</span>
             <span className="susp-metric-val">{formatMm(dRL)}</span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Pushrod:</span>
+            <span className="susp-metric-lbl">Pushrod</span>
             <span className="susp-metric-val">{formatForceN(fRL)}</span>
           </div>
         </div>
 
         {/* RR */}
-        <div className="susp-corner-card">
+        <div className="susp-corner-card" role="group" aria-label="Rear right suspension">
           <div className="susp-corner-head">
-            <span className="susp-corner-tag">RR · REAR RIGHT</span>
+            <span className="susp-corner-tag" title="Rear right">
+              RR
+            </span>
             <span className={`susp-dmg-badge ${damageClass(dmgRR)}`} data-testid="susp-dmg-rr">
               {`DMG ${formatDamage(dmgRR)}`}
             </span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Ride Height:</span>
-            <span className="susp-metric-val num-cyan">{formatMm(rhRR)}</span>
+            <span className="susp-metric-lbl">Ride height</span>
+            <span className="susp-metric-val">{formatMm(rhRR)}</span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Deflection:</span>
+            <span className="susp-metric-lbl">Deflection</span>
             <span className="susp-metric-val">{formatMm(dRR)}</span>
           </div>
           <div className="susp-metric-row">
-            <span className="susp-metric-lbl">Pushrod:</span>
+            <span className="susp-metric-lbl">Pushrod</span>
             <span className="susp-metric-val">{formatForceN(fRR)}</span>
           </div>
         </div>
@@ -225,12 +233,12 @@ function SuspensionPanelContent(): JSX.Element {
       {/* Axle Level Ride Height Comparison */}
       <div className="suspension-axle-summary">
         <div className="axle-rh-box">
-          <span className="card-row-label">FRONT AXLE HEIGHT</span>
-          <span className="axle-rh-val num-cyan">{formatMm(rhFront)}</span>
+          <span className="card-row-label">Front axle height</span>
+          <span className="axle-rh-val">{formatMm(rhFront)}</span>
         </div>
         <div className="axle-rh-box">
-          <span className="card-row-label">REAR AXLE HEIGHT</span>
-          <span className="axle-rh-val num-cyan">{formatMm(rhRear)}</span>
+          <span className="card-row-label">Rear axle height</span>
+          <span className="axle-rh-val">{formatMm(rhRear)}</span>
         </div>
       </div>
     </Panel>

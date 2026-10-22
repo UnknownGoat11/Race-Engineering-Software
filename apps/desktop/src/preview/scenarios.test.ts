@@ -82,10 +82,25 @@ describe('preview scenario catalogue', () => {
       if (s.origin === 'lmu') expect(text).toContain('NOT REAL DATA');
       else expect(text).toContain('SYNTHETIC');
     }
-    expect(SCENARIOS.filter((s) => s.origin === 'lmu').map((s) => s.id).sort()).toEqual([
-      'driver-live-lmu-origin',
+    expect(SCENARIOS.filter((s) => s.origin === 'lmu' && s.group === 'engineer').map((s) => s.id)).toEqual([
       'engineer-live-lmu-origin',
     ]);
+  });
+
+  it('driver state scenarios use the LMU origin so their real states render; only driver-demo is synthetic (H01)', () => {
+    for (const s of SCENARIOS.filter((x) => x.group === 'driver')) {
+      expect({ id: s.id, origin: s.origin ?? 'synthetic' }).toEqual({
+        id: s.id,
+        origin: s.id === 'driver-demo' ? 'synthetic' : 'lmu',
+      });
+    }
+  });
+
+  it('the expired-code scenario captures the failed redeem (H02)', () => {
+    const s = byId('engineer-join-expired-retry');
+    expect(s.joinError?.code).toBe('code_expired');
+    // Exactly one join click: the capture shows the code_expired error, not the identity card of a retry.
+    expect(s.steps?.filter((st) => st.kind === 'click' && st.selector.includes('btn-join-session'))).toHaveLength(1);
   });
 
   it('the capture time is later than the settle time plus the steps', () => {

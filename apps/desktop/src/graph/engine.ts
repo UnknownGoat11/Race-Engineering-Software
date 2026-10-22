@@ -86,6 +86,8 @@ export interface GraphConfig {
   readonly xDomain: XRange | null;
   /** Graphs sharing cursor and x view (spec §81); null for a standalone graph. */
   readonly syncGroup: GraphSyncGroup | null;
+  /** Draw the x tick labels and title (default true; a stacked graph draws them on its bottom pane only). */
+  readonly xAxis: boolean;
 }
 
 /** Options of a new engine. */
@@ -424,6 +426,7 @@ export class GraphEngine {
       maxGapS: checkMaxGapS(options.maxGapS ?? DEFAULT_MAX_GAP_S, this.id),
       xDomain: options.xDomain ?? null,
       syncGroup: options.syncGroup ?? null,
+      xAxis: options.xAxis ?? true,
     };
     this.#rendererOption = options.renderer ?? DEFAULT_RENDERER;
     this.#initialSpan = options.initialSpan;
@@ -1046,7 +1049,7 @@ export class GraphEngine {
     this.#staleSeries = staleSeries;
     const keys = [...new Set(members.map((m) => axisKey(m.display)))];
     const left = Math.ceil(keys.length / 2);
-    const layout = computeLayout(this.#width, this.#height, left, keys.length - left);
+    const layout = computeLayout(this.#width, this.#height, left, keys.length - left, cfg.xAxis);
     this.#layout = layout;
     this.#yAxes = buildYAxes(members, cfg.yScales, layout.plot.height);
     const axisByKey = new Map(this.#yAxes.map((a) => [a.key, a] as const));

@@ -115,10 +115,14 @@ function renderCorner(
         { label: 'O', val: data.outer },
       ];
 
+  // v1.3 V06/U17: corner code only on screen ("FL"), full name in title / aria-label; value + unit never wrap.
   return (
-    <div className="tyre-corner-box" data-testid={testId}>
+    <div className="tyre-corner-box" data-testid={testId} role="group" aria-label={`${title} tyre`}>
       <div className="tyre-corner-header">
-        <span className="tyre-corner-title">{code} · {title}</span>
+        <span className="tyre-corner-title" title={title}>
+          {code}
+        </span>
+        <span className="tyre-corner-leader" aria-hidden="true" />
         <span className="tyre-corner-pressure">
           {formatPressure(data.pressure, { withUnit: true })}
         </span>
@@ -141,10 +145,12 @@ function renderCorner(
         })}
       </div>
 
-      <div className="tyre-footer-row">
-        <span>Carcass: {formatTemperature(data.carcass, { withUnit: true })}</span>
-        <span>Wear (raw): {data.wear != null ? data.wear.toFixed(2) : NO_VALUE}</span>
-      </div>
+      <dl className="tyre-footer-kv">
+        <dt>Carcass</dt>
+        <dd data-testid={`${testId}-carcass`}>{formatTemperature(data.carcass, { withUnit: true })}</dd>
+        <dt>Wear (raw)</dt>
+        <dd data-testid={`${testId}-wear`}>{data.wear != null ? data.wear.toFixed(2) : NO_VALUE}</dd>
+      </dl>
     </div>
   );
 }
@@ -259,10 +265,10 @@ function TyrePanelContent(): JSX.Element {
       testId="panel-tyres"
     >
       <div className="tyres-grid-2x2">
-        {renderCorner('FRONT LEFT', 'FL', fl, true, 'tyre-fl')}
-        {renderCorner('FRONT RIGHT', 'FR', fr, false, 'tyre-fr')}
-        {renderCorner('REAR LEFT', 'RL', rl, true, 'tyre-rl')}
-        {renderCorner('REAR RIGHT', 'RR', rr, false, 'tyre-rr')}
+        {renderCorner('Front left', 'FL', fl, true, 'tyre-fl')}
+        {renderCorner('Front right', 'FR', fr, false, 'tyre-fr')}
+        {renderCorner('Rear left', 'RL', rl, true, 'tyre-rl')}
+        {renderCorner('Rear right', 'RR', rr, false, 'tyre-rr')}
       </div>
     </Panel>
   );

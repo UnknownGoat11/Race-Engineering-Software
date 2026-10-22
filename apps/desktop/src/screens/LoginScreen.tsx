@@ -82,10 +82,7 @@ export function LoginScreen({
     <main className="login-screen" data-testid="login-screen">
       <div className="login-card">
         <header className="login-header">
-          <div className="login-brand-tag">
-            <span className="login-pulse-dot" />
-            <span>Motorsport Telemetry & Pitwall</span>
-          </div>
+          <div className="login-brand-tag">Motorsport telemetry and pitwall</div>
           <h1 className="login-title">Race Engineering Tool</h1>
           <div className="login-role-badge">
             <span className="login-role-text">
@@ -111,7 +108,7 @@ export function LoginScreen({
               }}
               data-testid="login-tab-signin"
             >
-              Sign In
+              Sign in
             </button>
             <button
               type="button"
@@ -126,7 +123,7 @@ export function LoginScreen({
               }}
               data-testid="login-tab-register"
             >
-              Create Account
+              Create account
             </button>
           </div>
         </header>
@@ -164,13 +161,13 @@ export function LoginScreen({
           {tab === 'register' && (
             <div className="login-field">
               <label className="login-label" htmlFor="login-displayname">
-                Display Name
+                Display name
               </label>
               <input
                 id="login-displayname"
                 type="text"
                 className="login-input"
-                placeholder={username || 'Display Name'}
+                placeholder={username || 'Display name'}
                 value={displayName}
                 onChange={(e) => {
                   setDisplayName(e.target.value);
@@ -229,7 +226,7 @@ export function LoginScreen({
 
         <footer className="login-footer">
           <span className="login-footer-text">
-            {role === 'driver' ? 'Sim driver relay account' : 'Race engineer relay account'}
+            {role === 'driver' ? 'Driver account' : 'Engineer account'}
           </span>
           {onChangeMode && (
             <button

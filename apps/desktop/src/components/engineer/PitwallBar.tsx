@@ -2,7 +2,7 @@ import { type JSX } from 'react';
 import { vehicleClassCode } from '../../lib/classes';
 import { COPY } from '../../lib/labels';
 import { isLiveLooking, mayShowDriverIdentity, type EngineerView } from '../../lib/statusModel';
-import { NO_VALUE } from '../../lib/units';
+import { formatClock, NO_VALUE } from '../../lib/units';
 import { ConfirmAction } from '../ui/ConfirmAction';
 
 export interface PitwallBarProps {
@@ -16,26 +16,39 @@ export interface PitwallBarProps {
   readonly currentLap?: number | null | undefined;
   readonly currentSector?: number | null | undefined;
   readonly sessionTimeRemainingS?: number | null | undefined;
-  readonly fcyActive?: boolean | undefined;
-  readonly scActive?: boolean | undefined;
+  /** Session caution from scoring: `fcy` = full-course yellow / safety car (LMU does not tell them apart). */
+  readonly caution?: 'fcy' | 'red' | 'none' | null | undefined;
   readonly rttMs?: number | null | undefined;
   readonly streamAgeS?: number | null | undefined;
   readonly isConnected: boolean;
   readonly onRefreshAllData: () => void;
   readonly onLeaveSession: () => void;
+  /** The session has ended: one Close button replaces Resync / Leave (audit U18). */
+  readonly ended?: boolean | undefined;
+  readonly onClose?: (() => void) | undefined;
   readonly onOpenSettings?: (() => void) | undefined;
+  /** Opens the Analysis page (the shell header is hidden while connected, so the bar offers the route). */
+  readonly onOpenAnalysis?: (() => void) | undefined;
 }
 
-function formatClock(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return NO_VALUE;
-  const s = Math.floor(seconds);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const remS = s % 60;
-  if (h > 0) {
-    return `${h}:${m.toString().padStart(2, '0')}:${remS.toString().padStart(2, '0')}`;
-  }
-  return `${m}:${remS.toString().padStart(2, '0')}`;
+/** Settings gear: one inline stroke icon in currentColor (no emoji, V13). */
+function GearIcon(): JSX.Element {
+  return (
+    <svg
+      className="pitwall-gear-icon"
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="8" cy="8" r="2.25" />
+      <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
+    </svg>
+  );
 }
 
 export function PitwallBar({
@@ -49,14 +62,16 @@ export function PitwallBar({
   currentLap,
   currentSector,
   sessionTimeRemainingS,
-  fcyActive,
-  scActive,
+  caution,
   rttMs,
   streamAgeS,
   isConnected,
   onRefreshAllData,
   onLeaveSession,
+  ended,
+  onClose,
   onOpenSettings,
+  onOpenAnalysis,
 }: PitwallBarProps): JSX.Element {
   const showIdentity = mayShowDriverIdentity(view);
   const isLive = isLiveLooking(view);
@@ -67,43 +82,43 @@ export function PitwallBar({
   if (isSynthetic) {
     badgeEl = (
       <span className="badge badge-dq-synthetic" data-testid="stream-health-badge">
-        <span aria-hidden="true">▨ </span>SYNTHETIC
+        <span aria-hidden="true">▨</span> SYNTHETIC
       </span>
     );
   } else if (isLive) {
     badgeEl = (
       <span className="badge badge-status-ok" data-testid="stream-health-badge">
-        <span aria-hidden="true">● </span>LIVE STREAM
+        <span aria-hidden="true">●</span> LIVE STREAM
       </span>
     );
   } else if (view.kind === 'stale') {
     badgeEl = (
       <span className="badge badge-status-warn" data-testid="stream-health-badge">
-        <span aria-hidden="true">◆ </span>STALE
+        <span aria-hidden="true">◆</span> STALE
       </span>
     );
   } else if (view.kind === 'away') {
     badgeEl = (
       <span className="badge badge-status-warn" data-testid="stream-health-badge">
-        <span aria-hidden="true">◆ </span>DRIVER AWAY
+        <span aria-hidden="true">◆</span> DRIVER AWAY
       </span>
     );
   } else if (view.kind === 'incompatible') {
     badgeEl = (
       <span className="badge badge-status-critical" data-testid="stream-health-badge">
-        <span aria-hidden="true">■ </span>INCOMPATIBLE
+        <span aria-hidden="true">■</span> INCOMPATIBLE
       </span>
     );
   } else if (view.kind === 'ended') {
     badgeEl = (
       <span className="badge badge-status-critical" data-testid="stream-health-badge">
-        <span aria-hidden="true">■ </span>ENDED
+        <span aria-hidden="true">■</span> ENDED
       </span>
     );
   } else {
     badgeEl = (
       <span className="badge badge-subtle" data-testid="stream-health-badge">
-        <span aria-hidden="true">□ </span>NOT CONNECTED
+        <span aria-hidden="true">□</span> NOT CONNECTED
       </span>
     );
   }
@@ -111,7 +126,7 @@ export function PitwallBar({
   // Lap & Sector string
   const lapSectorText =
     currentLap != null
-      ? `L${currentLap}${currentSector != null ? ` S${currentSector}` : ''}`
+      ? `Lap ${String(currentLap)}${currentSector != null ? ` · S${String(currentSector)}` : ''}`
       : null;
 
   // Car display with class code
@@ -168,14 +183,14 @@ export function PitwallBar({
                 </span>
               </>
             )}
-            {fcyActive && (
-              <span className="badge badge-status-warn pitwall-flag-pill">
-                FCY
+            {caution === 'fcy' && (
+              <span className="badge badge-status-warn pitwall-flag-pill" data-testid="pitwall-caution">
+                FCY / SC
               </span>
             )}
-            {scActive && (
-              <span className="badge badge-status-warn pitwall-flag-pill">
-                SC
+            {caution === 'red' && (
+              <span className="badge badge-status-critical pitwall-flag-pill" data-testid="pitwall-caution">
+                Red flag
               </span>
             )}
           </>
@@ -186,24 +201,29 @@ export function PitwallBar({
           <span className="num pitwall-rtt-value" data-testid="engineer-rtt">
             {rttMs != null ? `${rttMs.toFixed(0)} ms` : NO_VALUE}
           </span>
-          <span className="pitwall-meta-sub">age</span>
+          <span className="pitwall-meta-sub">Age</span>
           <span className="num pitwall-age-value" data-testid="engineer-stream-age">
-            {streamAgeS != null ? `${streamAgeS.toFixed(1)}s` : NO_VALUE}
+            {streamAgeS != null ? `${streamAgeS.toFixed(1)} s` : NO_VALUE}
           </span>
         </div>
       </div>
 
       <div className="pitwall-bar-right">
-        {isConnected && (
+        {isConnected && ended === true && onClose && (
+          <button type="button" className="btn btn-sm" onClick={onClose} data-testid="btn-engineer-close">
+            Close
+          </button>
+        )}
+        {isConnected && ended !== true && (
           <>
             <button
               type="button"
               className="btn btn-sm"
               onClick={onRefreshAllData}
-              title="Request fresh state snapshot from driver"
+              title="Ask the driver's app for a full state snapshot"
               data-testid="btn-request-snapshot"
             >
-              {COPY.refreshAllData}
+              Resync
             </button>
             <ConfirmAction
               label={COPY.leaveSession}
@@ -216,6 +236,17 @@ export function PitwallBar({
             />
           </>
         )}
+        {onOpenAnalysis && (
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={onOpenAnalysis}
+            title="Open the analysis views"
+            data-testid="btn-open-analysis"
+          >
+            Analysis
+          </button>
+        )}
         {onOpenSettings && (
           <button
             type="button"
@@ -225,7 +256,7 @@ export function PitwallBar({
             aria-label="Settings"
             data-testid="btn-open-settings"
           >
-            <span aria-hidden="true">⚙</span>
+            <GearIcon />
           </button>
         )}
       </div>

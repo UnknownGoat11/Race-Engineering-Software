@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Unit } from '../generated/channels';
 import { unitAxisDisplay } from '../lib/units';
 import { RecordingContext } from '../test/recordingContext';
-import { buildYAxes, computeLayout } from './layout';
+import { AXIS_TEXT_HEIGHT_CSS, Y_TITLE_GAP_CSS, buildYAxes, computeLayout } from './layout';
 import {
   BREAK_TICK_HEIGHT_CSS,
   CURRENT_LABEL,
@@ -224,3 +224,57 @@ describe('off-scale marking (silent-failure M7)', () => {
     expect(bars[0]?.args.slice(2)).toEqual([OFF_SCALE_MARK_CSS.width, OFF_SCALE_MARK_CSS.height]);
   });
 });
+
+describe('drawOverlay pane anatomy (V02)', () => {
+  function paneScene(height: number, xAxis: boolean): OverlayScene {
+    const layout = computeLayout(852, height, 1, 0, xAxis);
+    return scene({
+      layout,
+      yAxes: buildYAxes([{ display: SPEED, label: 'Speed', color: 'speedColor', extent: { min: 0, max: 50 } }], {}, layout.plot.height),
+      cursor: { x: 50, label: 'cursor-label' },
+    });
+  }
+
+  it('draws no x tick labels, x title or cursor label on a pane without the x axis row', () => {
+    const ctx = new RecordingContext();
+    drawOverlay(ctx, paneScene(200, false));
+    const texts = ctx.texts();
+    expect(texts).not.toContain('Session time');
+    expect(texts).not.toContain('0:50');
+    expect(texts).not.toContain('cursor-label');
+    // The y axis keeps its unit and ticks.
+    expect(texts).toContain(SPEED.label);
+  });
+
+  it('draws the x tick labels, title and cursor label on the pane with the x axis row', () => {
+    const ctx = new RecordingContext();
+    drawOverlay(ctx, paneScene(200, true));
+    expect(ctx.texts()).toEqual(expect.arrayContaining(['Session time', '0:50', 'cursor-label']));
+  });
+
+  it('never draws a y tick label over the unit title, another label or outside the canvas', () => {
+    for (const height of [50, 62, 80, 120, 200]) {
+      for (const xAxis of [true, false]) {
+        const ctx = new RecordingContext();
+        const s = paneScene(height, xAxis);
+        drawOverlay(ctx, s);
+        const fills = ctx.ops('fillText');
+        const title = fills.find((c) => c.args[0] === SPEED.label);
+        const ticks = fills.filter((c) => c.style === 'axisText' && /^-?\d+$/.test(String(c.args[0])));
+        expect(ticks.length).toBeGreaterThan(0);
+        const ys = ticks.map((c) => c.args[2] as number).sort((a, b) => a - b);
+        const minY = title === undefined ? 0 : s.layout.plot.top - Y_TITLE_GAP_CSS;
+        for (const y of ys) {
+          expect(y - AXIS_TEXT_HEIGHT_CSS / 2).toBeGreaterThanOrEqual(minY);
+          expect(y + AXIS_TEXT_HEIGHT_CSS / 2).toBeLessThanOrEqual(height);
+        }
+        ys.slice(1).forEach((y, i) => {
+          expect(y - (ys[i] ?? 0)).toBeGreaterThanOrEqual(AXIS_TEXT_HEIGHT_CSS);
+        });
+        // A compact plot draws no unit title at all.
+        expect(title === undefined).toBe(!s.layout.yTitles);
+      }
+    }
+  });
+});
+

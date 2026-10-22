@@ -1,8 +1,74 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as UseScoringModule from '../hooks/useScoring';
+import { toScoringView, type ScoringStateDto } from '../hooks/useScoring';
 import type { CoreStatus } from '../lib/ipc';
 import * as ipc from '../lib/ipc';
 import { EngineerScreen } from './EngineerScreen';
+
+/** Scoring the mocked `useScoring` returns (null = no `core:scoring` yet). */
+const scoringMock = vi.hoisted(() => ({ current: null as ScoringStateDto | null }));
+
+vi.mock('../hooks/useScoring', async () => {
+  const actual = await vi.importActual<typeof UseScoringModule>('../hooks/useScoring');
+  return { ...actual, useScoring: () => scoringMock.current };
+});
+
+/**
+ * The real `core:scoring` JSON shape (serde of the Rust ScoringState: raw i8 yellow flag state, raw session type,
+ * `time_remaining_s`, nested `weather`) with a pending full-course yellow. Names are invented.
+ */
+function realScoringJson(yellowFlagState: number, gamePhase: number): unknown {
+  return JSON.parse(
+    JSON.stringify({
+      session: {
+        track_name: 'Circuit de la Sarthe',
+        session_type: 10,
+        game_phase: gamePhase,
+        yellow_flag_state: yellowFlagState,
+        sector_flags_raw: [1, 1, 1],
+        start_light: null,
+        num_red_lights: null,
+        num_vehicles: 1,
+        current_et_s: 1000,
+        end_et_s: 2375,
+        time_remaining_s: 1375,
+        max_laps: null,
+        track_length_m: 13626,
+        in_realtime: true,
+        game_mode: 2,
+        max_players: null,
+        time_of_day_s: null,
+        fixed_setup: null,
+        weather: {
+          ambient_temp_c: 24.2,
+          track_temp_c: 33.6,
+          raining_frac: null,
+          dark_cloud_frac: null,
+          cloud_coverage_raw: null,
+          path_wetness_min_frac: null,
+          path_wetness_max_frac: null,
+          path_wetness_avg_frac: null,
+          wind_mps: null,
+          track_grip_level_raw: null,
+        },
+      },
+      vehicles: [
+        {
+          slot_id: 1, driver: 'J. Doe', vehicle_name: '#51 Ferrari 499P', vehicle_filename: null,
+          class_name: 'Hypercar', pit_group: null, place: 1, class_place: 1, laps: 12, lap_dist_m: 100,
+          sector: 1, best_lap_s: null, last_lap_s: null, best_sector1_s: null, best_sector12_s: null,
+          last_sector1_s: null, last_sector12_s: null, cur_sector1_s: null, cur_sector12_s: null,
+          time_behind_next_s: null, laps_behind_next: null, time_behind_leader_s: null, laps_behind_leader: null,
+          time_into_lap_s: null, estimated_lap_s: null, lap_start_et_s: null, in_pits: false,
+          in_garage_stall: false, pit_state: 0, num_pitstops: 0, num_penalties: 0, finish_status: 0, flag: 0,
+          under_yellow: true, individual_phase: 6, count_lap_flag: 2, control: 0, is_player: true,
+          qualification: null, energy_or_fuel_frac: null, pos_x_m: 10, pos_z_m: 20,
+        },
+      ],
+    }),
+  );
+}
 
 vi.mock('../lib/ipc', async () => {
   const actual = await vi.importActual<typeof ipc>('../lib/ipc');
@@ -96,6 +162,7 @@ const MOCK_STATUS: CoreStatus = {
 describe('EngineerScreen', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    scoringMock.current = null;
     vi.mocked(ipc.getCoreStatus).mockResolvedValue(MOCK_STATUS);
   });
 
@@ -108,7 +175,7 @@ describe('EngineerScreen', () => {
       expect(screen.getByTestId('engineer-car')).toHaveTextContent('Ferrari 499P (HY)');
       expect(screen.getByTestId('engineer-track')).toHaveTextContent('Circuit de la Sarthe');
       expect(screen.getByTestId('engineer-rtt')).toHaveTextContent('33 ms');
-      expect(screen.getByTestId('engineer-stream-age')).toHaveTextContent('0.1s');
+      expect(screen.getByTestId('engineer-stream-age')).toHaveTextContent('0.1 s');
     });
   });
 
@@ -133,8 +200,8 @@ describe('EngineerScreen', () => {
     await waitFor(() => {
       expect(screen.getByTestId('engineer-workspace')).toBeInTheDocument();
       expect(screen.getByTestId('timing-tower')).toBeInTheDocument();
-      expect(screen.getByText('LIVE VECTOR TRACK MAP')).toBeInTheDocument();
-      expect(screen.getByText('SYNCHRONIZED TELEMETRY GRAPH')).toBeInTheDocument();
+      expect(screen.getByText('Track map')).toBeInTheDocument();
+      expect(screen.getByText('Telemetry')).toBeInTheDocument();
       expect(screen.getByTestId('panel-timing')).toBeInTheDocument();
       expect(screen.getByTestId('panel-fuel')).toBeInTheDocument();
     });
@@ -147,16 +214,20 @@ describe('EngineerScreen', () => {
       expect(screen.getByTestId('panel-timing')).toBeInTheDocument();
     });
 
-    // Switch to Tyres & Brakes tab
-    fireEvent.click(screen.getByRole('button', { name: 'Tyres & Brakes' }));
+    // No hidden fallback buttons (U01): only the real tabs exist.
+    expect(screen.queryByText('Tyres & Brakes')).not.toBeInTheDocument();
+    expect(screen.queryByText('Inputs & Energy')).not.toBeInTheDocument();
+
+    // Switch to Tyres+Brakes tab
+    fireEvent.click(screen.getByRole('tab', { name: 'Tyres+Brakes' }));
 
     await waitFor(() => {
       expect(screen.getByTestId('panel-tyres')).toBeInTheDocument();
       expect(screen.getByTestId('panel-brakes')).toBeInTheDocument();
     });
 
-    // Switch to Inputs & Energy tab
-    fireEvent.click(screen.getByRole('button', { name: 'Inputs & Energy' }));
+    // Switch to Power (inputs & energy) tab
+    fireEvent.click(screen.getByRole('tab', { name: 'Power' }));
 
     await waitFor(() => {
       expect(screen.getByTestId('panel-driver-inputs')).toBeInTheDocument();
@@ -201,6 +272,8 @@ describe('EngineerScreen', () => {
     await waitFor(() => {
       expect(ipc.engineerDisconnect).toHaveBeenCalled();
     });
+    // Leaving never reopens the join dialog (E05): the "Not connected" panel follows the idle phase.
+    expect(screen.queryByTestId('join-session-modal')).not.toBeInTheDocument();
   });
 
   it('shows driver away banner and badge when driver is away (T08)', async () => {
@@ -262,6 +335,15 @@ describe('EngineerScreen', () => {
       expect(screen.getByTestId('state-banner-ended')).toHaveTextContent('Session ended by Jane Doe');
       expect(screen.getByTestId('btn-rejoin')).toBeInTheDocument();
       expect(screen.getByTestId('btn-rejoin')).toHaveTextContent('Join with new code');
+      // U18: one Close button, no Resync / Leave; the car count no longer says "on track".
+      expect(screen.getByTestId('btn-engineer-close')).toBeInTheDocument();
+      expect(screen.queryByTestId('btn-request-snapshot')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('btn-engineer-disconnect-trigger')).not.toBeInTheDocument();
+      expect(screen.getByTestId('pitwall-car-count')).not.toHaveTextContent('on track');
+    });
+    fireEvent.click(screen.getByTestId('btn-engineer-close'));
+    await waitFor(() => {
+      expect(ipc.engineerDisconnect).toHaveBeenCalled();
     });
   });
 
@@ -329,7 +411,7 @@ describe('EngineerScreen', () => {
     // Modal should close and custom preset indicator should be visible
     await waitFor(() => {
       expect(screen.queryByTestId('channel-selector-modal')).not.toBeInTheDocument();
-      expect(screen.getByTestId('preset-custom-badge')).toHaveTextContent('CUSTOM (4 CH)');
+      expect(screen.getByTestId('preset-custom-badge')).toHaveTextContent('Custom · 4 ch');
     });
   });
 
@@ -344,7 +426,7 @@ describe('EngineerScreen', () => {
     // Test snapshot request announcement (EN14, A11)
     fireEvent.click(screen.getByTestId('btn-request-snapshot'));
     await waitFor(() => {
-      expect(screen.getByTestId('screen-announcer-polite')).toHaveTextContent('Refresh requested');
+      expect(screen.getByTestId('screen-announcer-polite')).toHaveTextContent('Resync requested');
     });
 
     // Test graph worksheets role="group" and aria-pressed states (A04, W5.1)
@@ -369,11 +451,57 @@ describe('EngineerScreen', () => {
     const distanceBtn = screen.getByRole('button', { name: 'Distance' });
     expect(distanceBtn).toHaveAttribute('aria-pressed', 'true');
 
-    const lapTimeBtn = screen.getByRole('button', { name: 'Lap Time' });
+    const lapTimeBtn = screen.getByRole('button', { name: 'Lap time' });
     expect(lapTimeBtn).toHaveAttribute('aria-pressed', 'false');
 
     fireEvent.click(lapTimeBtn);
     expect(lapTimeBtn).toHaveAttribute('aria-pressed', 'true');
     expect(distanceBtn).toHaveAttribute('aria-pressed', 'false');
   });
+
+  it('real scoring JSON with a pending FCY (raw yellow_flag_state 1) renders without crashing (U02)', async () => {
+    scoringMock.current = toScoringView(realScoringJson(1, 6));
+    render(<EngineerScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('engineer-workspace')).toBeInTheDocument();
+      expect(screen.getByTestId('pitwall-caution')).toHaveTextContent('FCY / SC');
+      expect(screen.getByTestId('state-banner-caution')).toHaveTextContent('Pending');
+      expect(screen.getByTestId('strategy-flag')).toHaveTextContent('Pending');
+      // time_remaining_s and the nested weather reach the strip.
+      expect(screen.getByTestId('strategy-strip')).toHaveTextContent('22:55');
+      expect(screen.getByTestId('strategy-strip')).toHaveTextContent('34');
+      // Rain not reported: no invented "Dry" (U03).
+      expect(screen.getByTestId('strategy-strip')).not.toHaveTextContent('No rain');
+    });
+  });
+
+  it('a caution from the game phase alone never reads "No caution"', async () => {
+    for (const phase of [6, 7]) {
+      scoringMock.current = toScoringView(realScoringJson(0, phase));
+      // Phase 6 = full-course yellow, 7 = session stopped: both are an active caution with yellow state 0.
+      expect(['fcy', 'red']).toContain(scoringMock.current?.session.caution);
+      const { unmount } = render(<EngineerScreen />);
+      await waitFor(() => {
+        expect(screen.getByTestId('strategy-flag')).toBeInTheDocument();
+      });
+      expect(screen.getByTestId('strategy-flag')).not.toHaveTextContent('No caution');
+      expect(screen.getByTestId('state-banner-caution')).not.toHaveTextContent('No caution');
+      unmount();
+    }
+  });
+
+  it('every raw yellow flag state renders (none of them is a string)', async () => {
+    for (const raw of [-1, 0, 1, 2, 3, 4, 5, 6, 7, 42]) {
+      scoringMock.current = toScoringView(realScoringJson(raw, 5));
+      const { unmount } = render(<EngineerScreen />);
+      await waitFor(() => {
+        expect(screen.getByTestId('strategy-flag')).toBeInTheDocument();
+      });
+      if (raw >= 1 && raw <= 6) expect(screen.getByTestId('pitwall-caution')).toHaveTextContent('FCY / SC');
+      else if (raw === 7) expect(screen.getByTestId('pitwall-caution')).toHaveTextContent('Red flag');
+      else expect(screen.queryByTestId('pitwall-caution')).not.toBeInTheDocument();
+      unmount();
+    }
+  }, 30_000);
 });

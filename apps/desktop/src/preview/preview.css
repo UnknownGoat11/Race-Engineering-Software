@@ -10,7 +10,7 @@
   background: var(--color-warn-bg, #2a2110);
   color: var(--color-warn, #f5b83d);
   font-family: var(--font-mono, monospace);
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 0.04em;
   opacity: 0.85;
   pointer-events: none;

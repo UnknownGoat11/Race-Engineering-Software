@@ -6,7 +6,15 @@
  */
 import { formatAxisTick } from '../lib/units';
 import type { Canvas2DLike } from './canvasContext';
-import { Y_AXIS_WIDTH_CSS, axisColumnLeft, type GraphLayout, type YAxisModel } from './layout';
+import {
+  Y_AXIS_WIDTH_CSS,
+  Y_TITLE_GAP_CSS,
+  axisColumnLeft,
+  drawableTickLabels,
+  yLabelTop,
+  type GraphLayout,
+  type YAxisModel,
+} from './layout';
 import type { PlacedMarker } from './markers';
 import { applyAffine, linearAffine, type Affine } from './scale';
 import type { CurrentPosition, MarkerKind, XRange } from './types';
@@ -113,6 +121,11 @@ const TEXT_PAD_CSS = 3;
 const TEXT_HEIGHT_CSS = 12;
 /** Least space between an x tick label and the axis title, CSS px. */
 const TITLE_CLEARANCE_CSS = 6;
+/**
+ * Space between the plot's bottom edge and the x tick labels, CSS px: below the bottom y tick label (half a text
+ * line under the edge), still inside the x axis row.
+ */
+export const X_LABEL_OFFSET_CSS = 7;
 /** Dash of stale current-car markers and event markers, CSS px. */
 const SHORT_DASH: number[] = [3, 3];
 const NO_DASH: number[] = [];
@@ -208,7 +221,7 @@ export function drawOverlay(ctx: Canvas2DLike, scene: OverlayScene): void {
   ctx.rect(crisp(plot.left), crisp(plot.top), Math.max(0, Math.round(plot.width) - 1), Math.max(0, Math.round(plot.height) - 1));
   ctx.stroke();
 
-  drawXAxis(ctx, scene, x);
+  if (scene.layout.xAxis) drawXAxis(ctx, scene, x);
   for (const axis of scene.yAxes) drawYAxis(ctx, scene, axis);
 
   ctx.save();
@@ -238,7 +251,7 @@ export function drawOverlay(ctx: Canvas2DLike, scene: OverlayScene): void {
 function drawXAxis(ctx: Canvas2DLike, scene: OverlayScene, x: Affine | null): void {
   const { plot } = scene.layout;
   const bottom = plot.top + plot.height;
-  const labelTop = bottom + TICK_CSS + 1;
+  const labelTop = bottom + X_LABEL_OFFSET_CSS;
   // The title is right-aligned under the plot's right end; tick labels that would touch it are left out.
   const titleWidth = ctx.measureText(scene.xTitle).width;
   const titleLeft = plot.left + plot.width - titleWidth;
@@ -276,9 +289,12 @@ function drawYAxis(ctx: Canvas2DLike, scene: OverlayScene, axis: YAxisModel): vo
   vLine(ctx, lineX, plot.top, bottom);
   ctx.textAlign = left ? 'right' : 'left';
   ctx.textBaseline = 'bottom';
-  const title =
-    axis.setting.mode === 'fixed' ? `${axis.title}${FIXED_SCALE_SUFFIX}${axis.offScale === null ? '' : OFF_SCALE_SUFFIX}` : axis.title;
-  ctx.fillText(title, textX, plot.top - 2);
+  // A compact plot has no room for the unit title; the pane's readout carries the unit.
+  if (scene.layout.yTitles) {
+    const title =
+      axis.setting.mode === 'fixed' ? `${axis.title}${FIXED_SCALE_SUFFIX}${axis.offScale === null ? '' : OFF_SCALE_SUFFIX}` : axis.title;
+    ctx.fillText(title, textX, plot.top - Y_TITLE_GAP_CSS);
+  }
   if (axis.offScale !== null) {
     // A solid bar on the clipped end(s) of the axis line, in the axis colour.
     const { width, height } = OFF_SCALE_MARK_CSS;
@@ -291,12 +307,15 @@ function drawYAxis(ctx: Canvas2DLike, scene: OverlayScene, axis: YAxisModel): vo
     const y = linearAffine(axis.range.min * f, axis.range.max * f, bottom, plot.top);
     ctx.textBaseline = 'middle';
     ctx.fillStyle = scene.colors.axisText;
-    for (const v of axis.ticks.values) {
-      const py = crisp(applyAffine(y, v));
+    const pys = axis.ticks.values.map((v) => crisp(applyAffine(y, v)));
+    // Labels that would touch the unit title, another label or the canvas edge are left out (the tick stays).
+    const labelled = new Set(drawableTickLabels(pys, yLabelTop(scene.layout), scene.layout.height));
+    axis.ticks.values.forEach((v, i) => {
+      const py = pys[i] ?? 0;
       ctx.moveTo(lineX, py);
       ctx.lineTo(left ? lineX - TICK_CSS : lineX + TICK_CSS, py);
-      ctx.fillText(formatAxisTick(v, axis.ticks.decimals, axis.display.tickStyle), textX, py);
-    }
+      if (labelled.has(i)) ctx.fillText(formatAxisTick(v, axis.ticks.decimals, axis.display.tickStyle), textX, py);
+    });
   }
   ctx.stroke();
 }
@@ -395,6 +414,8 @@ function drawCursor(ctx: Canvas2DLike, scene: OverlayScene, x: Affine, cursor: C
   ctx.beginPath();
   vLine(ctx, crisp(px), plot.top, bottom);
   ctx.stroke();
+  // Only the pane with the x axis row has room for the label (the stacked graph's header names the cursor too).
+  if (!scene.layout.xAxis) return;
   // Label box on the x axis, kept inside the drawing area.
   const width = ctx.measureText(cursor.label).width + 2 * TEXT_PAD_CSS;
   const boxLeft = Math.max(0, Math.min(px - width / 2, scene.layout.width - width));

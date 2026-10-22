@@ -107,57 +107,47 @@ function FuelPanelContent(): JSX.Element {
         </div>
       )}
 
-      <div className="telemetry-grid-2x2">
-        <div className="card-row">
-          <span className="card-row-label">Avg Cons/Lap</span>
-          <span className="card-row-value">{formatFuelPerLap(consPerLap, { withUnit: true })}</span>
+      {/* v1.3 V07/C06: one label/value pair per row; value and unit on one line; caveats in title */}
+      <dl className="tel-kv">
+        <div className="tel-kv-row">
+          <dt>Avg cons / lap</dt>
+          <dd>{formatFuelPerLap(consPerLap, { withUnit: true })}</dd>
         </div>
-        <div className="card-row">
-          <span className="card-row-label">Last Lap Used</span>
-          <span className="card-row-value">{formatFuel(lastLapUsed, { withUnit: true })}</span>
+        <div className="tel-kv-row">
+          <dt>Last lap used</dt>
+          <dd>{formatFuel(lastLapUsed, { withUnit: true })}</dd>
         </div>
-        <div className="card-row">
-          <span className="card-row-label">Req to Finish</span>
-          <span className="card-row-value">
-            {fuelToFinish != null ? formatFuel(fuelToFinish, { withUnit: true }) : NO_VALUE}
-          </span>
+        <div className="tel-kv-row">
+          <dt>Req to finish</dt>
+          <dd>{fuelToFinish != null ? formatFuel(fuelToFinish, { withUnit: true }) : NO_VALUE}</dd>
         </div>
-        <div className="card-row">
-          <span className="card-row-label">
-            Fuel to Add
-            <span className="reserve-note">(reserve not reported)</span>
-          </span>
-          <span className="card-row-value">
-            {fuelToAdd != null ? formatFuel(fuelToAdd, { withUnit: true }) : NO_VALUE}
-          </span>
+        <div className="tel-kv-row" title="Reserve not reported" data-testid="fuel-to-add-row">
+          <dt>Fuel to add</dt>
+          <dd>{fuelToAdd != null ? formatFuel(fuelToAdd, { withUnit: true }) : NO_VALUE}</dd>
         </div>
-      </div>
+      </dl>
 
       {/* Combined Virtual Energy section when available (EN10) */}
       {hasVe && (
-        <div className="ve-combined-section">
-          <div className="card-row">
-            <span className="card-row-label">VE Laps Remaining</span>
-            <span className="card-row-value">
-              {veLapsRemaining != null ? `${veLapsRemaining.toFixed(1)} laps` : NO_VALUE}
-            </span>
+        <dl className="tel-kv ve-combined-section">
+          <div className="tel-kv-row">
+            <dt>VE laps remaining</dt>
+            <dd>{veLapsRemaining != null ? `${veLapsRemaining.toFixed(1)} laps` : NO_VALUE}</dd>
           </div>
-          <div className="card-row">
-            <span className="card-row-label">VE / Lap</span>
-            <span className="card-row-value">
-              {vePerLap != null ? `${(vePerLap * 100).toFixed(1)}%` : NO_VALUE}
-            </span>
+          <div className="tel-kv-row">
+            <dt>VE / lap</dt>
+            <dd>{vePerLap != null ? `${(vePerLap * 100).toFixed(1)}%` : NO_VALUE}</dd>
           </div>
-        </div>
+        </dl>
       )}
 
       {marginLaps != null && (
-        <div className="card-row margin-row">
-          <span className="card-row-label">Safety Margin</span>
-          <span className="card-row-value">
-            {marginLaps >= 0 ? `+${marginLaps.toFixed(1)} laps` : `${marginLaps.toFixed(1)} laps`}
-          </span>
-        </div>
+        <dl className="tel-kv margin-row">
+          <div className="tel-kv-row">
+            <dt>Safety margin</dt>
+            <dd>{marginLaps >= 0 ? `+${marginLaps.toFixed(1)} laps` : `${marginLaps.toFixed(1)} laps`}</dd>
+          </div>
+        </dl>
       )}
     </Panel>
   );

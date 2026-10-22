@@ -26,8 +26,63 @@
   }
 }
 
+/* Header: one line of session context (D02) and the Setup / Pit board toggles (N03). No boxes. */
 .driver-header-banner {
-  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 32px;
+  flex-shrink: 0;
+}
+
+.driver-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.driver-context > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.driver-context-sep {
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.driver-class-chip {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-1, 2px);
+  font-family: var(--font-data);
+  font-size: var(--type-badge-size, 11px);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.driver-subtabs {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.driver-error-tip {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .driver-error-banner {
@@ -112,7 +167,7 @@
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  height: 100%;
+  min-height: 100%;
   padding: 14px 16px;
   background-color: var(--surface-panel);
   border: 1px solid var(--border-subtle);
@@ -135,18 +190,29 @@
   }
 }
 
-.glance-tile-interactive {
+.glance-header-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Small "Details" text button in the tile header (A02). */
+.glance-details-btn {
+  min-height: 24px;
+  padding: 0 4px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-1, 2px);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
   cursor: pointer;
-  transition: background-color 120ms ease-out, border-color 120ms ease-out;
 }
 
-.glance-tile-interactive:hover {
-  background-color: var(--surface-hover);
-}
-
-.glance-tile-interactive:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
+.glance-details-btn:hover {
+  color: var(--text-primary);
 }
 
 /* Worst-state escalation: critical / warning get full border */
@@ -461,12 +527,27 @@
   margin-top: 6px;
 }
 
+/* The big word must stay readable when the footer is tall (list, code actions): the tile grows instead. */
+.glance-tile-engineers .glance-body,
+.glance-tile-code .glance-body {
+  flex: 1 0 auto;
+  /* It no longer shrinks, so nothing to clip; line-height 1 glyphs overhang the line box by 1-3 px. */
+  overflow: visible;
+}
+
+.glance-engineer-link {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
 .glance-engineer-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  min-height: 28px;
+  box-sizing: border-box;
   font-size: 12px;
-  padding: 4px 8px;
+  padding: 2px 4px 2px 8px;
   background-color: var(--surface-hover);
   border-radius: var(--radius-1, 2px);
   gap: 8px;
@@ -474,8 +555,9 @@
 
 .glance-engineer-info {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  column-gap: 6px;
   min-width: 0;
   flex: 1;
 }
@@ -501,10 +583,8 @@
 .glance-engineer-name {
   font-family: var(--font-ui);
   color: var(--text-primary);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* -------------------------------------------------------------------------
@@ -513,9 +593,9 @@
 .driver-action-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 12px 24px;
   min-height: 64px;
   padding: 8px 16px;
   background-color: var(--surface-panel);
@@ -564,6 +644,18 @@
     padding: 0 24px;
     font-size: 17px;
   }
+}
+
+.driver-action-bar .action-bar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* End session sits alone at the right end of the bar, with a gap (D05). */
+.driver-action-end {
+  margin-left: auto;
+  padding-left: 24px;
 }
 
 .driver-marker-input {
@@ -841,15 +933,21 @@
 }
 
 /* -------------------------------------------------------------------------
- * Driver Pit Board (DriverTelemetryTab per §3.1 & C7)
+ * Driver Pit Board (DriverTelemetryTab per §3.1 & C7; v1.3 D01, D03, D04, V10)
  * STRICT REQUIREMENT: No text < 16 px anywhere on this board!
+ * The board fills the height below the header: fixed rows (status, flag) then hero and tiles share the rest.
  * ------------------------------------------------------------------------- */
 .pit-board {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-  padding: 16px 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1.25fr) minmax(0, 1fr);
+  gap: 12px;
   background-color: var(--surface-app);
+}
+
+.pit-board--empty {
+  grid-template-rows: auto 1fr;
 }
 
 .pit-board-empty-message {
@@ -863,28 +961,99 @@
   border-radius: var(--radius-1, 2px);
 }
 
-/* Item 3: Flag Summary Strip (full width) */
-.pit-board-flag-banner {
-  min-height: 48px;
+/* Numbers inside sans text: mono only for the number and its unit. */
+.pit-board-num {
+  font-family: var(--font-data);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+/* Status row (D01): one 32 px row of chips; colour only when a chip is not OK. */
+.pit-board-status-row {
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 8px;
+  height: 32px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pit-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  box-sizing: border-box;
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1, 2px);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.pit-status-chip__label {
+  font-weight: 600;
+}
+
+.pit-status-chip__value {
+  font-family: var(--font-data);
+  color: var(--text-primary);
+}
+
+.pit-status-chip__glyph {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pit-status-chip--warning {
+  border-color: var(--status-warn);
+  color: var(--status-warn);
+}
+
+.pit-status-chip--critical {
+  border-color: var(--status-critical);
+  color: var(--status-critical);
+}
+
+.pit-status-chip--synthetic {
+  border: 1px dashed var(--dq-synthetic);
+  color: var(--dq-synthetic);
+}
+
+.pit-status-chip--warning .pit-status-chip__value,
+.pit-status-chip--critical .pit-status-chip__value,
+.pit-status-chip--synthetic .pit-status-chip__value {
+  color: inherit;
+}
+
+/* Flag strip: always rendered, fixed height (no gap when there is no flag). */
+.pit-board-flag-banner {
+  display: flex;
 }
 
 .flag-strip {
   width: 100%;
-  min-height: 48px;
+  height: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 12px;
   font-family: var(--font-ui);
   font-size: 20px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
   border-radius: var(--radius-1, 2px);
-  padding: 8px 16px;
+  padding: 0 16px;
   box-sizing: border-box;
+}
+
+.flag-strip-glyph {
+  font-size: 18px;
+  line-height: 1;
 }
 
 .flag-strip-warn {
@@ -917,59 +1086,74 @@
   color: var(--text-primary);
 }
 
-/* Item 1: Delta to Personal Best (96 px Hero) */
+/* Unknown flag state: neutral, no colour (truthful "Flag —"). */
+.flag-strip-unknown {
+  background-color: var(--surface-panel);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 600;
+}
+
+/* Delta to personal best: hero number centred, qualifier beside it (D03). */
 .pit-board-hero {
+  min-height: 0;
   background-color: var(--surface-panel);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-1, 2px);
-  padding: 24px 32px;
+  padding: 16px 32px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .pit-board-hero-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
 }
 
-.pit-board-hero-title {
+.pit-board-hero-title,
+.pit-board-tile-title {
   font-family: var(--font-ui);
   font-size: 18px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-weight: 600;
   color: var(--text-secondary);
 }
 
-.pit-board-hero-badge {
-  font-family: var(--font-ui);
-  font-size: 18px;
-  font-weight: 700;
-  padding: 4px 14px;
-  border-radius: var(--radius-1, 2px);
-  letter-spacing: 0.04em;
+.pit-board-hero-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
 }
 
 .pit-board-hero-value {
   font-family: var(--font-data);
-  font-size: 96px;
+  font-size: clamp(96px, 15vh, 168px);
   font-weight: 700;
   line-height: 1;
   letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
-@media (max-width: 1440px) {
-  .pit-board-hero-value {
-    font-size: 80px;
-  }
+.pit-board-hero-unit {
+  font-size: 0.4em;
+  margin-left: 0.15em;
+  color: var(--text-secondary);
+  font-weight: 600;
 }
 
-@media (min-width: 2400px) {
-  .pit-board-hero-value {
-    font-size: 128px;
-  }
+.pit-board-hero-badge {
+  font-family: var(--font-ui);
+  font-size: 28px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .delta-negative {
@@ -990,47 +1174,41 @@
 
 .pit-board-hero-footer {
   font-family: var(--font-ui);
-  font-size: 16px;
+  font-size: 18px;
   color: var(--text-secondary);
   display: flex;
   align-items: center;
-  gap: 32px;
-  margin-top: 4px;
+  justify-content: center;
+  flex-wrap: wrap;
+  column-gap: 40px;
+  row-gap: 4px;
 }
 
-/* Grid: Item 2 (Laps Remaining) & Item 4 (Pit Limiter) */
+/* Grid: laps left & pit limiter */
 .pit-board-grid {
+  min-height: 0;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px;
+  gap: 12px;
 }
 
 .pit-board-tile {
+  min-height: 0;
   background-color: var(--surface-panel);
   border: 1px solid var(--border-subtle);
   border-top: 3px solid var(--status-off);
   border-radius: var(--radius-1, 2px);
-  padding: 20px 24px;
+  padding: 16px 24px;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  min-height: 200px;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .pit-board-tile-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-
-.pit-board-tile-title {
-  font-family: var(--font-ui);
-  font-size: 18px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-secondary);
 }
 
 .pit-board-tile-glyph {
@@ -1042,37 +1220,21 @@
   display: flex;
   flex-direction: column;
   justify-content: center;
-  flex: 1;
-  margin: 12px 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 8px 0;
 }
 
 .pit-board-tile-value {
   font-family: var(--font-data);
-  font-size: 64px;
+  font-size: clamp(64px, 10vh, 112px);
   font-weight: 700;
   line-height: 1;
-}
-
-@media (max-width: 1440px) {
-  .pit-board-tile-value {
-    font-size: 52px;
-  }
-}
-
-@media (min-width: 2400px) {
-  .pit-board-tile-value {
-    font-size: 85px;
-  }
+  font-variant-numeric: tabular-nums;
 }
 
 .pit-board-limiter-value {
-  font-size: 56px;
-}
-
-@media (max-width: 1440px) {
-  .pit-board-limiter-value {
-    font-size: 44px;
-  }
+  font-size: clamp(56px, 9vh, 96px);
 }
 
 .pit-board-tile-footer {
@@ -1081,16 +1243,10 @@
   gap: 4px;
 }
 
-.pit-board-tile-detail {
-  font-family: var(--font-data);
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
+.pit-board-tile-detail,
 .pit-board-tile-subtext {
   font-family: var(--font-ui);
-  font-size: 16px;
+  font-size: 18px;
   color: var(--text-secondary);
 }
 

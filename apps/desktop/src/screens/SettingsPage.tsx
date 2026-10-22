@@ -9,7 +9,7 @@ import {
   type ConfigSnapshot,
   type Mode,
 } from '../lib/ipc';
-import { buildProfileLabel, environmentLabel, modeLabel } from '../lib/labels';
+import { buildProfileLabel, environmentLabel } from '../lib/labels';
 import { NO_VALUE } from '../lib/units';
 import { describeConnectivityReport, type TestState } from '../lib/connectivity';
 
@@ -21,6 +21,12 @@ interface SettingsPageProps {
 }
 
 const MODES: readonly Mode[] = ['driver', 'engineer'];
+
+/** Sentence-case mode names for the mode toggle and its "Current" line. */
+const MODE_NAMES: Readonly<Record<Mode, string>> = { driver: 'Driver', engineer: 'Engineer' };
+
+/** The localhost preset: the label is built from the values it sets, so it never names a different port. */
+const LOCALHOST_PRESET = { host: '127.0.0.1', port: 443 } as const;
 
 type SaveState = { readonly kind: 'idle' } | { readonly kind: 'saving' } | { readonly kind: 'error'; readonly message: string };
 
@@ -54,6 +60,8 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
   const [settingsSave, setSettingsSave] = useState<SettingsSaveState>({ kind: 'idle' });
   const [restarting, setRestarting] = useState(false);
   const [restartError, setRestartError] = useState<string | null>(null);
+  // Host, port and timeout sit under "Advanced" (minimal setup); open it when no server is set up yet.
+  const [advancedOpen, setAdvancedOpen] = useState(config.network.relay_host === '');
 
   const isStreaming = status?.network.streaming === true;
   const isRecording = status?.recording.state === 'active';
@@ -79,7 +87,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
     if (!hostToTest) {
       setTestState({
         kind: 'error',
-        message: 'Please enter a Relay Server Host / IP before testing.',
+        message: 'Enter a relay server host under Advanced before testing.',
       });
       return;
     }
@@ -146,7 +154,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
       <div className="panel">
         <div className="panel-header">
           <span id="settings-mode-label">Operating mode</span>
-          <span>Current: {modeLabel(mode)}</span>
+          <span>Current: {MODE_NAMES[mode]}</span>
         </div>
         <div className="panel-body">
           <div className="button-row" role="group" aria-labelledby="settings-mode-label">
@@ -157,11 +165,12 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
                 className="btn"
                 aria-pressed={selected === option}
                 disabled={save.kind === 'saving'}
+                data-testid={`settings-mode-${option}`}
                 onClick={() => {
                   setSelected(option);
                 }}
               >
-                {modeLabel(option)} MODE
+                {MODE_NAMES[option]}
               </button>
             ))}
             {isBusy ? (
@@ -203,7 +212,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
       <div className="panel" data-testid="settings-relay-panel">
         <div className="panel-header">
           <span>Relay server</span>
-          <span className="badge badge-info">
+          <span className="badge badge-info settings-relay-badge" data-testid="settings-relay-badge">
             {config.network.relay_host
               ? `Configured: ${config.network.relay_host}:${config.network.relay_port}`
               : 'Not configured'}
@@ -215,85 +224,97 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
             with outbound TLS connections (no port forwarding or VPN needed).
           </p>
 
-          {/* Quick Presets */}
-          <div style={{ marginBottom: '16px' }}>
-            <span style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>
-              Connection Presets:
-            </span>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-              <button
-                type="button"
-                className={`btn btn-xs ${relayHost === '127.0.0.1' ? 'btn-primary' : ''}`}
-                onClick={() => {
-                  setRelayHost('127.0.0.1');
-                  setRelayPort(443);
-                }}
-                title="Connect via localhost or local machine"
-              >
-                💻 Localhost (127.0.0.1:443)
-              </button>
-              <button
-                type="button"
-                className="btn btn-xs"
-                onClick={() => {
-                  setRelayHost('');
-                }}
-                title="Clear host to type a custom domain, public IP, or dynamic DNS"
-              >
-                🌍 Custom Team Server / Direct IP
-              </button>
-            </div>
-          </div>
-
-          {/* Editable Fields Grid */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '16px' }}>
-            <div>
-              <label htmlFor="relay-host-input" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
-                Relay Server Host / Domain / IP
-              </label>
-              <input
-                id="relay-host-input"
-                type="text"
-                className="input"
-                placeholder="e.g. relay.example.com or 192.168.1.100"
-                value={relayHost}
-                onChange={(e) => { setRelayHost(e.target.value); }}
-                style={{ width: '100%', fontFamily: 'monospace' }}
-                data-testid="relay-host-input"
-              />
+          <details
+            className="settings-advanced"
+            open={advancedOpen}
+            onToggle={(e) => {
+              setAdvancedOpen(e.currentTarget.open);
+            }}
+            data-testid="settings-advanced"
+          >
+            <summary className="settings-advanced__summary">Advanced</summary>
+            {/* Quick Presets */}
+            <div style={{ marginBottom: '16px' }}>
+              <span style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>
+                Presets
+              </span>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn btn-xs"
+                  aria-pressed={relayHost === LOCALHOST_PRESET.host && relayPort === LOCALHOST_PRESET.port}
+                  onClick={() => {
+                    setRelayHost(LOCALHOST_PRESET.host);
+                    setRelayPort(LOCALHOST_PRESET.port);
+                  }}
+                  title="Use a relay running on this computer"
+                  data-testid="relay-preset-localhost"
+                >
+                  Localhost ({LOCALHOST_PRESET.host}:{LOCALHOST_PRESET.port})
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-xs"
+                  onClick={() => {
+                    setRelayHost('');
+                  }}
+                  title="Clear the host to type a domain name or IP address"
+                >
+                  Custom server
+                </button>
+              </div>
             </div>
 
-            <div>
-              <label htmlFor="relay-port-input" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
-                Relay Port
-              </label>
-              <input
-                id="relay-port-input"
-                type="number"
-                className="input"
-                placeholder="443"
-                value={relayPort}
-                onChange={(e) => { setRelayPort(Number(e.target.value) || 443); }}
-                style={{ width: '100%', fontFamily: 'monospace' }}
-                data-testid="relay-port-input"
-              />
-            </div>
+            {/* Editable Fields Grid */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '16px' }}>
+              <div>
+                <label htmlFor="relay-host-input" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
+                  Relay server host
+                </label>
+                <input
+                  id="relay-host-input"
+                  type="text"
+                  className="input"
+                  placeholder="e.g. relay.example.com or 192.168.1.100"
+                  value={relayHost}
+                  onChange={(e) => { setRelayHost(e.target.value); }}
+                  style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                  data-testid="relay-host-input"
+                />
+              </div>
 
-            <div>
-              <label htmlFor="relay-timeout-input" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
-                Connect Timeout (ms)
-              </label>
-              <input
-                id="relay-timeout-input"
-                type="number"
-                className="input"
-                placeholder="5000"
-                value={connectTimeout}
-                onChange={(e) => { setConnectTimeout(Number(e.target.value) || 5000); }}
-                style={{ width: '100%', fontFamily: 'monospace' }}
-              />
+              <div>
+                <label htmlFor="relay-port-input" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
+                  Relay port
+                </label>
+                <input
+                  id="relay-port-input"
+                  type="number"
+                  className="input"
+                  placeholder="443"
+                  value={relayPort}
+                  onChange={(e) => { setRelayPort(Number(e.target.value) || 443); }}
+                  style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                  data-testid="relay-port-input"
+                />
+              </div>
+
+              <div>
+                <label htmlFor="relay-timeout-input" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
+                  Connect timeout (ms)
+                </label>
+                <input
+                  id="relay-timeout-input"
+                  type="number"
+                  className="input"
+                  placeholder="5000"
+                  value={connectTimeout}
+                  onChange={(e) => { setConnectTimeout(Number(e.target.value) || 5000); }}
+                  style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
+                />
+              </div>
             </div>
-          </div>
+          </details>
 
           {/* Action Buttons: Test Connection & Save */}
           <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '14px' }}>
@@ -304,7 +325,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
               disabled={testState.kind === 'testing' || restarting}
               data-testid="test-relay-btn"
             >
-              {testState.kind === 'testing' ? '⏳ Testing Connection…' : '⚡ Test Connection'}
+              {testState.kind === 'testing' ? 'Testing connection…' : 'Test connection'}
             </button>
 
             <button
@@ -314,7 +335,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
               disabled={settingsSave.kind === 'saving' || restarting}
               data-testid="save-relay-btn"
             >
-              {settingsSave.kind === 'saving' ? 'Saving…' : '💾 Save Server Settings'}
+              {settingsSave.kind === 'saving' ? 'Saving…' : 'Save server settings'}
             </button>
           </div>
 
@@ -327,14 +348,14 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
 
           {testState.kind === 'success' && (
             <div className="alert alert-success" style={{ marginBottom: '12px', borderColor: 'var(--color-success)' }}>
-              <strong>✅ Connection test passed</strong>
+              <strong>Connection test passed</strong>
               <div style={{ fontSize: '12px', marginTop: '2px' }}>{testState.message}</div>
             </div>
           )}
 
           {testState.kind === 'error' && (
             <div className="alert alert-error" style={{ marginBottom: '12px' }}>
-              <strong>❌ Connection test failed</strong>
+              <strong>Connection test failed</strong>
               <div style={{ fontSize: '12px', marginTop: '2px' }}>{testState.message}</div>
             </div>
           )}
@@ -346,7 +367,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
               style={{ marginBottom: '12px' }}
             >
               <strong>
-                {settingsSave.restartRequired ? '⚠️ Settings Saved — Restart Required' : '✅ Settings Saved Successfully'}
+                {settingsSave.restartRequired ? 'Settings saved. Restart required.' : 'Settings saved'}
               </strong>
               <div style={{ fontSize: '12px', marginTop: '4px' }}>
                 {settingsSave.restartRequired
@@ -362,7 +383,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
                     disabled={restarting}
                     data-testid="restart-app-btn"
                   >
-                    {restarting ? 'Restarting…' : '🔄 Restart Application Now'}
+                    {restarting ? 'Restarting…' : 'Restart now'}
                   </button>
                 </div>
               )}
@@ -387,14 +408,13 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
       {/* Telemetry & Engines Configuration */}
       <div className="panel">
         <div className="panel-header">
-          <span>Telemetry & Engines</span>
-          <span className="num">Schema v{config.schema_version}</span>
+          <span>Telemetry and engines</span>
         </div>
         <div className="panel-body">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px', marginBottom: '14px' }}>
             <div>
               <label htmlFor="recording-toggle" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
-                Local Recording
+                Local recording
               </label>
               <select
                 id="recording-toggle"
@@ -403,14 +423,14 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
                 onChange={(e) => { setRecordingEnabled(e.target.value === 'true'); }}
                 style={{ width: '100%' }}
               >
-                <option value="true">Enabled (Record laps)</option>
+                <option value="true">Enabled (record laps)</option>
                 <option value="false">Disabled</option>
               </select>
             </div>
 
             <div>
               <label htmlFor="fuel-window-input" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
-                Fuel Window (laps)
+                Fuel window (laps)
               </label>
               <select
                 id="fuel-window-input"
@@ -419,17 +439,17 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
                 onChange={(e) => { setFuelWindow(Number(e.target.value) || 5); }}
                 style={{ width: '100%' }}
               >
-                <option value="1">1 Lap</option>
-                <option value="2">2 Laps</option>
-                <option value="3">3 Laps</option>
-                <option value="5">5 Laps (Default)</option>
-                <option value="10">10 Laps</option>
+                <option value="1">1 lap</option>
+                <option value="2">2 laps</option>
+                <option value="3">3 laps</option>
+                <option value="5">5 laps (default)</option>
+                <option value="10">10 laps</option>
               </select>
             </div>
 
             <div>
               <label htmlFor="fuel-reserve-input" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
-                Fuel Reserve (laps)
+                Fuel reserve (laps)
               </label>
               <input
                 id="fuel-reserve-input"
@@ -446,7 +466,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
 
             <div>
               <label htmlFor="ui-refresh-input" style={{ display: 'block', fontSize: '12px', fontWeight: 600, marginBottom: '4px' }}>
-                UI Max Refresh (Hz)
+                UI max refresh (Hz)
               </label>
               <input
                 id="ui-refresh-input"
@@ -468,7 +488,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
               onClick={() => { void handleSaveSettings(); }}
               disabled={settingsSave.kind === 'saving' || restarting}
             >
-              Save Engine & Telemetry Settings
+              Save telemetry settings
             </button>
           </div>
         </div>
@@ -477,7 +497,7 @@ export function SettingsPage({ info, snapshot, mode, onChangeMode }: SettingsPag
       {/* Application Diagnostics Panel */}
       <div className="panel">
         <div className="panel-header">
-          <span>Application Diagnostics</span>
+          <span>Diagnostics</span>
         </div>
         <div className="panel-body">
           <dl className="kv">

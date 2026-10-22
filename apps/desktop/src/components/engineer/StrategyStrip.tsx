@@ -1,27 +1,19 @@
 import { type JSX } from 'react';
 import { ch } from '../../generated/channels';
 import { useChannelValues } from '../../telemetry/hooks';
-import { NO_VALUE } from '../../lib/units';
+import { formatClock, formatLapCountText, formatLapsText, formatWeather, joinUnit, NO_VALUE } from '../../lib/units';
 
 export interface StrategyStripProps {
   readonly sessionClockS?: number | null;
   readonly completedLaps?: number | null;
   readonly trackTempC?: number | null;
   readonly airTempC?: number | null;
-  readonly weather?: string | null;
+  /** Measured rain intensity 0..1; unknown (null) omits the weather item (audit U03). */
+  readonly rainFrac?: number | null;
+  /** Session flag text ("No caution", "Pending", …); null = not known ("—"). */
   readonly flagText?: string | null;
-}
-
-function formatClock(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return NO_VALUE;
-  const s = Math.floor(seconds);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const remS = s % 60;
-  if (h > 0) {
-    return `${h}:${m.toString().padStart(2, '0')}:${remS.toString().padStart(2, '0')}`;
-  }
-  return `${m}:${remS.toString().padStart(2, '0')}`;
+  /** Active caution: the flag gets a pill (warning amber for FCY / SC, critical for a red flag). */
+  readonly flagLevel?: 'warn' | 'critical' | null;
 }
 
 const STRATEGY_CHANNEL_IDS = [
@@ -29,22 +21,27 @@ const STRATEGY_CHANNEL_IDS = [
   ch.FUEL_LAPS_REMAINING,     // 0x0C03
   ch.FUEL_TO_ADD,             // 0x0C06
   ch.VE_LAPS_REMAINING,       // 0x0C13
-  ch.STINT_NUMBER,            // 0x0C20
   ch.STINT_LAPS,              // 0x0C21
-  ch.STINT_TIME,              // 0x0C22
   ch.STINT_MAX_LAPS,          // 0x0C23
   ch.TYRE_SET_LAPS,           // 0x0C24
-  ch.RACE_LAPS_REMAINING,     // 0x0C25
-  ch.FLAG_SUMMARY,            // 0x0B0C
 ] as const;
+
+function LimitBadge(): JSX.Element {
+  return (
+    <span className="badge strategy-limit-badge" title="The resource that limits the stint">
+      Limit
+    </span>
+  );
+}
 
 export function StrategyStrip({
   sessionClockS,
   completedLaps,
   trackTempC,
   airTempC,
-  weather,
+  rainFrac,
   flagText,
+  flagLevel,
 }: StrategyStripProps): JSX.Element {
   const samples = useChannelValues(STRATEGY_CHANNEL_IDS);
 
@@ -66,8 +63,9 @@ export function StrategyStrip({
   // Determine limiting resource for strategy
   const hasFuel = fuelLaps != null;
   const hasVe = veLaps != null;
-  const isFuelLimit = hasFuel && (!hasVe || fuelLaps <= veLaps);
-  const isVeLimit = hasVe && (!hasFuel || veLaps < fuelLaps);
+  const isFuelLimit = hasFuel && hasVe && fuelLaps <= veLaps;
+  const isVeLimit = hasFuel && hasVe && veLaps < fuelLaps;
+  const weather = formatWeather(rainFrac);
 
   // Build items array, strictly omitting items that have no data source per §3.2
   const items: JSX.Element[] = [];
@@ -76,7 +74,7 @@ export function StrategyStrip({
     items.push(
       <span key="session" className="strategy-item">
         <span className="strategy-label">Session</span>
-        <span className="num strategy-value">{formatClock(sessionRemS)}</span>
+        <span className="num strategy-value">{formatClock(Math.max(0, sessionRemS))}</span>
       </span>,
     );
   }
@@ -96,7 +94,7 @@ export function StrategyStrip({
         <span className="strategy-label">Stint</span>
         <span className="num strategy-value">
           {Math.floor(stintLaps)}
-          {stintMax != null ? `/${Math.floor(stintMax)}` : ''}
+          {stintMax != null ? `/${String(Math.floor(stintMax))}` : ''}
         </span>
       </span>,
     );
@@ -104,41 +102,38 @@ export function StrategyStrip({
 
   if (fuelLaps != null) {
     items.push(
-      <span key="fuel" className="strategy-item">
+      <span key="fuel" className="strategy-item" data-testid="strategy-fuel">
         <span className="strategy-label">Fuel</span>
-        <span className="num strategy-value">
-          {fuelLaps.toFixed(1)} L{isFuelLimit && <span className="strategy-limit"> ◂limit</span>}
-        </span>
+        <span className="num strategy-value">{formatLapsText(fuelLaps)}</span>
+        {isFuelLimit && <LimitBadge />}
       </span>,
     );
   }
 
   if (veLaps != null) {
     items.push(
-      <span key="ve" className="strategy-item">
+      <span key="ve" className="strategy-item" data-testid="strategy-ve">
         <span className="strategy-label">VE</span>
-        <span className="num strategy-value">
-          {veLaps.toFixed(1)}
-          {isVeLimit && <span className="strategy-limit"> ◂limit</span>}
-        </span>
+        <span className="num strategy-value">{formatLapsText(veLaps)}</span>
+        {isVeLimit && <LimitBadge />}
       </span>,
     );
   }
 
   if (fuelToAdd != null && fuelToAdd > 0) {
     items.push(
-      <span key="fuel_add" className="strategy-item">
-        <span className="strategy-label">Fuel+</span>
-        <span className="num strategy-value">{fuelToAdd.toFixed(1)} L</span>
+      <span key="fuel_add" className="strategy-item" data-testid="strategy-fuel-add">
+        <span className="strategy-label">Fuel to add</span>
+        <span className="num strategy-value">{joinUnit(fuelToAdd.toFixed(1), 'L')}</span>
       </span>,
     );
   }
 
   if (tyreSetLaps != null) {
     items.push(
-      <span key="tyres" className="strategy-item">
+      <span key="tyres" className="strategy-item" data-testid="strategy-tyres">
         <span className="strategy-label">Tyres</span>
-        <span className="num strategy-value">{Math.floor(tyreSetLaps)} L</span>
+        <span className="num strategy-value">{formatLapCountText(tyreSetLaps)}</span>
       </span>,
     );
   }
@@ -149,40 +144,45 @@ export function StrategyStrip({
         {trackTempC != null && (
           <>
             <span className="strategy-label">Track</span>
-            <span className="num strategy-value">{trackTempC.toFixed(0)} &deg;C</span>
+            <span className="num strategy-value">{joinUnit(trackTempC.toFixed(0), '°C')}</span>
           </>
         )}
         {airTempC != null && (
           <>
             <span className="strategy-label">Air</span>
-            <span className="num strategy-value">{airTempC.toFixed(0)} &deg;C</span>
+            <span className="num strategy-value">{joinUnit(airTempC.toFixed(0), '°C')}</span>
           </>
         )}
       </span>,
     );
   }
 
-  if (weather) {
+  if (weather !== null) {
     items.push(
       <span key="weather" className="strategy-item strategy-weather">
-        <span className="strategy-value">{weather}</span>
+        <span className="strategy-text">{weather}</span>
       </span>,
     );
   }
 
-  if (flagText) {
-    items.push(
-      <span key="flag" className="strategy-item strategy-flag">
-        <span className="badge badge-subtle">{flagText}</span>
-      </span>,
-    );
-  }
+  items.push(
+    <span key="flag" className="strategy-item strategy-flag" data-testid="strategy-flag">
+      <span className="strategy-label">Flag</span>
+      {flagLevel != null && flagText != null ? (
+        <span className={`badge ${flagLevel === 'critical' ? 'badge-status-critical' : 'badge-status-warn'}`}>
+          {flagText}
+        </span>
+      ) : (
+        <span className="strategy-text">{flagText ?? NO_VALUE}</span>
+      )}
+    </span>,
+  );
 
   return (
     <div className="strategy-strip" data-testid="strategy-strip">
       {items.map((item, idx) => (
         <span key={item.key} className="strategy-item-wrapper">
-          {idx > 0 && <span className="strategy-sep">&bull;</span>}
+          {idx > 0 && <span className="strategy-sep" aria-hidden="true">&bull;</span>}
           {item}
         </span>
       ))}

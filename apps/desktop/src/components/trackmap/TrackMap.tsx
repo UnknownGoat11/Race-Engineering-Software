@@ -15,7 +15,8 @@ import {
 import { TelemetryStoreContext } from '../../telemetry/hooks';
 import { LapDistanceBar } from './LapDistanceBar';
 import { buildSvgPath, classToColor, positionAt } from './trackGeometry';
-import { applyTransform, computeBounds, fitMapTransform } from './transform';
+import { carMarkerLabel, carVehicleTitle } from './carNumber';
+import { applyTransform, computeBounds, fitMapTransform, fitPointsFor } from './transform';
 import type { CompetitorMarker, DriverPosition, TrackMap as TrackMapData, TrackMapDq } from './types';
 import { useTrackGeometry } from './useTrackGeometry';
 import './trackmap.css';
@@ -41,7 +42,10 @@ export interface TrackMapProps {
   readonly driverPlace?: number | null;
   /** Driver current sector (e.g. 1, 2, or 3). Optional, auto-inferred from scoring or lapDistM if omitted. */
   readonly driverSector?: number | null;
-  /** Driver vehicle car number (e.g. "92"). Optional, auto-inferred from scoring if omitted. */
+  /**
+   * Driver vehicle car number (e.g. "92"). Optional, auto-inferred from scoring if omitted. A full vehicle name is
+   * accepted too: the marker shows only the extracted number (v1.3 U10).
+   */
   readonly driverCarNumber?: string | null;
   /** Driver vehicle class. Optional, auto-inferred from scoring if omitted. */
   readonly driverVehicleClass?: VehicleClass | null;
@@ -86,6 +90,11 @@ function buildAriaSummary({
   }
 
   return parts.join(', ');
+}
+
+/** Marker tooltip: "#23 Mercedes-AMG LMGT3 · A. Driver"; a bare number gets its '#'. */
+function markerTooltip(vehicleName: string | null | undefined, driverName: string | null | undefined): string {
+  return [carVehicleTitle(vehicleName), (driverName ?? '').trim()].filter((part) => part !== '').join(' · ');
 }
 
 export function TrackMap({
@@ -154,10 +163,11 @@ export function TrackMap({
   const isStale = dq === 'stale';
   const isEnded = dq === 'ended';
 
-  // Driver car number derivation
-  const driverCarNumber =
+  // Driver car number derivation: the marker shows the number only, the full name goes in the tooltip (U10)
+  const driverVehicleName =
     explicitDriverCarNumber ??
     (scoring?.vehicles ? scoring.vehicles.find((v) => v.is_player)?.vehicle_name ?? null : null);
+  const driverCarNumber = driverVehicleName ? carMarkerLabel(driverVehicleName) : '';
 
   // Classes currently present in the session (A09 legend)
   const presentClasses = (() => {
@@ -232,11 +242,17 @@ export function TrackMap({
     if (!hasMapPoints || dimensions.width <= 0 || dimensions.height <= 0) {
       return null;
     }
-    const bounds = computeBounds(effectiveMap.points);
+    // Generated geometry may be partial (it locks at 65 % coverage): fit to geometry + cars so none is off-map (V04)
+    const fitPoints = fitPointsFor(
+      effectiveMap.points,
+      driverPosition ? [...competitors, driverPosition] : competitors,
+      effectiveMap.source === 'verified',
+    );
+    const bounds = computeBounds(fitPoints);
     if (!bounds) {
       return null;
     }
-    return fitMapTransform(bounds, effectiveMap.points, dimensions.width, dimensions.height, 36, rotationRad);
+    return fitMapTransform(bounds, fitPoints, dimensions.width, dimensions.height, 36, rotationRad);
   })();
 
   // Driver marker coordinates
@@ -414,7 +430,7 @@ export function TrackMap({
             const [u, v] = applyTransform(transform, sector.x, sector.z);
             return (
               <g key={`sector-${sector.index}`} data-testid={`sector-${sector.index}`}>
-                <circle cx={u} cy={v} r={3} fill="#7a8492" />
+                <circle cx={u} cy={v} r={3} className="trackmap-sector-dot" />
                 <text x={u} y={v - 8} className="trackmap-sector-text">
                   S{sector.index + 1}
                 </text>
@@ -427,7 +443,7 @@ export function TrackMap({
             const [u, v] = applyTransform(transform, effectiveMap.startFinish.x, effectiveMap.startFinish.z);
             return (
               <g data-testid="start-finish-line">
-                <circle cx={u} cy={v} r={4} fill="#ffffff" />
+                <circle cx={u} cy={v} r={4} className="trackmap-start-finish-dot" />
                 <line x1={u - 6} y1={v} x2={u + 6} y2={v} className="trackmap-start-finish" />
               </g>
             );
@@ -437,9 +453,10 @@ export function TrackMap({
           {effectiveMap.pitEntry && (() => {
             const [u, v] = applyTransform(transform, effectiveMap.pitEntry.x, effectiveMap.pitEntry.z);
             return (
-              <g data-testid="pit-entry">
-                <circle cx={u} cy={v} r={3} fill="#f5b83d" />
-                <text x={u} y={v - 6} className="trackmap-sector-text" fill="#f5b83d">
+              <g data-testid="pit-entry" className="trackmap-pit-marker">
+                <title>Pit entry</title>
+                <circle cx={u} cy={v} r={3} className="trackmap-pit-dot" />
+                <text x={u} y={v - 6} className="trackmap-sector-text trackmap-pit-text">
                   IN
                 </text>
               </g>
@@ -449,28 +466,32 @@ export function TrackMap({
           {effectiveMap.pitExit && (() => {
             const [u, v] = applyTransform(transform, effectiveMap.pitExit.x, effectiveMap.pitExit.z);
             return (
-              <g data-testid="pit-exit">
-                <circle cx={u} cy={v} r={3} fill="#4c9dff" />
-                <text x={u} y={v - 6} className="trackmap-sector-text" fill="#4c9dff">
+              <g data-testid="pit-exit" className="trackmap-pit-marker">
+                <title>Pit exit</title>
+                <circle cx={u} cy={v} r={3} className="trackmap-pit-dot" />
+                <text x={u} y={v - 6} className="trackmap-sector-text trackmap-pit-text">
                   OUT
                 </text>
               </g>
             );
           })()}
 
-          {/* Competitor Markers with legible numbers at marker size >= 12px */}
+          {/* Competitor Markers: number only on the dot, full vehicle + driver name in the tooltip (U10/V04) */}
           {competitorMarkers.map(({ u, v, competitor }) => {
             const color = classToColor(competitor.vehicleClass);
+            const label = carMarkerLabel(competitor.carNumber);
+            const tooltip = markerTooltip(competitor.carNumber, competitor.driverName);
             return (
               <g
                 key={`car-${competitor.id}`}
                 className={`trackmap-competitor-group ${competitor.inPits ? 'in-pits' : ''} ${isStale ? 'stale' : ''}`}
-                data-testid={`competitor-${competitor.carNumber}`}
+                data-testid={`competitor-${label}`}
               >
+                {tooltip !== '' && <title>{tooltip}</title>}
                 <circle
                   cx={u}
                   cy={v}
-                  r={9}
+                  r={10}
                   fill={isStale ? 'transparent' : color}
                   stroke="var(--surface-app, #0b0d10)"
                   strokeWidth={1.5}
@@ -482,7 +503,7 @@ export function TrackMap({
                   className="trackmap-car-label"
                   fill={isStale ? 'var(--dq-stale-value, #8b95a3)' : 'var(--text-inverse, #0b0d10)'}
                 >
-                  {competitor.carNumber}
+                  {label}
                 </text>
               </g>
             );
@@ -491,6 +512,7 @@ export function TrackMap({
           {/* Driver Vehicle Marker */}
           {driverScreenPos && (
             <g data-testid="driver-marker">
+              {driverVehicleName && <title>{markerTooltip(driverVehicleName, null)}</title>}
               <circle
                 cx={driverScreenPos[0]}
                 cy={driverScreenPos[1]}
@@ -500,7 +522,7 @@ export function TrackMap({
               <circle
                 cx={driverScreenPos[0]}
                 cy={driverScreenPos[1]}
-                r={9}
+                r={10}
                 className={`trackmap-car-driver ${driverPosition?.state === 'stale' || isStale ? 'stale' : ''}`}
               />
               {driverCarNumber && (
@@ -508,7 +530,6 @@ export function TrackMap({
                   x={driverScreenPos[0]}
                   y={driverScreenPos[1]}
                   className="trackmap-car-label trackmap-driver-label"
-                  fill="#000000"
                 >
                   {driverCarNumber}
                 </text>
@@ -519,7 +540,7 @@ export function TrackMap({
                   y1={driverScreenPos[1]}
                   x2={driverScreenPos[0] + 15 * Math.sin(driverPosition.headingRad - rotationRad)}
                   y2={driverScreenPos[1] - 15 * Math.cos(driverPosition.headingRad - rotationRad)}
-                  stroke="#ffffff"
+                  className="trackmap-car-heading"
                   strokeWidth={2}
                   strokeLinecap="round"
                 />

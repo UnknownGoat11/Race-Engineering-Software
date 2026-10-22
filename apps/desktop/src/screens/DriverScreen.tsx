@@ -9,7 +9,8 @@
  * - Worst-first attention rows (48px each, max 3 + N)
  * - Collapsible Details disclosure table (4 columns at 1920, 2 columns at 1366)
  * - Collapsible Developer tools disclosure (visible only when environment !== 'production')
- * - Telemetry Dashboard pit board tab fed via TelemetryStoreContext (4 glance items per C7)
+ * - Pit board sub-tab fed via TelemetryStoreContext (4 glance items per C7) with a connection status row (D01)
+ * - Sub-tabs "Setup" / "Pit board" are plain toggle buttons; the last one is remembered (N03, A07)
  */
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 import { PanelErrorBoundary } from '../components/ErrorBoundary';
@@ -17,6 +18,12 @@ import { AttentionRow } from '../components/driver/AttentionRow';
 import { DeveloperTools } from '../components/driver/DeveloperTools';
 import { DriverDetails } from '../components/driver/DriverDetails';
 import { GlanceTile } from '../components/driver/GlanceTile';
+import { PitBoardStatusRow } from '../components/driver/PitBoardStatusRow';
+import {
+  readStoredSubTab,
+  storeSubTab,
+  type DriverSubTab,
+} from '../components/driver/driverBoardModel';
 import { DriverTelemetryTab } from '../components/telemetry/DriverTelemetryTab';
 import { Announcer } from '../components/ui/Announcer';
 import { ConfirmAction } from '../components/ui/ConfirmAction';
@@ -44,6 +51,8 @@ import {
   type StatusHistory,
   type TileAction,
 } from '../lib/statusModel';
+import { classColorVar, vehicleClassCode, vehicleClassName } from '../lib/classes';
+import { COPY, engineerLinkLabel } from '../lib/labels';
 import { NO_VALUE } from '../lib/units';
 import { connectTauriTelemetry } from '../telemetry/bridge';
 import { TelemetryStoreContext } from '../telemetry/hooks';
@@ -56,22 +65,10 @@ export interface DriverScreenProps {
   readonly environment?: Environment;
 }
 
-function lmuStateBadgeClass(state: string | undefined, isSynthetic: boolean): string {
-  if (isSynthetic) return 'status-badge-warn';
-  switch (state) {
-    case 'LIVE':
-      return 'status-badge-live';
-    case 'STALE':
-      return 'status-badge-stale';
-    case 'PAUSED':
-    case 'CONNECTING':
-      return 'status-badge-warn';
-    case 'ERROR':
-      return 'status-badge-error';
-    default:
-      return 'status-badge-neutral';
-  }
-}
+const SUB_TABS: readonly { readonly id: DriverSubTab; readonly label: string; readonly testId: string }[] = [
+  { id: 'setup', label: COPY.driverSetup, testId: 'tab-status' },
+  { id: 'pitboard', label: COPY.pitBoard, testId: 'tab-telemetry' },
+];
 
 export function DriverScreen(props?: DriverScreenProps): JSX.Element {
   const onRequireLogin = props?.onRequireLogin;
@@ -79,7 +76,11 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
   const { status, error, refresh } = useCoreStatus();
   const [history, setHistory] = useState<StatusHistory>(EMPTY_HISTORY);
   const [nowMs, setNowMs] = useState(0);
-  const [activeTab, setActiveTab] = useState<'status' | 'telemetry'>('status');
+  const [activeTab, setActiveTabState] = useState<DriverSubTab>(readStoredSubTab);
+  const setActiveTab = (tab: DriverSubTab): void => {
+    setActiveTabState(tab);
+    storeSubTab(tab);
+  };
   const [copiedCode, setCopiedCode] = useState(false);
   const [markerText, setMarkerText] = useState('');
   const [selectedScenario, setSelectedScenario] = useState<DemoScenario>('demo');
@@ -208,7 +209,6 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
     return deriveDriverTiles(status, history, { nowMs });
   }, [status, history, nowMs]);
 
-  const lmu = status?.lmu;
   const session = status?.session;
   const network = status?.network;
   const recording = status?.recording;
@@ -347,75 +347,52 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
   return (
     <TelemetryStoreContext value={store}>
       <div className="screen-container driver-screen-container" data-testid="driver-screen">
-        {/* System Status Header Banner (C6 session context in app bar) */}
-        <div className="screen-header-banner driver-header-banner">
-          <div className="screen-header-left">
-            <span
-              className={`status-badge ${lmuStateBadgeClass(lmu?.state, isSynthetic)}`}
-              data-testid="driver-lmu-state"
-            >
-              LMU: {status ? (isSynthetic ? 'DEMO' : lmu?.state ?? 'UNKNOWN') : 'UNKNOWN'}
+        {/* Session context: one line of UI-font text, "—" where missing (D02). Demo is marked by the band only (U14). */}
+        <div className="driver-header-banner" data-testid="driver-header">
+          <p className="driver-context" data-testid="driver-context">
+            <span data-testid="driver-car">{session?.car ?? NO_VALUE}</span>
+            <span className="driver-context-sep" aria-hidden="true">
+              ·
             </span>
-            {isSynthetic && (
-              <span className="status-badge status-badge-warn" data-testid="synthetic-badge">
-                SYNTHETIC DATA (DISPLAY ONLY)
+            {session?.vehicle_class ? (
+              <span
+                className="driver-class-chip"
+                data-testid="driver-class"
+                title={vehicleClassName(session.vehicle_class)}
+                style={{ color: classColorVar(session.vehicle_class), borderColor: classColorVar(session.vehicle_class) }}
+              >
+                {vehicleClassCode(session.vehicle_class) === NO_VALUE
+                  ? session.vehicle_class
+                  : vehicleClassCode(session.vehicle_class)}
               </span>
+            ) : (
+              <span data-testid="driver-class">{NO_VALUE}</span>
             )}
-            <div className="meta-chip">
-              <span className="meta-chip-label">Vehicle</span>
-              <span className="meta-chip-value" data-testid="driver-car">
-                {session?.car ?? 'No car detected'}
-              </span>
-            </div>
-            <div className="meta-chip">
-              <span className="meta-chip-label">Class</span>
-              <span className="meta-chip-value" data-testid="driver-class">
-                {session?.vehicle_class ?? NO_VALUE}
-              </span>
-            </div>
-            <div className="meta-chip">
-              <span className="meta-chip-label">Track</span>
-              <span className="meta-chip-value" data-testid="driver-track">
-                {session?.track ?? 'No track loaded'}
-              </span>
-            </div>
-            <div className="meta-chip">
-              <span className="meta-chip-label">Session</span>
-              <span className="meta-chip-value" data-testid="driver-session-type">
-                {session?.session_type ?? NO_VALUE}
-              </span>
-            </div>
-          </div>
+            <span className="driver-context-sep" aria-hidden="true">
+              ·
+            </span>
+            <span data-testid="driver-track">{session?.track ?? NO_VALUE}</span>
+            <span className="driver-context-sep" aria-hidden="true">
+              ·
+            </span>
+            <span data-testid="driver-session-type">{session?.session_type ?? NO_VALUE}</span>
+          </p>
 
-          <div className="screen-header-right">
-            <nav className="shell-nav" role="tablist" aria-label="Driver views">
+          <div className="driver-subtabs" role="group" aria-label="Driver views">
+            {SUB_TABS.map((t) => (
               <button
+                key={t.id}
                 type="button"
-                role="tab"
                 className="btn btn-sm"
-                aria-selected={activeTab === 'status'}
-                aria-current={activeTab === 'status' ? 'page' : undefined}
+                aria-pressed={activeTab === t.id}
                 onClick={() => {
-                  setActiveTab('status');
+                  setActiveTab(t.id);
                 }}
-                data-testid="tab-status"
+                data-testid={t.testId}
               >
-                Status Hub
+                {t.label}
               </button>
-              <button
-                type="button"
-                role="tab"
-                className="btn btn-sm"
-                aria-selected={activeTab === 'telemetry'}
-                aria-current={activeTab === 'telemetry' ? 'page' : undefined}
-                onClick={() => {
-                  setActiveTab('telemetry');
-                }}
-                data-testid="tab-telemetry"
-              >
-                Telemetry Dashboard
-              </button>
-            </nav>
+            ))}
           </div>
         </div>
 
@@ -425,7 +402,8 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
         {/* Demo banner per §3.1 */}
         {isSynthetic && (
           <div className="driver-demo-band" data-testid="driver-demo-band">
-            ▨ DEMO — synthetic data, not recorded or streamed ▨
+            <span aria-hidden="true">▨</span> DEMO — synthetic data, not recorded or streamed{' '}
+            <span aria-hidden="true">▨</span>
           </div>
         )}
 
@@ -435,9 +413,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
             <span className="driver-error-message">
               {actionError}
               {(actionError.toLowerCase().includes('relay') || actionError.toLowerCase().includes('server')) && (
-                <span style={{ display: 'block', fontSize: '11px', opacity: 0.85, marginTop: '2px' }}>
-                  Tip: Go to Settings → Relay Server Connection to configure your server address.
-                </span>
+                <span className="driver-error-tip">Set up the relay server in Settings.</span>
               )}
             </span>
             <button
@@ -461,9 +437,9 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
           </div>
         )}
 
-        {activeTab === 'telemetry' ? (
-          <PanelErrorBoundary name="Driver Telemetry Dashboard">
-            <DriverTelemetryTab />
+        {activeTab === 'pitboard' ? (
+          <PanelErrorBoundary name="Pit board">
+            <DriverTelemetryTab statusRow={<PitBoardStatusRow tiles={tiles} />} />
           </PanelErrorBoundary>
         ) : (
           <>
@@ -514,7 +490,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                 label="ENGINEERS"
                 level={tiles.engineers.level}
                 word={tiles.engineers.word}
-                detail={tiles.engineers.detail}
+                detail={network?.engineers && network.engineers.length > 0 ? undefined : tiles.engineers.detail}
                 reason={tiles.engineers.reason}
                 onClick={() => {
                   handleTileClick('engineers');
@@ -532,18 +508,19 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                       return (
                         <div key={eng.connection_id} className="glance-engineer-item">
                           <div className="glance-engineer-info">
-                            <span
-                              className={`glance-eng-dot glance-eng-dot--${eng.link}`}
-                              title={`Link: ${eng.link}`}
-                              aria-label={`Link: ${eng.link}`}
-                            />
+                            <span className={`glance-eng-dot glance-eng-dot--${eng.link}`} aria-hidden="true" />
                             <span className="glance-engineer-name" title={engineerName}>
                               {engineerName}
                             </span>
+                            <span className="glance-engineer-link">
+                              · {engineerLinkLabel(eng.link).label.toLowerCase()}
+                            </span>
                           </div>
                           <ConfirmAction
-                            label="Remove"
+                            label={COPY.removeEngineer}
                             ariaLabel={removeAriaLabel}
+                            disabled={isSynthetic}
+                            disabledReason="Not available in demo"
                             prompt={`Remove ${engineerName}?`}
                             consequence={`Disconnects ${engineerName}. They will need a new code to reconnect.`}
                             onConfirm={() => handleKickEngineer(eng.connection_id)}
@@ -582,7 +559,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                       }}
                       data-testid="copy-code-btn"
                     >
-                      {copiedCode ? 'Copied!' : 'Copy Code'}
+                      {copiedCode ? 'Copied' : COPY.copyCode}
                     </button>
                   )}
                   <button
@@ -603,13 +580,13 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                     }
                     data-testid="new-code-btn"
                   >
-                    New Code
+                    New code
                   </button>
                 </div>
               </GlanceTile>
             </div>
 
-            {/* Action Bar (64px, §3.1) */}
+            {/* Action Bar (64px, §3.1). End session sits alone at the right end (D05). */}
             <div className="action-bar driver-action-bar" data-testid="driver-action-bar">
               <div className="action-bar-group">
                 <button
@@ -622,7 +599,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                   }}
                   data-testid="toggle-streaming-btn"
                 >
-                  {isStreaming ? 'Stop Streaming' : 'Start Streaming'}
+                  {isStreaming ? COPY.stopStreaming : COPY.startStreaming}
                 </button>
                 <button
                   type="button"
@@ -640,18 +617,8 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                   }
                   data-testid="toggle-recording-btn"
                 >
-                  {isRecordingActive ? 'Pause Recording' : 'Resume Recording'}
+                  {isRecordingActive ? 'Pause recording' : 'Resume recording'}
                 </button>
-                <ConfirmAction
-                  label="End Session"
-                  prompt="End session for everyone?"
-                  consequence="Ends the session for you and all connected engineers."
-                  onConfirm={handleEndSession}
-                  disabled={!session?.session_id}
-                  disabledReason="No active session to end."
-                  variant="danger"
-                  testId="end-session-btn"
-                />
               </div>
 
               <div className="action-bar-group">
@@ -662,7 +629,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                   id="driver-marker-input"
                   type="text"
                   className="input driver-marker-input"
-                  placeholder="Log marker note..."
+                  placeholder="Marker note"
                   value={markerText}
                   onChange={(e) => {
                     setMarkerText(e.target.value);
@@ -671,6 +638,7 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                     if (e.key === 'Enter') void handleAddMarker();
                   }}
                   disabled={!isRecordingActive}
+                  title={isRecordingActive ? undefined : 'Start recording to add markers'}
                   data-testid="marker-input"
                 />
                 <button
@@ -680,10 +648,24 @@ export function DriverScreen(props?: DriverScreenProps): JSX.Element {
                     void handleAddMarker();
                   }}
                   disabled={!isRecordingActive || !markerText.trim()}
+                  title={isRecordingActive ? undefined : 'Start recording to add markers'}
                   data-testid="add-marker-btn"
                 >
-                  Add Marker
+                  {COPY.addMarker}
                 </button>
+              </div>
+
+              <div className="action-bar-group driver-action-end">
+                <ConfirmAction
+                  label={COPY.endSession}
+                  prompt="End session for everyone?"
+                  consequence="Ends the session for you and all connected engineers."
+                  onConfirm={handleEndSession}
+                  disabled={!session?.session_id}
+                  disabledReason="No active session to end."
+                  variant="danger"
+                  testId="end-session-btn"
+                />
               </div>
             </div>
 

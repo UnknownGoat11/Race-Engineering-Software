@@ -202,7 +202,7 @@
 
 .telemetry-readout[data-state='untrusted'] .telemetry-readout__value,
 .telemetry-readout[data-state='untrusted'] .telemetry-readout__state {
-  color: var(--color-text-dim, #7a8492);
+  color: var(--text-tertiary);
 }
 
 .telemetry-readout[data-state='stale'] .telemetry-readout__value,
@@ -217,143 +217,23 @@
 .panel-untrusted-note {
   padding: var(--space-2, 8px) var(--space-3, 12px);
   margin-bottom: var(--space-2, 8px);
-  background-color: var(--color-error-bg, #2b1414);
-  border: 1px solid var(--color-error, #ff5f5f);
-  color: var(--color-error, #ff5f5f);
-  font-size: var(--font-size-xs, 11px);
-  font-weight: var(--font-weight-semibold, 600);
+  background-color: var(--status-critical-bg);
+  border: 1px solid var(--status-critical);
+  color: var(--status-critical);
+  font-size: var(--type-caption-size);
+  font-weight: 600;
   border-radius: var(--radius-sm, 2px);
   text-align: center;
 }
 
 .status-badge-stale {
-  background-color: #261e38;
-  color: var(--color-quality-stale, #a78bfa);
-  border: 1px solid var(--color-quality-stale, #a78bfa);
+  background-color: var(--p-violet-950);
+  color: var(--dq-stale);
+  border: 1px solid var(--dq-stale);
 }
 
-/* ------------------------------------------------------------- Tyres 2x2 Grid (B01) */
-
-.tyres-grid-2x2 {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2, 8px);
-}
-
-.tyre-corner-box {
-  background-color: var(--color-surface-raised, #181c22);
-  border: 1px solid var(--color-border, #272c34);
-  border-radius: var(--radius-sm, 2px);
-  padding: var(--space-2, 8px);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1, 4px);
-}
-
-.tyre-corner-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-size: var(--font-size-xs, 11px);
-}
-
-.tyre-corner-title {
-  font-weight: var(--font-weight-bold, 700);
-  color: var(--color-text-muted, #a3acb8);
-  letter-spacing: var(--letter-spacing-caps, 0.08em);
-}
-
-.tyre-corner-pressure {
-  font-family: var(--font-mono, monospace);
-  font-weight: var(--font-weight-semibold, 600);
-  color: var(--color-text, #e9ecf0);
-}
-
-.tyre-tread-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-1, 4px);
-  margin: var(--space-1, 4px) 0;
-}
-
-.tyre-tread-slot {
-  background-color: var(--color-surface, #12151a);
-  border: 1px solid var(--color-border, #272c34);
-  border-radius: var(--radius-sm, 2px);
-  padding: 4px 2px;
-  text-align: center;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.tyre-slot-label {
-  font-size: var(--font-size-2xs, 10px);
-  color: var(--color-text-dim, #7a8492);
-  line-height: 1;
-  margin-bottom: 2px;
-}
-
-.tyre-slot-val {
-  font-family: var(--font-mono, monospace);
-  font-size: var(--font-size-sm, 12px);
-  font-weight: var(--font-weight-bold, 700);
-  line-height: 1.1;
-}
-
-.tyre-footer-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-size: var(--font-size-xs, 11px);
-  color: var(--color-text-dim, #7a8492);
-  margin-top: 2px;
-}
-
-/* ------------------------------------------------------------- Brakes 2x2 Grid (B02) */
-
-.brakes-grid-2x2 {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2, 8px);
-}
-
-.brake-corner-box {
-  background-color: var(--color-surface-raised, #181c22);
-  border: 1px solid var(--color-border, #272c34);
-  border-radius: var(--radius-sm, 2px);
-  padding: var(--space-2, 8px);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1, 4px);
-}
-
-.brake-corner-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-size: var(--font-size-xs, 11px);
-}
-
-.brake-corner-title {
-  font-weight: var(--font-weight-bold, 700);
-  color: var(--color-text-muted, #a3acb8);
-  letter-spacing: var(--letter-spacing-caps, 0.08em);
-}
-
-.brake-peak-label {
-  font-size: var(--font-size-xs, 11px);
-  color: var(--color-text-dim, #7a8492);
-}
-
-.brake-temp-value {
-  font-family: var(--font-mono, monospace);
-  font-size: var(--font-size-xl, 18px);
-  font-weight: var(--font-weight-bold, 700);
-  color: var(--color-text, #e9ecf0);
-  text-align: center;
-  margin: var(--space-1, 4px) 0;
-}
+/* Tyre and brake corner rules live in the "Tyre Corners" / "Brake Corners" sections below (v1.3: the earlier
+ * duplicate B01/B02 block was removed). */
 
 /* ------------------------------------------------------------------ Delta Hero (B03, C12) */
 
@@ -435,19 +315,71 @@
   margin-left: auto;
 }
 
-.reserve-note {
-  display: block;
-  font-size: 10px;
+/* Label/value list for the 280 px Timing / Fuel column (v1.3 V07): one pair per row, label UI 12 px, value
+ * mono, never wrapping; a long label ellipsizes before the value is touched. */
+.tel-kv {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+}
+
+.tel-kv-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-2);
+  align-items: baseline;
+  min-height: 18px;
+}
+
+.tel-kv-row dt {
+  font-family: var(--font-ui);
+  font-size: var(--type-label-size);
+  line-height: var(--type-label-lh);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tel-kv-row dd {
+  margin: 0;
+  font-family: var(--font-data);
+  font-size: var(--type-value-sm-size);
+  line-height: var(--type-value-sm-lh);
+  font-weight: 600;
+  color: var(--text-primary);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Prose values ("VE: not reported by this car"): sans, and the value wraps instead of squeezing the label */
+.tel-kv-row--prose {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.tel-kv-row dd.tel-kv-prose {
+  font-family: var(--font-ui);
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-lh);
+  font-weight: 400;
   color: var(--text-tertiary);
+  white-space: normal;
+}
+
+.tel-kv-caption {
+  font-family: var(--font-ui);
+  font-size: var(--type-caption-size);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
 }
 
 .ve-combined-section {
   margin-top: var(--space-2);
   padding-top: var(--space-2);
   border-top: 1px dashed var(--border-subtle);
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
 }
 
 .margin-row {
@@ -505,7 +437,7 @@
 }
 
 .progress-fill--ve {
-  background: var(--class-hypercar);
+  background: var(--interactive); /* neutral: cyan is the Hypercar class hue */
 }
 
 .sectors-bar {
@@ -533,7 +465,7 @@
 
 .meta-chip-label {
   font-family: var(--font-ui);
-  font-size: 10px;
+  font-size: var(--type-caption-size);
   color: var(--text-tertiary);
   font-weight: 700;
 }
@@ -584,16 +516,28 @@
 
 .tyre-corner-header {
   display: flex;
-  justify-content: space-between;
   align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
 }
 
-.tyre-corner-title {
-  font-family: var(--font-ui);
+/* Corner code ("FL"): a code, so mono (V18) */
+.tyre-corner-title,
+.brake-row-code {
+  font-family: var(--font-data);
   font-size: var(--type-panel-title-size);
   font-weight: 700;
   color: var(--text-secondary);
   letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+/* "FL ···· 1.87 bar" dotted leader between code and value */
+.tyre-corner-leader {
+  flex: 1;
+  min-width: 4px;
+  border-bottom: 1px dotted var(--border-control);
+  transform: translateY(-3px);
 }
 
 .tyre-corner-pressure {
@@ -601,6 +545,9 @@
   font-size: var(--type-value-sm-size);
   font-weight: 600;
   color: var(--text-primary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 .tyre-tread-grid {
@@ -652,7 +599,7 @@
 }
 
 .tyre-slot-glyph {
-  font-size: 8px;
+  font-size: var(--type-caption-size);
   line-height: 1;
   position: absolute;
   top: 2px;
@@ -668,77 +615,101 @@
 
 .tyre-slot-label {
   font-family: var(--font-ui);
-  font-size: 9px;
+  font-size: var(--type-caption-size);
   color: var(--text-tertiary);
   font-weight: 600;
 }
 
-.tyre-footer-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-family: var(--font-data);
-  font-size: var(--type-caption-size);
-  color: var(--text-secondary);
+/* Footer: one label/value pair per row ("Carcass 87 °C", "Wear (raw) 0.90"), labels sans, values mono (V06) */
+.tyre-footer-kv {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-1);
+  row-gap: 1px;
+  margin: 0;
   padding-top: 2px;
+  font-size: var(--type-caption-size);
+  line-height: var(--type-caption-lh);
+}
+
+.tyre-footer-kv dt {
+  font-family: var(--font-ui);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tyre-footer-kv dd {
+  margin: 0;
+  font-family: var(--font-data);
+  color: var(--text-primary);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ------------------------------------------------------------- Brake Corners (§2.6) */
+/* v1.3 V06: one line per corner, "FL 352 °C · peak 754 · wear —" */
 
-.brakes-grid-2x2 {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
-.brake-corner-box {
-  background: var(--surface-panel);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-1);
-  padding: var(--space-2);
+.brakes-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  box-sizing: border-box;
 }
 
-.brake-corner-header {
-  display: flex;
-  justify-content: space-between;
+.brake-row {
+  display: grid;
+  grid-template-columns: 2.5ch auto 1fr auto;
   align-items: baseline;
-}
-
-.brake-corner-title {
-  font-family: var(--font-ui);
-  font-size: var(--type-panel-title-size);
-  font-weight: 700;
-  color: var(--text-secondary);
-  letter-spacing: 0.04em;
-}
-
-.brake-peak-label {
-  font-family: var(--font-data);
+  column-gap: var(--space-2);
+  min-height: 22px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--border-subtle);
   font-size: var(--type-caption-size);
+  white-space: nowrap;
+}
+
+.brake-row:last-child {
+  border-bottom: none;
+}
+
+.brake-row-temp {
+  font-family: var(--font-data);
+  font-size: var(--type-value-sm-size);
+  font-weight: 700;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.brake-row-kv {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.brake-row-lbl {
+  font-family: var(--font-ui);
   color: var(--text-tertiary);
 }
 
-.brake-temp-value {
+.brake-row-num {
   font-family: var(--font-data);
-  font-size: var(--type-value-lg-size);
-  font-weight: 700;
-  color: var(--text-primary);
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .brake-bias-row {
-  margin-top: var(--space-2);
+  margin-top: var(--space-1);
   padding-top: var(--space-1);
   border-top: 1px solid var(--border-subtle);
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  font-family: var(--font-data);
+  font-family: var(--font-ui);
   font-size: var(--type-caption-size);
   color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------- Driver Inputs (§2.6) */
@@ -822,28 +793,6 @@
   transition: width 0.05s linear;
 }
 
-/* ------------------------------------------------------------------- Brakes Sub-Metrics */
-.brake-sub-metrics {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-family: var(--font-data);
-  font-size: 11px;
-  color: var(--text-secondary);
-  margin-top: 2px;
-  padding-top: 2px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
-}
-
-.brake-sub-wear {
-  color: var(--text-secondary);
-}
-
-.brake-sub-thick {
-  color: var(--color-cyan, #22d3ee);
-  font-weight: 600;
-}
-
 /* ------------------------------------------------------------------- Chassis & Suspension Panel */
 .suspension-corners-grid {
   display: grid;
@@ -870,8 +819,8 @@
 }
 
 .susp-corner-tag {
-  font-family: var(--font-ui);
-  font-size: 10px;
+  font-family: var(--font-data);
+  font-size: var(--type-panel-title-size);
   font-weight: 700;
   color: var(--text-secondary);
   letter-spacing: 0.04em;
@@ -879,38 +828,45 @@
 
 .susp-dmg-badge {
   font-family: var(--font-data);
-  font-size: 9px;
+  font-size: var(--type-badge-size);
+  white-space: nowrap;
   font-weight: 700;
   padding: 1px 4px;
   border-radius: 2px;
 }
 
 .susp-dmg-ok {
-  background: rgba(34, 197, 94, 0.12);
-  color: #22c55e;
+  background: var(--status-ok-bg);
+  color: var(--status-ok);
 }
 
 .susp-dmg-bad {
-  background: rgba(239, 68, 68, 0.15);
-  color: #ef4444;
+  background: var(--status-critical-bg);
+  color: var(--status-critical);
 }
 
 .susp-metric-row {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  column-gap: var(--space-1);
   align-items: baseline;
-  font-size: 11px;
+  font-size: var(--type-caption-size);
 }
 
 .susp-metric-lbl {
+  font-family: var(--font-ui);
   color: var(--text-secondary);
-  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .susp-metric-val {
   font-family: var(--font-data);
   font-weight: 600;
   color: var(--text-primary);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .suspension-axle-summary {
@@ -930,7 +886,9 @@
 
 .axle-rh-val {
   font-family: var(--font-data);
-  font-size: 14px;
+  font-size: var(--type-value-sm-size);
+  color: var(--text-primary);
+  white-space: nowrap;
   font-weight: 700;
 }
 

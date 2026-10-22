@@ -23,6 +23,7 @@ import {
   lmuTile,
   mayShowDriverIdentity,
   nextSince,
+  pipelineAttentionDetail,
   pipelineHealth,
   recordStatus,
   recordingTile,
@@ -537,9 +538,12 @@ describe('Streaming tile', () => {
   it('off / not set up / demo / connecting', () => {
     expect(streamingSummary(driver({ network: { state: 'DISCONNECTED', streaming: false } }))).toMatchObject({ level: 'off', word: 'OFF' });
     expect(streamingSummary(driver({ network: { state: 'NOT_CONFIGURED', streaming: false } }))).toMatchObject({ level: 'off', word: 'NOT SET UP' });
-    expect(streamingSummary(driver({ origin: 'synthetic', network: { state: 'NOT_CONFIGURED', streaming: false } })).reason).toBe(
-      'Not available in demo.',
-    );
+    // Demo: "—" and no reason line; the demo band says it once (C04).
+    expect(streamingSummary(driver({ origin: 'synthetic', network: { state: 'NOT_CONFIGURED', streaming: false } }))).toMatchObject({
+      level: 'off',
+      word: '—',
+      reason: null,
+    });
     expect(streamingSummary(driver({ network: { state: 'CONNECTING' } }))).toMatchObject({ level: 'warning', word: 'CONNECTING' });
     expect(streamingSummary(driver({ network: { state: 'AUTHENTICATING' } }))).toMatchObject({ level: 'warning', word: 'SIGNING IN' });
   });
@@ -620,7 +624,35 @@ describe('deriveDriverTiles (scenario rows)', () => {
     expect(tiles.lmu.word).toBe('DEMO');
     for (const t of [tiles.recording, tiles.streaming, tiles.engineers, tiles.code]) {
       expect(t.level).not.toBe('ok');
+      // C04: no repeated "Not available in demo." reason line in every tile; the value is "—".
+      expect(t.reason).toBeNull();
+      expect(t.word).toBe('—');
     }
+  });
+  it('a partial history never prints "0 dropped" in the pipeline warning (U12)', () => {
+    // History shorter than the window, no new drop since it started: the 412 earlier drops have no known time.
+    const tiles = deriveDriverTiles(
+      driver({ drops: { net_dropped_obsolete: 412 } }),
+      historyOf([NOW - 5_000, { net_dropped_obsolete: 412 }]),
+      { nowMs: NOW, nowUnixS: 1_000 },
+    );
+    const row = tiles.attention.find((a) => a.id === 'pipeline');
+    expect(row?.level).toBe('warning');
+    expect(row?.detail).toBe('412 dropped since start (timing unknown)');
+    expect(row?.detail).not.toMatch(/\b0 dropped/);
+  });
+  it('new drops inside the window keep the window wording', () => {
+    const tiles = deriveDriverTiles(driver({ drops: { ui_dropped: 3 } }), historyOf([NOW - 61_000, {}]), {
+      nowMs: NOW,
+      nowUnixS: 1_000,
+    });
+    expect(tiles.attention.find((a) => a.id === 'pipeline')?.detail).toBe('3 dropped in the last 60 s');
+  });
+});
+
+describe('pipelineAttentionDetail', () => {
+  it('is null when nothing was dropped at all', () => {
+    expect(pipelineAttentionDetail(pipelineHealth(driver(), EMPTY_HISTORY, NOW))).toBeNull();
   });
 });
 

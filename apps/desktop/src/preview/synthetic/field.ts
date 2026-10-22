@@ -3,9 +3,11 @@
  *
  * ~25 cars with invented driver names (no real player names, HANDOFF rule 3), constant per-car pace, a few pit
  * stops and lapped cars. The player's car follows the synthetic car model (car.ts) so its lap distance matches
- * the telemetry stream. Shapes are exactly `ScoringStateDto` / `CompetitorEntryDto` (src/hooks/useScoring.ts).
+ * the telemetry stream. The payload has the REAL backend shape, `RawScoringState` (serde of the Rust
+ * `ScoringState`, crates/telemetry-model/src/scoring.rs: raw LMU enum values, `time_remaining_s`, nested
+ * `weather`), so the preview exercises the same adapter (`toScoringView`, src/hooks/useScoring.ts) as real data.
  */
-import type { CompetitorEntryDto, ScoringStateDto } from '../../hooks/useScoring';
+import type { RawCompetitorEntry, RawScoringState } from '../../hooks/useScoring';
 import { distanceAtTime, type LapProfile } from './car';
 import { TRACK_LENGTH_M, TRACK_NAME, sectorAt, trackPosition } from './track';
 
@@ -72,9 +74,29 @@ export interface FieldOptions {
   readonly phase?: 'final-stint' | 'start';
   /** Qualifying: the order is by best lap and gaps are best-lap gaps (no race gaps). */
   readonly qualifying?: boolean;
-  /** Full-course yellow just declared (scoring yellow state `PENDING`, every sector yellow). */
+  /** Full-course yellow just declared (raw yellow flag state 1 = pending, game phase 6, every sector yellow). */
   readonly fcy?: boolean;
 }
+
+/** Raw `mSession` of a session label ("Race 1" = 10, "Qualifying 1" = 5, "Practice 1" = 1); null if unknown. */
+function rawSessionType(label: string): number | null {
+  const m = /^(Practice|Qualifying|Race) (\d)$/.exec(label);
+  if (m === null) return label === 'Warm-up' ? 9 : label === 'Test day' ? 0 : null;
+  const n = Number(m[2]);
+  const first = m[1] === 'Practice' ? 1 : m[1] === 'Qualifying' ? 5 : 10;
+  return first + n - 1;
+}
+
+/** Raw LMU values the synthetic field sends (crates/telemetry-model/src/enums.rs). */
+const RAW_YELLOW_NONE = 0;
+const RAW_YELLOW_PENDING = 1;
+const RAW_PHASE_GREEN = 5;
+const RAW_PHASE_FCY = 6;
+const RAW_PIT_NONE = 0;
+const RAW_PIT_STOPPED = 4;
+/** Raw `mSectorFlag` values (1 = yellow, 11 = clear, CLAIMED in scoring.rs). */
+const RAW_SECTOR_YELLOW = 1;
+const RAW_SECTOR_CLEAR = 11;
 
 function carNumber(i: number): number {
   return [92, 31, 55, 27, 78, 88, 81, 59, 85, 60, 77, 54, 44, 95, 46, 87, 33, 61, 91, 23, 10, 12, 71, 18, 64, 6][i] ?? 100 + i;
@@ -140,7 +162,7 @@ export class SyntheticField {
   }
 
   /** Scoring state `elapsedS` seconds after the reference time. */
-  snapshot(elapsedS: number): ScoringStateDto {
+  snapshot(elapsedS: number): RawScoringState {
     const L = TRACK_LENGTH_M;
     const prof = this.#opts.playerProfile;
     // Every car follows the player's reference lap profile, time-scaled to its own pace, so positions on track
@@ -160,7 +182,7 @@ export class SyntheticField {
     const leaderBest = positions[0] === undefined ? 0 : this.#bestLap(positions[0].car);
     const quali = this.#opts.qualifying === true;
     const classCount = new Map<string, number>();
-    const vehicles: CompetitorEntryDto[] = positions.map(({ car, dist }, idx) => {
+    const vehicles: RawCompetitorEntry[] = positions.map(({ car, dist }, idx) => {
       const classPlace = (classCount.get(car.className) ?? 0) + 1;
       classCount.set(car.className, classPlace);
       const ahead = idx > 0 ? (positions[idx - 1]?.dist ?? dist) : dist;
@@ -189,34 +211,68 @@ export class SyntheticField {
         best_sector12_s: best * 0.68,
         last_sector1_s: car.paceS * 0.331,
         last_sector12_s: car.paceS * 0.684,
+        cur_sector1_s: null,
+        cur_sector12_s: null,
         time_behind_next_s: idx === 0 ? 0 : quali ? best - aheadBest : ((ahead - dist) / L) * car.paceS,
         laps_behind_next: idx === 0 || quali ? 0 : Math.floor((ahead - dist) / L),
         time_behind_leader_s: idx === 0 ? 0 : quali ? best - leaderBest : ((leader - dist) / L) * car.paceS,
         laps_behind_leader: quali ? 0 : lapsBehindLeader,
+        time_into_lap_s: null,
+        estimated_lap_s: null,
+        lap_start_et_s: null,
         in_pits: car.inPits,
         in_garage_stall: false,
-        pit_state: car.inPits ? 'STOPPED' : 'NONE',
+        pit_state: car.inPits ? RAW_PIT_STOPPED : RAW_PIT_NONE,
         num_pitstops: car.pitstops,
+        num_penalties: 0,
+        finish_status: 0,
+        flag: 0,
+        under_yellow: this.#opts.fcy === true,
+        individual_phase: null,
+        count_lap_flag: null,
+        control: car.isPlayer ? 0 : 2,
         is_player: car.isPlayer,
+        qualification: null,
+        energy_or_fuel_frac: null,
         pos_x_m: pos.x,
         pos_z_m: pos.z,
       };
     });
+    const fcy = this.#opts.fcy === true;
+    const currentEt = this.#opts.referenceSessionTimeS + elapsedS;
+    const sectorFlag = fcy ? RAW_SECTOR_YELLOW : RAW_SECTOR_CLEAR;
     return {
       session: {
-        // (session_type is the core's SessionType display string, e.g. "Race 1" / "Qualifying 1".)
         track_name: TRACK_NAME,
-        session_type: this.#opts.sessionType,
-        session_time_remaining_s: Math.max(0, this.#opts.raceLengthS - this.#opts.referenceSessionTimeS - elapsedS),
-        end_time_s: this.#opts.raceLengthS,
-        lap_limit: null,
-        time_limit_s: this.#opts.raceLengthS,
-        yellow_flag_state: this.#opts.fcy === true ? 'PENDING' : 'NONE',
-        sector_flag: this.#opts.fcy === true ? ['YELLOW', 'YELLOW', 'YELLOW'] : ['GREEN', 'GREEN', 'GREEN'],
-        dark_cloud: 0.1,
-        raining: 0,
-        ambient_temp_c: 29,
-        track_temp_c: 41,
+        session_type: rawSessionType(this.#opts.sessionType),
+        game_phase: fcy ? RAW_PHASE_FCY : RAW_PHASE_GREEN,
+        yellow_flag_state: fcy ? RAW_YELLOW_PENDING : RAW_YELLOW_NONE,
+        sector_flags_raw: [sectorFlag, sectorFlag, sectorFlag],
+        start_light: null,
+        num_red_lights: null,
+        num_vehicles: vehicles.length,
+        current_et_s: currentEt,
+        end_et_s: this.#opts.raceLengthS,
+        time_remaining_s: Math.max(0, this.#opts.raceLengthS - currentEt),
+        max_laps: null,
+        track_length_m: L,
+        in_realtime: true,
+        game_mode: null,
+        max_players: null,
+        time_of_day_s: null,
+        fixed_setup: null,
+        weather: {
+          ambient_temp_c: 29,
+          track_temp_c: 41,
+          raining_frac: 0,
+          dark_cloud_frac: 0.1,
+          cloud_coverage_raw: null,
+          path_wetness_min_frac: null,
+          path_wetness_max_frac: null,
+          path_wetness_avg_frac: null,
+          wind_mps: null,
+          track_grip_level_raw: null,
+        },
       },
       vehicles,
     };

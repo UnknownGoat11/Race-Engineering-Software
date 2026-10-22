@@ -27,7 +27,11 @@ export type ScenarioGroup = 'driver' | 'engineer' | 'mode' | 'settings' | 'app';
 
 export type Step =
   | { readonly kind: 'click'; readonly selector: string }
-  | { readonly kind: 'clickText'; readonly text: string }
+  /**
+   * Clicks the enabled button / link / tab whose text is exactly `text`. `optional`: skip (after a short wait)
+   * when it is not on the page, e.g. a right-column tab that only exists in the compact (< 1800 px) layout.
+   */
+  | { readonly kind: 'clickText'; readonly text: string; readonly optional?: boolean }
   | { readonly kind: 'type'; readonly selector: string; readonly text: string }
   | { readonly kind: 'wait'; readonly ms: number };
 
@@ -213,6 +217,7 @@ const driverScenarios: Scenario[] = [
     title: 'Driver: waiting for LMU',
     description: 'App started, Le Mans Ultimate not running; nothing recorded or streamed.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: () =>
       driverStatus({
@@ -227,6 +232,7 @@ const driverScenarios: Scenario[] = [
     title: 'Driver: live + recording, not streaming',
     description: 'LMU live at 100 Hz, local recording active, relay not started.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) => liveDriver({}, elapsedS),
   },
@@ -237,6 +243,7 @@ const driverScenarios: Scenario[] = [
     title: 'Driver: streaming, code shown, 1/2 engineers',
     description: 'Streaming to the relay with a fresh connect code; one engineer connected.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) => liveDriver({ network: streamingNetwork(1), rates: LIVE_RATES }, elapsedS),
   },
@@ -247,6 +254,7 @@ const driverScenarios: Scenario[] = [
     title: 'Driver: streaming, 2/2 engineers (session full)',
     description: 'Both engineer slots taken.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) => liveDriver({ network: streamingNetwork(2), rates: LIVE_RATES }, elapsedS),
   },
@@ -257,6 +265,7 @@ const driverScenarios: Scenario[] = [
     title: 'Driver: relay reconnecting',
     description: 'Network blip: link reconnecting, engineers keep their slots; recording unaffected.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) =>
       liveDriver(
@@ -281,6 +290,7 @@ const driverScenarios: Scenario[] = [
     title: 'Driver: LMU telemetry stale',
     description: 'LMU stopped refreshing shared memory (paused / loading); stream still connected.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) =>
       liveDriver(
@@ -300,6 +310,7 @@ const driverScenarios: Scenario[] = [
     title: 'Driver: recording failed (disk full)',
     description: 'Local recording stopped because the disk is full; live and streaming continue.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) =>
       liveDriver(
@@ -327,6 +338,7 @@ const driverScenarios: Scenario[] = [
     title: 'Driver: relogin required',
     description: 'The relay refused the refresh token; streaming stopped until the driver logs in again.',
     mode: 'driver',
+    origin: 'lmu',
     login: { authenticated: false, role: 'driver', account: null },
     status: ({ elapsedS }) =>
       liveDriver(
@@ -348,6 +360,7 @@ const driverScenarios: Scenario[] = [
     title: 'Driver: pipeline degraded (overruns)',
     description: 'Reader / pipeline overruns counted (CPU pressure); everything else live.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) =>
       liveDriver(
@@ -383,9 +396,10 @@ const driverScenarios: Scenario[] = [
     title: 'Driver: telemetry dashboard tab',
     description: 'Streaming state with the optional Telemetry Dashboard tab selected.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) => liveDriver({ network: streamingNetwork(1), rates: LIVE_RATES }, elapsedS),
-    steps: [{ kind: 'clickText', text: 'Telemetry Dashboard' }],
+    steps: [{ kind: 'click', selector: '[data-testid="tab-telemetry"]' }],
   },
 ];
 
@@ -536,7 +550,7 @@ const engineerScenarios: Scenario[] = [
     initialPhase: 'monitoring',
     settleMs: LIVE_SETTLE_MS,
     steps: [
-      { kind: 'clickText', text: 'Tyres & Brakes' },
+      { kind: 'clickText', text: 'Tyres+Brakes', optional: true },
       { kind: 'clickText', text: 'Tyres' },
     ],
   }),
@@ -547,7 +561,7 @@ const engineerScenarios: Scenario[] = [
     description: 'Right column on Inputs & Energy for a GT3 (no ERS / virtual energy).',
     initialPhase: 'monitoring',
     settleMs: LIVE_SETTLE_MS,
-    steps: [{ kind: 'clickText', text: 'Inputs & Energy' }],
+    steps: [{ kind: 'clickText', text: 'Power', optional: true }],
   }),
   engineerScenario({
     id: 'engineer-live-channels',
@@ -598,7 +612,7 @@ const engineerScenarios: Scenario[] = [
       description: 'Monitoring a Hypercar in a mixed-class field; virtual energy and hybrid panel populated.',
       initialPhase: 'monitoring',
       settleMs: LIVE_SETTLE_MS,
-      steps: [{ kind: 'clickText', text: 'Inputs & Energy' }],
+      steps: [{ kind: 'clickText', text: 'Power', optional: true }],
     },
     'hypercar',
   ),
@@ -675,7 +689,7 @@ const appScenarios: Scenario[] = [
     initialPhase: 'idle',
     steps: [
       { kind: 'clickText', text: 'Settings' },
-      { kind: 'clickText', text: 'DRIVER MODE' },
+      { kind: 'click', selector: '[data-testid="settings-mode-driver"]' },
     ],
   },
   {
@@ -728,6 +742,7 @@ const driverW0Scenarios: Scenario[] = [
     title: 'Driver: not logged in',
     description: 'No stored login: LMU live and recording locally; streaming needs a login first.',
     mode: 'driver',
+    origin: 'lmu',
     login: NOT_LOGGED_IN_DRIVER,
     status: ({ elapsedS }) => liveDriver({ network: network({ state: 'DISCONNECTED' }) }, elapsedS),
   },
@@ -749,6 +764,7 @@ const driverW0Scenarios: Scenario[] = [
     title: 'Driver: streaming, 2/2, no code left',
     description: 'Both slots taken and the last single-use code consumed: no new code can be issued (OR-4).',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) =>
       liveDriver(
@@ -763,6 +779,7 @@ const driverW0Scenarios: Scenario[] = [
     title: 'Driver: connect code expiring (< 60 s)',
     description: 'Streaming, no engineer yet; the code expires in under a minute.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) =>
       liveDriver(
@@ -780,6 +797,7 @@ const driverW0Scenarios: Scenario[] = [
     title: 'Driver: relay reconnecting for over 30 s',
     description: 'Long outage: reconnecting for more than 30 s; recording unaffected, engineers held.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) =>
       liveDriver(
@@ -804,6 +822,7 @@ const driverW0Scenarios: Scenario[] = [
     title: 'Driver: disk space low (< 20 GB)',
     description: 'Recording active with 14.2 GiB free on the recording drive.',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     status: ({ elapsedS }) =>
       liveDriver(
@@ -822,10 +841,11 @@ const driverW0Scenarios: Scenario[] = [
     title: 'Driver: telemetry dashboard with live store',
     description: 'Dashboard tab with the telemetry stream flowing (bridge subscription fed at 100 Hz).',
     mode: 'driver',
+    origin: 'lmu',
     login: LOGGED_IN_DRIVER,
     telemetry: { variant: 'gt3', field: 'gt3', playerPlace: 7, flow: 'live' },
     status: ({ elapsedS }) => liveDriver({ network: streamingNetwork(1), rates: LIVE_RATES }, elapsedS),
-    steps: [{ kind: 'clickText', text: 'Telemetry Dashboard' }],
+    steps: [{ kind: 'click', selector: '[data-testid="tab-telemetry"]' }],
     settleMs: LIVE_SETTLE_MS,
   },
 ];
@@ -892,18 +912,17 @@ const engineerW0Scenarios: Scenario[] = [
   engineerScenario({
     id: 'engineer-join-expired-retry',
     state: 'join-expired-retry',
-    title: 'Engineer: expired code, then a fresh code',
-    description: 'First code expired; the fresh code from the driver is accepted and the identity card shows.',
+    title: 'Engineer: expired code (a fresh code would be accepted)',
+    description:
+      'The redeem fails with code_expired and the dialog shows the expired-code error; only the first attempt ' +
+      'fails, so the fresh code from the driver is accepted on retry (the identity card is engineer-identity-card).',
     initialPhase: 'idle',
     alerts: [],
     joinError: { code: 'code_expired', message: 'This code has expired. Ask the driver for a new code.' },
     joinErrorAttempts: 1,
-    steps: [
-      ...joinSteps('H3WZ9P'),
-      { kind: 'type', selector: '[data-testid="join-code-input"]', text: CODE },
-      { kind: 'click', selector: '[data-testid="btn-join-session"]' },
-      { kind: 'wait', ms: 300 },
-    ],
+    // The capture is the failed redeem: typing the fresh code clears the error, and the successful retry looks
+    // exactly like engineer-identity-card (audit H02).
+    steps: joinSteps('H3WZ9P'),
   }),
   engineerScenario({
     id: 'engineer-quali',
@@ -943,7 +962,7 @@ const engineerW0Scenarios: Scenario[] = [
     initialPhase: 'monitoring',
     settleMs: LIVE_SETTLE_MS,
     telemetry: { variant: 'gt3', field: 'gt3', playerPlace: 7, flow: 'live', virtualEnergy: true },
-    steps: [{ kind: 'clickText', text: 'Inputs & Energy' }],
+    steps: [{ kind: 'clickText', text: 'Power', optional: true }],
   }),
   engineerScenario({
     id: 'engineer-first-lap-no-geometry',

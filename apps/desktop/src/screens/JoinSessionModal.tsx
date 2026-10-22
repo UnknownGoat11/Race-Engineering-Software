@@ -1,10 +1,8 @@
-import { useEffect, useId, useRef, useState, type JSX, type ChangeEvent, type SyntheticEvent } from 'react';
+import { useId, useRef, useState, type JSX, type ChangeEvent, type SyntheticEvent } from 'react';
 import { Modal } from '../components/ui/Modal';
+import { TELEMETRY_SCHEMA_VERSION } from '../generated/channels';
 import { classColorVar } from '../lib/classes';
 import {
-  getConfig,
-  restartApp,
-  updateSettings,
   IpcError,
   engineerCancel,
   engineerConfirm,
@@ -19,6 +17,11 @@ export interface JoinSessionModalProps {
   readonly isOpen?: boolean;
   readonly onJoined?: () => void;
   readonly onCancel?: () => void;
+  /**
+   * Opens Settings (closing the modal is up to the caller). Shown as an "Open settings" button when the join
+   * fails because no relay server is set up (E01). Without it the modal only names the place.
+   */
+  readonly onOpenSettings?: (() => void) | undefined;
 }
 
 function extractErrorCode(err: unknown): string {
@@ -49,100 +52,52 @@ function formatStartedAgo(startedAtNs: number | null): string | null {
   return `started ${hours}h ${mins % 60}m ago`;
 }
 
-export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSessionModalProps): JSX.Element {
+export function JoinSessionModal({ isOpen = true, onJoined, onCancel, onOpenSettings }: JoinSessionModalProps): JSX.Element {
   const [code, setCode] = useState('');
   const [redeemedCode, setRedeemedCode] = useState('');
   const [joining, setJoining] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [card, setCard] = useState<IdentityCardDto | null>(null);
   const [errorCopy, setErrorCopy] = useState<JoinErrorCopy | null>(null);
+  const [errorKey, setErrorKey] = useState<string | null>(null);
   const [rawError, setRawError] = useState<string | null>(null);
-
-  // Relay Server Connection State
-  const [serverHost, setServerHost] = useState('');
-  const [serverPort, setServerPort] = useState(443);
-  const [configuredHost, setConfiguredHost] = useState<string | null>(null);
-  const [isServerConfigOpen, setIsServerConfigOpen] = useState(false);
-  const [savingServer, setSavingServer] = useState(false);
-  const [serverError, setServerError] = useState<string | null>(null);
-
-  useEffect(() => {
-    getConfig()
-      .then((snap) => {
-        const h = snap.config.network.relay_host;
-        setConfiguredHost(h || null);
-        if (h) {
-          setServerHost(h);
-          setServerPort(snap.config.network.relay_port || 443);
-        }
-      })
-      .catch((e: unknown) => {
-        setServerError(`Could not read the relay settings: ${e instanceof Error ? e.message : String(e)}`);
-      });
-  }, []);
-
-  const handleSaveAndRestart = async () => {
-    const trimmed = serverHost.trim();
-    if (!trimmed) {
-      setServerError('Enter the relay server host or IP first.');
-      return;
-    }
-    setServerError(null);
-    setSavingServer(true);
-    try {
-      const snap = await getConfig();
-      const next = {
-        ...snap.config,
-        network: {
-          ...snap.config.network,
-          relay_host: trimmed,
-          relay_port: serverPort || 443,
-        },
-      };
-      await updateSettings(next);
-      await restartApp();
-    } catch (e: unknown) {
-      setServerError(e instanceof Error ? e.message : String(e));
-      setSavingServer(false);
-    }
-  };
 
   const titleId = useId();
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const identityHeadingRef = useRef<HTMLSpanElement | null>(null);
+  // Identity phase: initial focus on the safe choice, "Not this driver" (V15), not on the title.
+  const declineRef = useRef<HTMLButtonElement | null>(null);
+
+  const showError = (key: string | null, raw: string | null): void => {
+    setErrorKey(key);
+    setErrorCopy(key === null ? null : joinErrorCopy(key));
+    setRawError(raw);
+  };
 
   const handleCodeChange = (e: ChangeEvent<HTMLInputElement>) => {
     // Sanitize: max 6 alphanumeric characters, uppercase
     const raw = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
     setCode(raw);
-    setErrorCopy(null);
-    setRawError(null);
+    showError(null, null);
   };
 
   const handleJoin = async (e?: SyntheticEvent) => {
     e?.preventDefault();
     const cleanCode = code.trim().toUpperCase();
     if (cleanCode.length !== 6) {
-      const copy = joinErrorCopy('code_malformed');
-      setErrorCopy(copy);
-      setRawError(null);
+      showError('code_malformed', null);
       return;
     }
 
     setJoining(true);
-    setErrorCopy(null);
-    setRawError(null);
+    showError(null, null);
     try {
       const idCard = await engineerJoin(cleanCode);
       setCard(idCard);
       setRedeemedCode(cleanCode);
     } catch (err: unknown) {
       const codeKey = extractErrorCode(err);
-      const copy = joinErrorCopy(codeKey);
-      const raw = err instanceof Error ? err.message : String(err);
-      setErrorCopy(copy);
-      setRawError(raw);
-      if (copy.clearField) {
+      showError(codeKey, err instanceof Error ? err.message : String(err));
+      if (joinErrorCopy(codeKey).clearField) {
         setCode('');
         setTimeout(() => {
           inputRef.current?.focus();
@@ -155,24 +110,18 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
 
   const handleConfirm = async () => {
     setConfirming(true);
-    setErrorCopy(null);
-    setRawError(null);
+    showError(null, null);
     try {
       await engineerConfirm();
       onJoined?.();
     } catch (err: unknown) {
-      const codeKey = extractErrorCode(err);
-      const copy = joinErrorCopy(codeKey);
-      const raw = err instanceof Error ? err.message : String(err);
-      setErrorCopy(copy);
-      setRawError(raw);
+      showError(extractErrorCode(err), err instanceof Error ? err.message : String(err));
       setConfirming(false);
     }
   };
 
   const handleCancel = async () => {
-    setErrorCopy(null);
-    setRawError(null);
+    showError(null, null);
     if (card) {
       try {
         await engineerCancel();
@@ -189,6 +138,12 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
   };
 
   const startedText = card ? formatStartedAgo(card.started_at_ns) : null;
+  const schemaMismatch = card !== null && card.schema_version !== TELEMETRY_SCHEMA_VERSION;
+  // Raw backend text only when it adds something to the mapped title and helper (E02).
+  const rawDetails =
+    rawError !== null && errorCopy !== null && rawError !== errorCopy.title && rawError !== errorCopy.helper
+      ? rawError
+      : null;
 
   return (
     <Modal
@@ -198,166 +153,36 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
       }}
       ariaLabelledBy={titleId}
       size="md"
-      initialFocusRef={card ? identityHeadingRef : inputRef}
+      initialFocusRef={card ? declineRef : inputRef}
       focusKey={card ? 'card' : 'code'}
       testId="join-session-modal"
     >
       <div className="card modal-content" style={{ width: '100%', margin: '0' }}>
         <div className="card-header">
-          <span
-            ref={card ? identityHeadingRef : undefined}
-            tabIndex={card ? -1 : undefined}
-            className="card-header-title"
-            id={titleId}
-          >
-            {card ? 'CONFIRM DRIVER IDENTITY' : 'CONNECT TO DRIVER RELAY'}
+          <span className="card-header-title" id={titleId}>
+            {card ? 'Confirm the driver' : 'Join a driver'}
           </span>
         </div>
         <div className="card-body">
-          {/* Active Server Connection Indicator */}
-          {!card && (
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '14px',
-                padding: '6px 10px',
-                background: 'var(--surface-sunken)',
-                borderRadius: '4px',
-                fontSize: '11px',
-                border: '1px solid var(--border-subtle)',
-              }}
-            >
-              <span>
-                🌐 Server:{' '}
-                <strong style={{ fontFamily: 'monospace' }}>
-                  {configuredHost ? `${configuredHost}:${serverPort}` : 'None configured'}
-                </strong>
-              </span>
-              <button
-                type="button"
-                className="btn btn-xs"
-                onClick={() => { setIsServerConfigOpen(!isServerConfigOpen); }}
-                style={{ padding: '2px 8px', fontSize: '10px' }}
-              >
-                {isServerConfigOpen ? '✕ Close' : '⚙️ Server Settings'}
-              </button>
-            </div>
-          )}
-
-          {/* Inline Server Configuration Panel */}
-          {isServerConfigOpen && !card && (
-            <div
-              className="card"
-              style={{
-                padding: '12px',
-                marginBottom: '16px',
-                background: 'var(--surface-sunken)',
-                border: '1px solid var(--border-subtle)',
-                borderRadius: '4px',
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <span style={{ fontWeight: 700, fontSize: '12px' }}>Relay server setup</span>
-                <span style={{ fontSize: '10px', color: 'var(--text-secondary)' }}>Connect worldwide</span>
-              </div>
-              <p style={{ fontSize: '11px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                Drivers and engineers connect over the internet through a Relay Server. Select a preset or enter your custom address:
-              </p>
-              <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '10px' }}>
-                <button
-                  type="button"
-                  className={`btn btn-xs ${serverHost === '127.0.0.1' ? 'btn-primary' : ''}`}
-                  onClick={() => { setServerHost('127.0.0.1'); setServerPort(443); }}
-                >
-                  💻 Localhost (127.0.0.1)
-                </button>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '8px', marginBottom: '10px' }}>
-                <div>
-                  <label htmlFor="modal-server-host" style={{ fontSize: '11px', display: 'block', fontWeight: 600 }}>Host / IP</label>
-                  <input
-                    id="modal-server-host"
-                    type="text"
-                    className="input"
-                    value={serverHost}
-                    onChange={(e) => { setServerHost(e.target.value); }}
-                    placeholder="relay.example.com"
-                    style={{ width: '100%', fontFamily: 'monospace', fontSize: '12px' }}
-                  />
-                </div>
-                <div>
-                  <label htmlFor="modal-server-port" style={{ fontSize: '11px', display: 'block', fontWeight: 600 }}>Port</label>
-                  <input
-                    id="modal-server-port"
-                    type="number"
-                    className="input"
-                    value={serverPort}
-                    onChange={(e) => { setServerPort(Number(e.target.value) || 443); }}
-                    placeholder="443"
-                    style={{ width: '100%', fontFamily: 'monospace', fontSize: '12px' }}
-                  />
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                <button
-                  type="button"
-                  className="btn btn-sm btn-primary"
-                  disabled={savingServer}
-                  onClick={() => { void handleSaveAndRestart(); }}
-                >
-                  {savingServer ? 'Saving…' : '💾 Save & Restart to Connect'}
-                </button>
-              </div>
-              {serverError !== null && (
-                <div className="alert alert-error" role="alert" style={{ marginTop: '8px' }}>
-                  <span>{serverError}</span>
-                </div>
-              )}
-            </div>
-          )}
-
           {errorCopy && (
-            <div
-              className="status-badge status-badge-error join-error-block"
-              style={{
-                width: '100%',
-                marginBottom: '16px',
-                padding: '10px 14px',
-                textAlign: 'left',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '4px',
-                textTransform: 'none',
-                letterSpacing: 'normal',
-                fontWeight: 'normal',
-              }}
-              role="alert"
-              data-testid="join-error-banner"
-            >
-              <strong style={{ fontWeight: 700, color: 'var(--color-error)' }}>
-                {errorCopy.title}
-              </strong>
-              <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-                {errorCopy.helper}
-              </span>
-              {rawError && rawError !== errorCopy.title && rawError !== errorCopy.helper && (
-                <span style={{ fontSize: '11px', opacity: 0.8 }}>({rawError})</span>
+            <div className="alert alert-error join-error" role="alert" data-testid="join-error-banner">
+              <span className="join-error-title">{errorCopy.title}</span>
+              <span className="join-error-helper">{errorCopy.helper}</span>
+              {errorKey === 'relay_not_configured' && onOpenSettings && (
+                <button
+                  type="button"
+                  className="btn btn-sm join-error-action"
+                  onClick={onOpenSettings}
+                  data-testid="join-open-settings"
+                >
+                  Open settings
+                </button>
               )}
-
-              {/* One-Click Resolution for "No server is set up" */}
-              {errorCopy.title === 'No server is set up' && (
-                <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-                  <button
-                    type="button"
-                    className="btn btn-xs btn-primary"
-                    onClick={() => { setIsServerConfigOpen(true); }}
-                    style={{ fontWeight: 600 }}
-                  >
-                    Set up the relay server
-                  </button>
-                </div>
+              {rawDetails !== null && (
+                <details className="join-error-details">
+                  <summary>Details</summary>
+                  <code>{rawDetails}</code>
+                </details>
               )}
             </div>
           )}
@@ -366,7 +191,7 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
             /* Phase 1: Code entry (A06) */
             <form onSubmit={(e) => { void handleJoin(e); }}>
               <p className="panel-note" style={{ marginBottom: '16px' }}>
-                Ask the driver for their 6-character engineer session code from their Relay Streaming card.
+                Ask the driver for the 6-character code on their Engineer code tile.
               </p>
 
               <label htmlFor="engineer-code-input" className="join-code-label">
@@ -384,7 +209,7 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
                     fontWeight: 700,
                     letterSpacing: '6px',
                     textAlign: 'center',
-                    fontFamily: 'monospace',
+                    fontFamily: 'var(--font-data)',
                     width: '240px',
                     padding: '8px 12px',
                     textTransform: 'uppercase',
@@ -423,16 +248,13 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
                   disabled={code.length !== 6 || joining}
                   data-testid="btn-join-session"
                 >
-                  {joining ? 'Connecting...' : COPY.joinDriver}
+                  {joining ? 'Joining…' : COPY.joinDriver}
                 </button>
               </div>
             </form>
           ) : (
             /* Phase 2: Driver Identity Card confirmation (D-022, OR-3) */
             <div data-testid="driver-identity-card">
-              <p className="panel-note" style={{ marginBottom: '14px' }}>
-                Please verify that you are connecting to the correct driver before confirming.
-              </p>
 
               <dl className="identity-card-dl" style={{ marginBottom: '16px' }}>
                 <div className="identity-card-row">
@@ -488,7 +310,7 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
                   <dd>
                     <code
                       style={{
-                        fontFamily: 'monospace',
+                        fontFamily: 'var(--font-data)',
                         fontSize: '14px',
                         letterSpacing: '2px',
                         fontWeight: 700,
@@ -499,10 +321,14 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
                     </code>
                   </dd>
                 </div>
-                <div className="identity-card-row">
-                  <dt>Schema Version</dt>
-                  <dd>v{card.schema_version}</dd>
-                </div>
+                {schemaMismatch && (
+                  <div className="identity-card-row" data-testid="identity-schema-mismatch">
+                    <dt>Data version</dt>
+                    <dd className="identity-card-warn">
+                      v{card.schema_version} (this app reads v{TELEMETRY_SCHEMA_VERSION}). Update the older app.
+                    </dd>
+                  </div>
+                )}
               </dl>
 
               <p
@@ -519,6 +345,7 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'flex-end' }}>
                 <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
                   <button
+                    ref={declineRef}
                     type="button"
                     className="btn"
                     onClick={() => { void handleCancel(); }}
@@ -535,7 +362,7 @@ export function JoinSessionModal({ isOpen = true, onJoined, onCancel }: JoinSess
                     disabled={confirming}
                     data-testid="btn-confirm-identity"
                   >
-                    {confirming ? 'Confirming...' : COPY.confirmJoin}
+                    {confirming ? 'Confirming…' : COPY.confirmJoin}
                   </button>
                 </div>
                 <span

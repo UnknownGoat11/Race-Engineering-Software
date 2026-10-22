@@ -30,7 +30,7 @@ describe('PitwallBar', () => {
     expect(screen.getByTestId('engineer-car')).toHaveTextContent('Ferrari 499P (HY)');
     expect(screen.getByTestId('engineer-track')).toHaveTextContent('Circuit de la Sarthe');
     expect(screen.getByTestId('engineer-rtt')).toHaveTextContent('33 ms');
-    expect(screen.getByTestId('engineer-stream-age')).toHaveTextContent('0.1s');
+    expect(screen.getByTestId('engineer-stream-age')).toHaveTextContent('0.1 s');
   });
 
   it('renders SYNTHETIC badge and never LIVE when origin is synthetic (T04)', () => {
@@ -87,5 +87,39 @@ describe('PitwallBar', () => {
 
     fireEvent.click(screen.getByTestId('btn-open-settings'));
     expect(onSettings).toHaveBeenCalledOnce();
+  });
+
+  it('ended: one Close button replaces Resync and Leave (U18)', () => {
+    const onClose = vi.fn();
+    render(
+      <PitwallBar
+        view={{ kind: 'ended', reason: null }}
+        isConnected={true}
+        ended={true}
+        onClose={onClose}
+        onRefreshAllData={vi.fn()}
+        onLeaveSession={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId('btn-request-snapshot')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('btn-engineer-disconnect')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('btn-engineer-close'));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('Resync carries its tooltip; FCY / SC shows one pill', () => {
+    render(
+      <PitwallBar
+        view={liveView}
+        origin="lmu"
+        caution="fcy"
+        isConnected={true}
+        onRefreshAllData={vi.fn()}
+        onLeaveSession={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId('btn-request-snapshot')).toHaveTextContent('Resync');
+    expect(screen.getByTestId('btn-request-snapshot')).toHaveAttribute('title', "Ask the driver's app for a full state snapshot");
+    expect(screen.getAllByTestId('pitwall-caution')).toHaveLength(1);
   });
 });

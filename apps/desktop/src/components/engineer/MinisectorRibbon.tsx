@@ -4,7 +4,6 @@ import { formatDelta, NO_VALUE } from '../../lib/units';
 import { useTelemetryStore } from '../../telemetry/hooks';
 import type { TelemetryStore } from '../../telemetry/store';
 import '../../styles/engineer.css';
-import '../../views/viewsLive.css';
 
 /** Minisectors per lap (equal fractions of LAP_PROGRESS). */
 const MINISECTOR_COUNT = 12;
@@ -100,7 +99,11 @@ function statusClass(delta: number | null): string {
   return '';
 }
 
-export function MinisectorRibbon(): JSX.Element {
+/**
+ * One 24 px row (audit V03): "Minisectors vs PB" plus 12 cells. Renders nothing until at least one minisector of
+ * the current lap has been measured (an all-"—" ribbon only takes graph space).
+ */
+export function MinisectorRibbon(): JSX.Element | null {
   const store = useTelemetryStore();
   const [tracker, setTracker] = useState<MinisectorTracker>(() => observe(store, INITIAL_TRACKER));
 
@@ -112,29 +115,24 @@ export function MinisectorRibbon(): JSX.Element {
     [store],
   );
 
+  if (tracker.deltas.every((d) => d === null)) return null;
+
   return (
     <div className="engineer-minisector-ribbon" data-testid="engineer-minisector-ribbon">
-      <div className="ms-ribbon-header">
-        <span className="ms-ribbon-tag">12-MINISECTOR DELTA VS PB (THIS LAP, FROM LIVE DELTA)</span>
-        <span className="ms-ribbon-status">
-          ACTIVE:{' '}
-          <strong className="text-cyan" data-testid="ms-active">
-            {tracker.index !== null ? `M${String(tracker.index + 1)}` : NO_VALUE}
-          </strong>
-        </span>
-      </div>
+      <span className="ms-ribbon-tag">Minisectors vs PB</span>
       <div className="ms-ribbon-grid">
         {tracker.deltas.map((delta, idx) => {
           const text = delta !== null ? formatDelta(delta) : NO_VALUE;
+          const active = idx === tracker.index;
           return (
             <div
               key={idx}
-              className={`ms-ribbon-cell ${statusClass(delta)} ${idx === tracker.index ? 'ms-cell-active' : ''}`}
-              title={`Minisector ${String(idx + 1)}: ${delta !== null ? `${text} s` : 'not measured'}`}
+              className={`num ms-ribbon-cell ${statusClass(delta)} ${active ? 'ms-cell-active' : ''}`}
+              title={`Minisector ${String(idx + 1)}${active ? ' (current)' : ''}: ${delta !== null ? `${text} s` : 'not measured'}`}
+              aria-current={active ? 'true' : undefined}
               data-testid={`ms-cell-${String(idx + 1)}`}
             >
-              <span className="ms-cell-label">M{idx + 1}</span>
-              <span className="ms-cell-delta">{text}</span>
+              {text}
             </div>
           );
         })}

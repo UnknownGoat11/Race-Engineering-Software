@@ -52,7 +52,9 @@ describe('BrakePanel wear (registry `missing` channels)', () => {
   it('shows Wear: NO_VALUE, never 0.0%, when brake wear is not reported', () => {
     const { renderWithStore } = harness();
     renderWithStore(<BrakePanel />);
-    expect(screen.getAllByText(`Wear: ${NO_VALUE}`)).toHaveLength(4);
+    for (const w of ['fl', 'fr', 'rl', 'rr']) {
+      expect(screen.getByTestId(`brake-wear-${w}`)).toHaveTextContent(`wear ${NO_VALUE}`);
+    }
     expect(screen.queryByText(/0\.0%/)).toBeNull();
   });
 });

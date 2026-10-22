@@ -37,7 +37,7 @@ export function DeveloperTools({
   return (
     <details className="driver-developer" data-testid="driver-developer-tools">
       <summary className="driver-developer-summary">
-        <span aria-hidden="true">▸ </span>Developer Tools (Synthetic Demo)
+        Developer tools
       </summary>
 
       <div className="driver-developer-content">
@@ -74,7 +74,7 @@ export function DeveloperTools({
             }
             data-testid="start-demo-btn"
           >
-            Start Demo
+            Start demo
           </button>
           <button
             type="button"
@@ -86,7 +86,7 @@ export function DeveloperTools({
             title={!isSynthetic ? 'Demo is not active' : 'Stop synthetic demo stream'}
             data-testid="stop-demo-btn"
           >
-            Stop Demo
+            Stop demo
           </button>
         </div>
       </div>

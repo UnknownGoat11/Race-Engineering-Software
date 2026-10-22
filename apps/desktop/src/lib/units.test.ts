@@ -540,3 +540,18 @@ describe('slot formatters: values and widths', () => {
     expect(pad('x', 3).trim()).toBe('x');
   });
 });
+
+describe('lap units (audit U07)', () => {
+  it('lap estimates carry "laps", never "L" (litres)', async () => {
+    const u = await import('./units');
+    expect(u.formatLapsText(13.66)).toBe(`13.7${u.UNIT_SPACE}laps`);
+    expect(u.formatLapsText(1)).toBe(`1.0${u.UNIT_SPACE}lap`);
+    expect(u.formatLapsText(1.5, { signed: true })).toBe(`+1.5${u.UNIT_SPACE}laps`);
+    expect(u.formatLapsText(-0.4, { signed: true })).toBe(`-0.4${u.UNIT_SPACE}laps`);
+    expect(u.formatLapsText(null)).toBe(u.NO_VALUE);
+    expect(u.formatLapCountText(1)).toBe(`1${u.UNIT_SPACE}lap`);
+    expect(u.formatLapCountText(12.8)).toBe(`12${u.UNIT_SPACE}laps`);
+    expect(u.formatLapCountText(undefined)).toBe(u.NO_VALUE);
+    expect(u.formatLapCountText(-1)).toBe(u.NO_VALUE);
+  });
+});

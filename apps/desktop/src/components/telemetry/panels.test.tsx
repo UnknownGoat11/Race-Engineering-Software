@@ -203,7 +203,23 @@ describe('Telemetry Panels (REDESIGN W1.5)', () => {
       act(() => {
         frames.runFrame();
       });
-      expect(screen.getByText('Wear (raw): 0.90')).toBeInTheDocument();
+      // v1.3 V06: footer is a label/value list ("Wear (raw)" / "0.90"), not run-together text
+      expect(screen.getByTestId('tyre-fl-wear')).toHaveTextContent('0.90');
+      expect(screen.getAllByText('Wear (raw)')).toHaveLength(4);
+      expect(screen.getByTestId('tyre-fr-wear')).toHaveTextContent(NO_VALUE);
+      expect(screen.getByTestId('tyre-fl-carcass')).toHaveTextContent(NO_VALUE);
+    });
+
+    it('shows the corner code only, with the full name in title and aria-label (v1.3 V06/U17)', () => {
+      const { renderWithStore } = createPanelHarness();
+      renderWithStore(<TyrePanel />);
+
+      const fl = screen.getByTestId('tyre-fl');
+      expect(fl).toHaveAttribute('aria-label', 'Front left tyre');
+      const title = fl.querySelector('.tyre-corner-title');
+      expect(title?.textContent).toBe('FL');
+      expect(title).toHaveAttribute('title', 'Front left');
+      expect(screen.queryByText(/FRONT LEFT/)).toBeNull();
     });
 
     it('renders all 4 tyre corners in a 2x2 grid (B01)', () => {
@@ -238,7 +254,11 @@ describe('Telemetry Panels (REDESIGN W1.5)', () => {
         frames.runFrame();
       });
       expect(screen.getByText(/450\s*°C/)).toBeInTheDocument();
-      expect(screen.getByText(/Peak:\s*580/)).toBeInTheDocument();
+      // v1.3 V06: one line per corner, "FL 450 °C · peak 580 · wear —"
+      const fl = screen.getByTestId('brake-fl');
+      expect(fl.textContent).toBe(`FL450 °C· peak 580wear ${NO_VALUE}`);
+      expect(fl).toHaveAttribute('aria-label', 'Front left brake');
+      expect(screen.getByTestId('brake-fr').textContent).toContain(`peak ${NO_VALUE}`);
     });
   });
 
@@ -291,11 +311,15 @@ describe('Telemetry Panels (REDESIGN W1.5)', () => {
       expect(screen.getByText('(50%)')).toBeInTheDocument();
     });
 
-    it('displays reserve not reported caption under Fuel to Add (T26)', () => {
+    it('keeps the reserve caveat on Fuel to add as a title, value on one line (T26, v1.3 V07/C06)', () => {
       const { renderWithStore } = createPanelHarness();
       renderWithStore(<FuelPanel />);
 
-      expect(screen.getByText('(reserve not reported)')).toBeInTheDocument();
+      const row = screen.getByTestId('fuel-to-add-row');
+      expect(row).toHaveAttribute('title', 'Reserve not reported');
+      expect(row.querySelector('dt')?.textContent).toBe('Fuel to add');
+      expect(row.querySelector('dd')?.textContent).toBe(NO_VALUE);
+      expect(screen.queryByText('(reserve not reported)')).toBeNull();
     });
   });
 

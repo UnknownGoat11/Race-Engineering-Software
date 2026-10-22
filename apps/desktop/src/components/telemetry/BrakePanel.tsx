@@ -33,6 +33,15 @@ const BRAKE_CHANNELS = [
   ch.BRAKE_CORE_TEMP_RR,
 ] as const;
 
+interface BrakeCorner {
+  readonly code: string;
+  readonly name: string;
+  readonly temp: number | null;
+  readonly peak: number | null;
+  readonly wear: number | null;
+  readonly thickness: number | null;
+}
+
 export function BrakePanel(): JSX.Element {
   const store = useContext(TelemetryStoreContext);
   if (!store) {
@@ -99,91 +108,50 @@ function BrakePanelContent(): JSX.Element {
     </>
   );
 
+  const corners: readonly BrakeCorner[] = [
+    { code: 'FL', name: 'Front left', temp: tFL, peak: pFL, wear: wFL, thickness: thFL },
+    { code: 'FR', name: 'Front right', temp: tFR, peak: pFR, wear: wFR, thickness: thFR },
+    { code: 'RL', name: 'Rear left', temp: tRL, peak: pRL, wear: wRL, thickness: thRL },
+    { code: 'RR', name: 'Rear right', temp: tRR, peak: pRR, wear: wRR, thickness: thRR },
+  ];
+
   return (
     <Panel title="BRAKES" dq={dq} meta={metaContent} testId="panel-brakes">
-      <div className="brakes-grid-2x2">
-        {/* FL */}
-        <div className="brake-corner-box">
-          <div className="brake-corner-header">
-            <span className="brake-corner-title">FL · FRONT LEFT</span>
-            <span className="brake-peak-label">Peak: {formatTemperature(pFL)}</span>
-          </div>
-          <div className="brake-temp-value">
-            {formatTemperature(tFL, { withUnit: true })}
-          </div>
-          <div className="brake-sub-metrics">
-            <span className="brake-sub-wear">
-              Wear: {wFL != null ? `${(wFL * 100).toFixed(1)}%` : NO_VALUE}
+      {/* v1.3 V06: one line per corner, "FL 352 °C · peak 754 · wear —" (code only, full name in title/aria) */}
+      <div className="brakes-list">
+        {corners.map((c) => (
+          <div
+            key={c.code}
+            className="brake-row"
+            role="group"
+            aria-label={`${c.name} brake`}
+            data-testid={`brake-${c.code.toLowerCase()}`}
+          >
+            <span className="brake-row-code" title={c.name}>
+              {c.code}
             </span>
-            {thFL != null && (
-              <span className="brake-sub-thick">{(thFL * 1000).toFixed(1)} mm</span>
-            )}
-          </div>
-        </div>
-
-        {/* FR */}
-        <div className="brake-corner-box">
-          <div className="brake-corner-header">
-            <span className="brake-corner-title">FR · FRONT RIGHT</span>
-            <span className="brake-peak-label">Peak: {formatTemperature(pFR)}</span>
-          </div>
-          <div className="brake-temp-value">
-            {formatTemperature(tFR, { withUnit: true })}
-          </div>
-          <div className="brake-sub-metrics">
-            <span className="brake-sub-wear">
-              Wear: {wFR != null ? `${(wFR * 100).toFixed(1)}%` : NO_VALUE}
+            <span className="brake-row-temp">{formatTemperature(c.temp, { withUnit: true })}</span>
+            <span className="brake-row-kv">
+              <span className="brake-row-lbl">· peak</span>{' '}
+              <span className="brake-row-num">{formatTemperature(c.peak)}</span>
             </span>
-            {thFR != null && (
-              <span className="brake-sub-thick">{(thFR * 1000).toFixed(1)} mm</span>
-            )}
-          </div>
-        </div>
-
-        {/* RL */}
-        <div className="brake-corner-box">
-          <div className="brake-corner-header">
-            <span className="brake-corner-title">RL · REAR LEFT</span>
-            <span className="brake-peak-label">Peak: {formatTemperature(pRL)}</span>
-          </div>
-          <div className="brake-temp-value">
-            {formatTemperature(tRL, { withUnit: true })}
-          </div>
-          <div className="brake-sub-metrics">
-            <span className="brake-sub-wear">
-              Wear: {wRL != null ? `${(wRL * 100).toFixed(1)}%` : NO_VALUE}
+            <span
+              className="brake-row-kv"
+              data-testid={`brake-wear-${c.code.toLowerCase()}`}
+              title={c.thickness != null ? `Disc thickness ${(c.thickness * 1000).toFixed(1)} mm` : undefined}
+            >
+              <span className="brake-row-lbl">wear</span>{' '}
+              <span className="brake-row-num">{c.wear != null ? `${(c.wear * 100).toFixed(1)}%` : NO_VALUE}</span>
             </span>
-            {thRL != null && (
-              <span className="brake-sub-thick">{(thRL * 1000).toFixed(1)} mm</span>
-            )}
           </div>
-        </div>
-
-        {/* RR */}
-        <div className="brake-corner-box">
-          <div className="brake-corner-header">
-            <span className="brake-corner-title">RR · REAR RIGHT</span>
-            <span className="brake-peak-label">Peak: {formatTemperature(pRR)}</span>
-          </div>
-          <div className="brake-temp-value">
-            {formatTemperature(tRR, { withUnit: true })}
-          </div>
-          <div className="brake-sub-metrics">
-            <span className="brake-sub-wear">
-              Wear: {wRR != null ? `${(wRR * 100).toFixed(1)}%` : NO_VALUE}
-            </span>
-            {thRR != null && (
-              <span className="brake-sub-thick">{(thRR * 1000).toFixed(1)} mm</span>
-            )}
-          </div>
-        </div>
+        ))}
       </div>
 
       {tempDiffFR != null && (
         <div className="brake-bias-row">
-          <span className="card-row-label">Front - Rear Temp Delta</span>
-          <span className="card-row-value">
-            {tempDiffFR >= 0 ? `+${tempDiffFR.toFixed(0)}°C` : `${tempDiffFR.toFixed(0)}°C`}
+          <span className="card-row-label">Front–rear temp delta</span>
+          <span className="card-row-value brake-row-num">
+            {tempDiffFR >= 0 ? `+${tempDiffFR.toFixed(0)} °C` : `${tempDiffFR.toFixed(0)} °C`}
           </span>
         </div>
       )}

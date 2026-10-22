@@ -77,12 +77,12 @@ function EnergyPanelContent(): JSX.Element {
       {/* Virtual Energy Section */}
       {hasVe ? (
         <div className="energy-section">
-          <div className="card-row energy-header-row">
-            <span className="card-row-label">Virtual Energy Remaining</span>
-            <span className="card-row-value">
-              {(ve * 100).toFixed(1)}%
-            </span>
-          </div>
+          <dl className="tel-kv energy-header-row">
+            <div className="tel-kv-row">
+              <dt>Virtual energy remaining</dt>
+              <dd>{(ve * 100).toFixed(1)}%</dd>
+            </div>
+          </dl>
           <div className="progress-track">
             <div
               className="progress-fill progress-fill--ve"
@@ -91,10 +91,12 @@ function EnergyPanelContent(): JSX.Element {
           </div>
         </div>
       ) : (
-        <div className="card-row energy-fallback-row">
-          <span className="card-row-label">Virtual Energy</span>
-          <span className="card-row-value">VE: not reported by this car</span>
-        </div>
+        <dl className="tel-kv energy-fallback-row">
+          <div className="tel-kv-row tel-kv-row--prose">
+            <dt>Virtual energy</dt>
+            <dd className="tel-kv-prose">VE: not reported by this car</dd>
+          </div>
+        </dl>
       )}
 
       {/* Hybrid Section */}
@@ -102,12 +104,12 @@ function EnergyPanelContent(): JSX.Element {
         <div className="hybrid-section">
           {soc != null && (
             <div className="energy-section">
-              <div className="card-row energy-header-row">
-                <span className="card-row-label">Battery State of Charge (SoC)</span>
-                <span className="card-row-value">
-                  {(soc * 100).toFixed(1)}%
-                </span>
-              </div>
+              <dl className="tel-kv energy-header-row">
+                <div className="tel-kv-row">
+                  <dt title="Battery state of charge">Battery SoC</dt>
+                  <dd>{(soc * 100).toFixed(1)}%</dd>
+                </div>
+              </dl>
               <div className="progress-track">
                 <div
                   className="progress-fill progress-fill--safe"
@@ -117,26 +119,24 @@ function EnergyPanelContent(): JSX.Element {
             </div>
           )}
 
-          <div className="telemetry-grid-2x2">
-            <div className="card-row">
-              <span className="card-row-label">Motor Torque</span>
-              <span className="card-row-value">
-                {motorTorque != null ? `${motorTorque.toFixed(1)} Nm` : NO_VALUE}
-              </span>
+          <dl className="tel-kv">
+            <div className="tel-kv-row">
+              <dt>Motor torque</dt>
+              <dd>{motorTorque != null ? `${motorTorque.toFixed(1)} Nm` : NO_VALUE}</dd>
             </div>
-            <div className="card-row">
-              <span className="card-row-label">Motor RPM</span>
-              <span className="card-row-value">
-                {motorRpm != null ? Math.round(motorRpm).toLocaleString() : NO_VALUE}
-              </span>
+            <div className="tel-kv-row">
+              <dt>Motor RPM</dt>
+              <dd>{motorRpm != null ? Math.round(motorRpm).toLocaleString() : NO_VALUE}</dd>
             </div>
-          </div>
+          </dl>
         </div>
       ) : (
-        <div className="card-row">
-          <span className="card-row-label">Hybrid ERS</span>
-          <span className="card-row-value">Hybrid: none</span>
-        </div>
+        <dl className="tel-kv">
+          <div className="tel-kv-row tel-kv-row--prose">
+            <dt>Hybrid ERS</dt>
+            <dd className="tel-kv-prose">Hybrid: none</dd>
+          </div>
+        </dl>
       )}
     </Panel>
   );

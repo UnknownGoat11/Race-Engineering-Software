@@ -11,7 +11,7 @@
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
   color: var(--text-primary);
-  font-family: var(--font-sans);
+  font-family: var(--font-ui);
   font-size: var(--type-ui-sm-size);
 }
 
@@ -371,15 +371,17 @@
 .telemetry-graph--stacked {
   display: flex;
   flex-direction: column;
+  flex: 1 1 auto;
   height: 100%;
   min-height: 0;
   overflow: hidden;
 }
 
+/* Its height does not depend on the panes: TelemetryGraph measures it and sizes the panes to fit (layout.ts). */
 .telemetry-graph__panes {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   gap: var(--space-1);
   min-height: 0;
   overflow: hidden;
@@ -388,53 +390,102 @@
 .telemetry-graph__pane {
   display: flex;
   flex-direction: column;
-  min-height: 48px;
+  min-height: 0;
   background: var(--surface-inset);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding: 4px 6px;
+  padding: 0 6px;
   overflow: hidden;
   flex: var(--dyn-flex, 1 1 0px);
+  height: var(--dyn-height, auto);
 }
 
+/* One row per pane (PANE_HEADER_HEIGHT_CSS): TITLE · swatch name value unit. */
 .telemetry-graph__pane-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
-  min-height: 18px;
+  flex: none;
+  height: 24px;
+  min-width: 0;
+  overflow: hidden;
   font-size: var(--type-caption-size);
 }
 
-.telemetry-graph__pane-title-group {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-}
-
 .telemetry-graph__pane-title {
-  font-family: var(--font-mono);
+  flex-shrink: 0;
+  font-family: var(--font-ui);
   font-weight: var(--font-weight-semibold);
-  font-size: 11px;
+  font-size: var(--type-caption-size);
+  letter-spacing: var(--letter-spacing-caps);
   color: var(--text-secondary);
   text-transform: uppercase;
-}
-
-.telemetry-graph__pane-proportion {
-  color: var(--text-tertiary);
-  font-size: 10px;
+  white-space: nowrap;
 }
 
 .telemetry-graph__pane .telemetry-graph__legend {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
   margin: 0;
   padding: 0;
+  gap: 0 var(--space-2);
   overflow-x: auto;
   scrollbar-width: none;
 }
 
+.telemetry-graph__pane .telemetry-graph__legend-item {
+  height: 100%;
+  padding: 0;
+}
+
+/* The whole legend row is the checkbox's label: a target the full header height (>= 24 px, A08). */
+.telemetry-graph__legend-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 24px;
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+/* Readouts in a pane header stay on the row: name, state, value (small value size, mono), unit. */
+.telemetry-graph__pane .telemetry-readout {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  --readout-value-min-width: 0;
+}
+
+.telemetry-graph__pane .telemetry-readout__label {
+  font-size: var(--type-caption-size);
+}
+
+.telemetry-graph__pane .telemetry-readout__value {
+  font-size: var(--type-value-sm-size);
+  line-height: var(--type-value-sm-lh);
+}
+
+.telemetry-graph__pane .telemetry-readout__unit {
+  font-family: var(--font-mono);
+  font-size: var(--type-caption-size);
+}
+
 .telemetry-graph__pane .telemetry-graph__plot {
-  flex: 1 1 auto;
-  min-height: 28px;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+/* Panes left out for lack of height (named in the title and for screen readers). */
+.telemetry-graph__hidden-panes {
+  flex-shrink: 0;
+  padding: 0 var(--space-1);
+  border: 1px dashed var(--border-control);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--type-caption-size);
+  white-space: nowrap;
 }
 
 /* ------------------------------------------------------------- Channel Selector Modal (DS07) */

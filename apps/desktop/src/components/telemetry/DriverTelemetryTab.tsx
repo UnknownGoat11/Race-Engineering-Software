@@ -1,23 +1,18 @@
 /**
- * Driver Telemetry Dashboard Tab / Pit Board (spec §88, §1814–1875, REDESIGN.md §3.1 & C7).
- * High-visibility, glanceable display optimized for sim drivers read from ~1 m:
- * Exactly 4 items (C7):
- * 1. Delta to Personal Best (96 px hero, ±0.050 s deadband per C12)
- * 2. Laps left on limiting resource fuel-or-VE (64 px, amber <= 3 laps, red <= 1 lap)
- * 3. Flag summary strip from flags.summary (0x0B0C)
- * 4. Pit limiter status tile (0x0015)
- * Strict requirement: no text < 16 px anywhere on this board!
+ * Driver pit board (spec §88, §1814–1875, REDESIGN.md §3.1 & C7; v1.3 audit U04, U05, D01, D03, D04, V10).
+ * High-visibility, glanceable display read from ~1 m. It fills the height below the app bar:
+ * 0. Optional status row (LMU / REC / STREAM / ENG / CODE chips), passed in by the driver screen (D01)
+ * 1. Flag strip from flags.summary (0x0B0C), always rendered: green for 0, neutral "Flag —" when unknown
+ * 2. Delta to personal best: hero number centred, qualifier beside it, unit at ~40 % size (±0.050 s deadband, C12)
+ * 3. Laps left on the limiting resource, fuel or VE (amber <= 3 laps, red <= 1 lap)
+ * 4. Pit limiter: word plus a one-line caption; SPEED_LIMITER_ACTIVE (0x010D) first, legacy 0x010C as fallback
+ * Strict requirement: no text < 16 px on this board. Missing values render "—", never an invented state.
  */
-import { useContext, useMemo, type JSX } from 'react';
+import { useContext, useMemo, type JSX, type ReactNode } from 'react';
 import { ch } from '../../generated/channels';
-import {
-  formatDelta,
-  formatFuel,
-  formatFuelPerLap,
-  formatLapTime,
-  NO_VALUE,
-} from '../../lib/units';
+import { formatDelta, formatFuel, formatFuelPerLap, formatLapTime, NO_VALUE } from '../../lib/units';
 import { TelemetryStoreContext, useChannelValues } from '../../telemetry/hooks';
+import { flagStripView, limiterView } from '../driver/driverBoardModel';
 
 const DELTA_DEADBAND_S = 0.050;
 
@@ -33,28 +28,38 @@ const DRIVER_BOARD_CHANNELS = [
   ch.FUEL_LAPS_REMAINING,
   ch.FUEL_TO_ADD,
   ch.VE_LAPS_REMAINING,
+  ch.SPEED_LIMITER_ACTIVE,
   ch.SPEED_LIMITER,
   ch.FLAG_SUMMARY,
   ch.YELLOW_FLAG_STATE,
   ch.BLUE_FLAG,
 ] as const;
 
-export function DriverTelemetryTab(): JSX.Element {
-  const store = useContext(TelemetryStoreContext);
-  return store ? <DriverTelemetryContent /> : <DriverTelemetryEmpty />;
+export interface DriverTelemetryTabProps {
+  /** Connection status row shown at the top of the board (D01). */
+  readonly statusRow?: ReactNode;
 }
 
-function DriverTelemetryEmpty(): JSX.Element {
+export function DriverTelemetryTab({ statusRow }: DriverTelemetryTabProps = {}): JSX.Element {
+  const store = useContext(TelemetryStoreContext);
+  return store ? <DriverTelemetryContent statusRow={statusRow} /> : <DriverTelemetryEmpty statusRow={statusRow} />;
+}
+
+function DriverTelemetryEmpty({ statusRow }: DriverTelemetryTabProps): JSX.Element {
   return (
-    <div className="pit-board" data-testid="driver-telemetry-empty">
-      <div className="pit-board-empty-message">
-        No live telemetry store active.
-      </div>
+    <div className="pit-board pit-board--empty" data-testid="driver-telemetry-empty">
+      {statusRow}
+      <div className="pit-board-empty-message">No live telemetry store active.</div>
     </div>
   );
 }
 
-function DriverTelemetryContent(): JSX.Element {
+/** A number in the data font inside sans text (mono only for numbers and units). */
+function Num({ children }: { readonly children: ReactNode }): JSX.Element {
+  return <span className="pit-board-num">{children}</span>;
+}
+
+function DriverTelemetryContent({ statusRow }: DriverTelemetryTabProps): JSX.Element {
   const samples = useChannelValues(DRIVER_BOARD_CHANNELS);
 
   const channelMap = useMemo(() => {
@@ -62,8 +67,12 @@ function DriverTelemetryContent(): JSX.Element {
     for (let i = 0; i < DRIVER_BOARD_CHANNELS.length; i++) {
       const id = DRIVER_BOARD_CHANNELS[i];
       const s = samples[i];
-      if (id !== undefined && s && typeof s.value === 'number' && Number.isFinite(s.value)) {
+      if (id === undefined || !s) continue;
+      if (typeof s.value === 'number' && Number.isFinite(s.value)) {
         map.set(id, s.value);
+      } else if (typeof s.value === 'boolean') {
+        // Bool channels (the speed limiter) arrive as booleans; without this they would read as "no data".
+        map.set(id, s.value ? 1 : 0);
       }
     }
     return map;
@@ -71,28 +80,24 @@ function DriverTelemetryContent(): JSX.Element {
 
   const num = (id: number): number | null => channelMap.get(id) ?? null;
 
-  // 1. Delta to Personal Best
+  // Delta to personal best and lap times
   const deltaPb = num(ch.DELTA_PERSONAL_BEST) ?? num(ch.DELTA_BEST);
   const lapTime = num(ch.LAP_TIME);
   const lastLapTime = num(ch.LAST_LAP_TIME);
   const bestLapTime = num(ch.BEST_LAP_TIME);
   const lapNumber = num(ch.LAP_NUMBER);
 
-  // 2. Limiting resource: Fuel vs VE
+  // Limiting resource: fuel vs VE (C7)
   const fuelL = num(ch.FUEL);
   const fuelPerLap = num(ch.FUEL_PER_LAP);
   const fuelLapsRemaining = num(ch.FUEL_LAPS_REMAINING);
   const fuelToAdd = num(ch.FUEL_TO_ADD);
   const veLapsLeft = num(ch.VE_LAPS_REMAINING);
 
-  // Determine limiting resource (C7)
-  const isVeLimiting =
-    veLapsLeft !== null &&
-    (fuelLapsRemaining === null || veLapsLeft < fuelLapsRemaining);
-  const limitingResourceLabel = isVeLimiting ? 'VE' : 'FUEL';
+  const isVeLimiting = veLapsLeft !== null && (fuelLapsRemaining === null || veLapsLeft < fuelLapsRemaining);
+  const limitingResourceLabel = isVeLimiting ? 'VE' : 'fuel';
   const limitingLapsRemaining = isVeLimiting ? veLapsLeft : fuelLapsRemaining;
 
-  // Limiting resource alert level
   const lapsLevelClass = (() => {
     if (limitingLapsRemaining === null) return 'pit-board-level-off';
     if (limitingLapsRemaining <= 1.0) return 'pit-board-level-critical';
@@ -100,172 +105,119 @@ function DriverTelemetryContent(): JSX.Element {
     return 'pit-board-level-ok';
   })();
 
-  // 3. Flags
-  const flagSummary = num(ch.FLAG_SUMMARY);
-  const yellowState = num(ch.YELLOW_FLAG_STATE);
-  const blueFlag = num(ch.BLUE_FLAG);
-
-  // 4. Pit Limiter
-  const pitLimiter = num(ch.SPEED_LIMITER);
-  const isLimiterOn = pitLimiter !== null && pitLimiter > 0;
+  const flag = flagStripView(num(ch.FLAG_SUMMARY), num(ch.YELLOW_FLAG_STATE), num(ch.BLUE_FLAG));
+  const limiter = limiterView(num(ch.SPEED_LIMITER_ACTIVE), num(ch.SPEED_LIMITER));
+  // Amber only when the limiter is on (it matters while driving); off and unknown stay neutral.
+  const limiterLevelClass = limiter.state === 'on' ? 'pit-board-level-warn' : 'pit-board-level-off';
 
   // Delta deadband & qualifier (C12)
   const deltaInfo = (() => {
-    if (deltaPb === null) {
-      return {
-        className: 'delta-neutral',
-        qualifier: 'NO DELTA',
-        text: '—',
-      };
-    }
-    if (Math.abs(deltaPb) <= DELTA_DEADBAND_S) {
-      return {
-        className: 'delta-zero',
-        qualifier: 'ON PACE',
-        text: formatDelta(deltaPb, { withUnit: true }),
-      };
-    }
-    if (deltaPb < -DELTA_DEADBAND_S) {
-      return {
-        className: 'delta-negative',
-        qualifier: '▼ FASTER',
-        text: formatDelta(deltaPb, { withUnit: true }),
-      };
-    }
-    return {
-      className: 'delta-positive',
-      qualifier: '▲ SLOWER',
-      text: formatDelta(deltaPb, { withUnit: true }),
-    };
+    if (deltaPb === null) return { className: 'delta-neutral', qualifier: 'No delta', value: NO_VALUE };
+    const value = formatDelta(deltaPb);
+    if (Math.abs(deltaPb) <= DELTA_DEADBAND_S) return { className: 'delta-zero', qualifier: 'On pace', value };
+    if (deltaPb < -DELTA_DEADBAND_S) return { className: 'delta-negative', qualifier: '▼ Faster', value };
+    return { className: 'delta-positive', qualifier: '▲ Slower', value };
   })();
 
   return (
     <div className="pit-board" data-testid="driver-telemetry-board">
-      {/* Item 3: Flag Summary Strip (full width) */}
+      {statusRow}
+
+      {/* Flag strip: always present, same height, so the board never has a hole (U04, V10) */}
       <div className="pit-board-flag-banner" data-testid="driver-flag-banner">
-        {flagSummary === 1 && (
-          <div className="flag-strip flag-strip-warn">
-            ⚠️ LOCAL YELLOW FLAG
-          </div>
-        )}
-        {flagSummary === 2 && (
-          <div className="flag-strip flag-strip-warn">
-            ⚠️ FULL COURSE YELLOW / SAFETY CAR
-          </div>
-        )}
-        {flagSummary === 3 && (
-          <div className="flag-strip flag-strip-blue">
-            ◆ BLUE FLAG — YIELD POSITION
-          </div>
-        )}
-        {flagSummary === 4 && (
-          <div className="flag-strip flag-strip-critical">
-            🛑 RED FLAG — SESSION STOPPED
-          </div>
-        )}
-        {flagSummary === 5 && (
-          <div className="flag-strip flag-strip-chequered">
-            🏁 CHEQUERED FLAG
-          </div>
-        )}
-        {flagSummary === null && yellowState !== null && yellowState > 0 && (
-          <div className="flag-strip flag-strip-warn">
-            ⚠️ YELLOW FLAG
-          </div>
-        )}
-        {flagSummary === null && blueFlag !== null && blueFlag > 0 && (
-          <div className="flag-strip flag-strip-blue">
-            ◆ BLUE FLAG
-          </div>
-        )}
-        {flagSummary === null &&
-          (yellowState === null || yellowState === 0) &&
-          (blueFlag === null || blueFlag === 0) && (
-            <div className="flag-strip flag-strip-clear">
-              ● GREEN FLAG · TRACK CLEAR
-            </div>
+        <div className={`flag-strip flag-strip-${flag.kind}`} data-testid="driver-flag-strip" data-flag={flag.kind}>
+          {flag.glyph !== '' && (
+            <span className="flag-strip-glyph" aria-hidden="true">
+              {flag.glyph}
+            </span>
           )}
+          <span>{flag.text}</span>
+        </div>
       </div>
 
-      {/* Item 1: Delta to Personal Best (96 px hero) */}
+      {/* Delta to personal best: number centred, qualifier beside it (D03) */}
       <div className="pit-board-hero" data-testid="driver-delta-hero">
         <div className="pit-board-hero-header">
-          <span className="pit-board-hero-title">DELTA TO PERSONAL BEST</span>
-          <span className={`pit-board-hero-badge ${deltaInfo.className}`}>
+          <span className="pit-board-hero-title">Delta to personal best</span>
+        </div>
+
+        <div className="pit-board-hero-main">
+          <div className={`pit-board-hero-value ${deltaInfo.className}`} data-testid="driver-delta-value">
+            {deltaInfo.value}
+            {deltaInfo.value !== NO_VALUE && <span className="pit-board-hero-unit">s</span>}
+          </div>
+          <span className={`pit-board-hero-badge ${deltaInfo.className}`} data-testid="driver-delta-qualifier">
             {deltaInfo.qualifier}
           </span>
         </div>
 
-        <div className={`pit-board-hero-value ${deltaInfo.className}`} data-testid="driver-delta-value">
-          {deltaInfo.text}
-        </div>
-
         <div className="pit-board-hero-footer">
-          <span>Lap {lapNumber !== null ? Math.round(lapNumber) : NO_VALUE}</span>
-          <span>Current: {formatLapTime(lapTime, { allowZero: true })}</span>
-          <span>Best: {formatLapTime(bestLapTime)}</span>
+          <span>
+            Lap <Num>{lapNumber !== null ? Math.round(lapNumber) : NO_VALUE}</Num>
+          </span>
+          <span>
+            Current <Num>{formatLapTime(lapTime, { allowZero: true })}</Num>
+          </span>
+          <span data-testid="driver-last-lap">
+            Last lap <Num>{formatLapTime(lastLapTime)}</Num>
+          </span>
+          <span>
+            Best <Num>{formatLapTime(bestLapTime)}</Num>
+          </span>
         </div>
       </div>
 
-      {/* Grid: Item 2 (Fuel/VE Laps) & Item 4 (Pit Limiter) */}
       <div className="pit-board-grid">
-        {/* Item 2: Laps Remaining on Limiting Resource */}
+        {/* Laps left on the limiting resource */}
         <div className={`pit-board-tile ${lapsLevelClass}`} data-testid="driver-fuel-tile">
           <div className="pit-board-tile-header">
-            <span className="pit-board-tile-title">
-              LAPS REMAINING ({limitingResourceLabel})
-            </span>
+            <span className="pit-board-tile-title">Laps left ({limitingResourceLabel})</span>
             <span className="pit-board-tile-glyph" aria-hidden="true">
-              {limitingLapsRemaining !== null && limitingLapsRemaining <= 1.0
-                ? '■'
-                : limitingLapsRemaining !== null && limitingLapsRemaining <= 3.0
-                  ? '◆'
-                  : '●'}
+              {limitingLapsRemaining === null
+                ? ''
+                : limitingLapsRemaining <= 1.0
+                  ? '■'
+                  : limitingLapsRemaining <= 3.0
+                    ? '◆'
+                    : '●'}
             </span>
           </div>
 
           <div className="pit-board-tile-body">
             <div className="pit-board-tile-value" data-testid="driver-laps-remaining">
-              {limitingLapsRemaining !== null
-                ? limitingLapsRemaining.toFixed(1)
-                : NO_VALUE}
+              {limitingLapsRemaining !== null ? limitingLapsRemaining.toFixed(1) : NO_VALUE}
             </div>
           </div>
 
           <div className="pit-board-tile-footer">
             <div className="pit-board-tile-detail">
-              Fuel: {formatFuel(fuelL, { withUnit: true })} · Avg: {formatFuelPerLap(fuelPerLap, { withUnit: true })}
+              Fuel <Num>{formatFuel(fuelL, { withUnit: true })}</Num> · avg{' '}
+              <Num>{formatFuelPerLap(fuelPerLap, { withUnit: true })}</Num>
             </div>
             <div className="pit-board-tile-subtext">
-              Target Refuel: {formatFuel(fuelToAdd, { withUnit: true })}
+              Fuel to add <Num>{formatFuel(fuelToAdd, { withUnit: true })}</Num>
             </div>
           </div>
         </div>
 
-        {/* Item 4: Pit Limiter */}
-        <div
-          className={`pit-board-tile ${isLimiterOn ? 'pit-board-level-ok' : 'pit-board-level-off'}`}
-          data-testid="driver-limiter-tile"
-        >
+        {/* Pit limiter: word plus one caption (D04) */}
+        <div className={`pit-board-tile ${limiterLevelClass}`} data-testid="driver-limiter-tile">
           <div className="pit-board-tile-header">
-            <span className="pit-board-tile-title">PIT LIMITER</span>
+            <span className="pit-board-tile-title">Pit limiter</span>
             <span className="pit-board-tile-glyph" aria-hidden="true">
-              {isLimiterOn ? '●' : '□'}
+              {limiter.state === 'on' ? '◆' : ''}
             </span>
           </div>
 
           <div className="pit-board-tile-body">
             <div className="pit-board-tile-value pit-board-limiter-value" data-testid="driver-limiter-state">
-              {isLimiterOn ? 'ACTIVE' : 'OFF'}
+              {limiter.word}
             </div>
           </div>
 
           <div className="pit-board-tile-footer">
-            <div className="pit-board-tile-detail">
-              {isLimiterOn ? 'Pit Limiter Engaged' : 'Pit Limiter Disengaged'}
-            </div>
-            <div className="pit-board-tile-subtext">
-              Last Lap: {formatLapTime(lastLapTime)}
+            <div className="pit-board-tile-subtext" data-testid="driver-limiter-caption">
+              {limiter.caption}
             </div>
           </div>
         </div>

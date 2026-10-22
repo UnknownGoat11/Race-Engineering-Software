@@ -29,7 +29,7 @@ describe('LoginScreen', () => {
     expect(screen.getByTestId('login-tab-register')).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByLabelText('Username')).toBeInTheDocument();
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Display Name')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Display name')).not.toBeInTheDocument();
     expect(screen.getByTestId('login-submit-btn')).toHaveTextContent('Sign in');
   });
 
@@ -96,7 +96,7 @@ describe('LoginScreen', () => {
     fireEvent.click(screen.getByTestId('login-tab-register'));
 
     expect(screen.getByTestId('login-tab-register')).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByLabelText('Display Name')).toBeInTheDocument();
+    expect(screen.getByLabelText('Display name')).toBeInTheDocument();
     expect(screen.getByTestId('login-submit-btn')).toHaveTextContent('Create account');
 
     fireEvent.change(screen.getByTestId('login-username-input'), { target: { value: 'bob' } });

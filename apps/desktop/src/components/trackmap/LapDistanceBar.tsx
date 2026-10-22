@@ -1,5 +1,6 @@
 import type { JSX } from 'react';
 import { classColorVar } from '../../lib/classes';
+import { carMarkerLabel, carVehicleTitle } from './carNumber';
 import type { CompetitorMarker, DriverPosition, SectorMark, TrackMapDq } from './types';
 import './trackmap.css';
 
@@ -80,6 +81,9 @@ export function LapDistanceBar({
 
           const pct = Math.min(100, Math.max(0, ((car.lapDistM % lengthM) / lengthM) * 100));
           const color = classColorVar(car.vehicleClass);
+          // Number only on the chip; the full vehicle name (if that is what was passed) goes in the tooltip (U10)
+          const label = carMarkerLabel(car.carNumber);
+          const vehicle = carVehicleTitle(car.carNumber);
 
           return (
             <div
@@ -90,10 +94,10 @@ export function LapDistanceBar({
                 borderColor: color,
                 backgroundColor: isStale ? 'transparent' : color,
               }}
-              data-testid={`competitor-chip-${car.carNumber}`}
-              title={`#${car.carNumber} ${car.driverName} (${car.vehicleClass.toUpperCase()})`}
+              data-testid={`competitor-chip-${label}`}
+              title={`${vehicle} ${car.driverName} (${car.vehicleClass.toUpperCase()})`.trim()}
             >
-              <span className="lap-dist-car-num">{car.carNumber}</span>
+              <span className="lap-dist-car-num">{label}</span>
             </div>
           );
         })}

@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as ipc from '../lib/ipc';
+import { DRIVER_SUBTAB_STORAGE_KEY, readStoredSubTab } from '../components/driver/driverBoardModel';
 import { DriverScreen } from './DriverScreen';
 import { ch } from '../generated/channels';
 import { TelemetryStore } from '../telemetry/store';
@@ -121,19 +122,38 @@ describe('DriverScreen', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(ipc.getCoreStatus).mockResolvedValue(createMockStatus());
+    window.localStorage.clear();
   });
 
-  it('renders driver status banner, car, track, and session type', async () => {
+  it('renders the session context as one line: car, class chip, track, session (D02)', async () => {
     render(<DriverScreen />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('driver-lmu-state')).toHaveTextContent('LMU: LIVE');
+      expect(screen.getByTestId('driver-car')).toHaveTextContent('BMW M Hybrid V8');
     });
 
-    expect(screen.getByTestId('driver-car')).toHaveTextContent('BMW M Hybrid V8');
     expect(screen.getByTestId('driver-track')).toHaveTextContent('Spa-Francorchamps');
     expect(screen.getByTestId('driver-session-type')).toHaveTextContent('RACE');
-    expect(screen.getByTestId('driver-class')).toHaveTextContent('HYPERCAR');
+    expect(screen.getByTestId('driver-class')).toHaveTextContent('HY');
+    expect(screen.getByTestId('driver-context').tagName).toBe('P');
+    // The LMU state badge is gone: the LMU tile says it (D02).
+    expect(screen.queryByTestId('driver-lmu-state')).not.toBeInTheDocument();
+  });
+
+  it('shows "—" in the context line where a value is missing, never a placeholder sentence', async () => {
+    const base = createMockStatus();
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue({
+      ...base,
+      session: { ...base.session, car: null, track: null, vehicle_class: null, session_type: null },
+    });
+    render(<DriverScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('driver-car')).toHaveTextContent('—');
+    });
+    expect(screen.getByTestId('driver-track')).toHaveTextContent('—');
+    expect(screen.getByTestId('driver-class')).toHaveTextContent('—');
+    expect(screen.getByTestId('driver-session-type')).toHaveTextContent('—');
   });
 
   it('displays connection code and copies it to clipboard', async () => {
@@ -149,7 +169,7 @@ describe('DriverScreen', () => {
 
     expect(writeTextMock).toHaveBeenCalledWith('8F3A2C');
     await waitFor(() => {
-      expect(screen.getByText('Copied!')).toBeInTheDocument();
+      expect(screen.getByText('Copied')).toBeInTheDocument();
     });
   });
 
@@ -177,7 +197,7 @@ describe('DriverScreen', () => {
     render(<DriverScreen />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('toggle-streaming-btn')).toHaveTextContent('Stop Streaming');
+      expect(screen.getByTestId('toggle-streaming-btn')).toHaveTextContent('Stop streaming');
     });
 
     fireEvent.click(screen.getByTestId('toggle-streaming-btn'));
@@ -201,7 +221,7 @@ describe('DriverScreen', () => {
     render(<DriverScreen />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('toggle-recording-btn')).toHaveTextContent('Pause Recording');
+      expect(screen.getByTestId('toggle-recording-btn')).toHaveTextContent('Pause recording');
     });
 
     fireEvent.click(screen.getByTestId('toggle-recording-btn'));
@@ -224,8 +244,8 @@ describe('DriverScreen', () => {
     expect(ipc.driverAddMarker).toHaveBeenCalledWith('Pit entry on lap 15');
   });
 
-  it('switches to telemetry dashboard tab', async () => {
-    render(<DriverScreen />);
+  it('switches to the pit board, shows the status row and remembers the sub-tab (N03, D01)', async () => {
+    const { unmount } = render(<DriverScreen />);
 
     await waitFor(() => {
       expect(screen.getByTestId('tab-telemetry')).toBeInTheDocument();
@@ -236,6 +256,23 @@ describe('DriverScreen', () => {
     await waitFor(() => {
       expect(screen.getByTestId('driver-telemetry-board')).toBeInTheDocument();
     });
+    expect(screen.getByTestId('pit-board-status-row')).toBeInTheDocument();
+    expect(window.localStorage.getItem(DRIVER_SUBTAB_STORAGE_KEY)).toBe('pitboard');
+
+    unmount();
+    render(<DriverScreen />);
+    expect(screen.getByRole('button', { name: 'Pit board' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('opens on Setup when localStorage is unavailable (N03)', () => {
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    try {
+      expect(readStoredSubTab()).toBe('setup');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('displays synthetic banner and demo state when origin is synthetic', async () => {
@@ -247,9 +284,12 @@ describe('DriverScreen', () => {
     render(<DriverScreen />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('synthetic-badge')).toHaveTextContent('SYNTHETIC DATA');
       expect(screen.getByTestId('driver-demo-band')).toBeInTheDocument();
     });
+    // U14: the demo is marked by the band and the LMU tile only; no amber header badges.
+    expect(screen.queryByTestId('synthetic-badge')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('driver-lmu-state')).not.toBeInTheDocument();
+    expect(screen.queryByText('Not available in demo.')).not.toBeInTheDocument();
 
     // Start streaming is disabled in demo mode
     const streamBtn = screen.getByTestId('toggle-streaming-btn');
@@ -330,9 +370,8 @@ describe('DriverScreen', () => {
     const details = screen.getByTestId('driver-details');
     expect(details).not.toHaveAttribute('open');
 
-    // Clicking a tile opens Details and focuses that section
-    const recordingTile = screen.getByTestId('tile-recording');
-    fireEvent.click(recordingTile);
+    // The tile's "Details" button opens Details and focuses that section (A02)
+    fireEvent.click(screen.getByTestId('tile-recording-details'));
 
     expect(details).toHaveAttribute('open');
     expect(screen.getByTestId('details-section-recording')).toHaveClass('driver-details-col-active');
@@ -378,7 +417,7 @@ describe('DriverScreen', () => {
     await waitFor(() => {
       expect(screen.getByTestId('driver-delta-value')).toHaveTextContent('-0.342');
       expect(screen.getByTestId('driver-laps-remaining')).toHaveTextContent('12.5');
-      expect(screen.getByText(/Fuel: 45.2 L/)).toBeInTheDocument();
+      expect(screen.getByTestId('driver-fuel-tile')).toHaveTextContent('Fuel 45.2 L');
       expect(screen.getByTestId('driver-limiter-tile')).toBeInTheDocument();
       expect(screen.getByTestId('driver-flag-banner')).toBeInTheDocument();
     });
@@ -424,16 +463,45 @@ describe('DriverScreen', () => {
     const removeBtn = screen.getByRole('button', { name: 'Remove Ana (@pitwall_ana)' });
     expect(removeBtn).toBeInTheDocument();
 
-    // Test nav tablist role and selection (A04)
-    const nav = screen.getByRole('tablist', { name: 'Driver views' });
-    expect(nav).toBeInTheDocument();
-    const statusTab = screen.getByRole('tab', { name: 'Status Hub' });
-    expect(statusTab).toHaveAttribute('aria-selected', 'true');
-    const telemetryTab = screen.getByRole('tab', { name: 'Telemetry Dashboard' });
-    expect(telemetryTab).toHaveAttribute('aria-selected', 'false');
+    // Sub-tabs are plain toggle buttons (A07)
+    const group = screen.getByRole('group', { name: 'Driver views' });
+    expect(group).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Setup' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Pit board' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+
+    // U13: the name appears once (the row), with the link state in the row
+    const engineersTile = screen.getByTestId('tile-engineers');
+    expect(within(engineersTile).getAllByText('Ana')).toHaveLength(1);
 
     // Test marker input label association (A06)
     const markerInput = screen.getByLabelText('Log marker note');
     expect(markerInput).toBeInTheDocument();
+  });
+
+  it('puts End session alone at the right end and explains the disabled marker input (D05)', async () => {
+    const base = createMockStatus();
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue({ ...base, recording: { ...base.recording, state: 'off' } });
+    render(<DriverScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('marker-input')).toBeDisabled();
+    });
+    expect(screen.getByTestId('marker-input')).toHaveAttribute('title', 'Start recording to add markers');
+    const bar = screen.getByTestId('driver-action-bar');
+    const groups = bar.querySelectorAll(':scope > .action-bar-group');
+    const last = groups[groups.length - 1];
+    expect(last).toHaveClass('driver-action-end');
+    expect(last).toContainElement(screen.getByTestId('end-session-btn-trigger'));
+  });
+
+  it('disables Remove in the demo with the reason (U14)', async () => {
+    vi.mocked(ipc.getCoreStatus).mockResolvedValue({ ...createMockStatus(), origin: 'synthetic' });
+    render(<DriverScreen />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('kick-engineer-101-trigger')).toBeDisabled();
+    });
+    expect(screen.getByText('Not available in demo')).toBeInTheDocument();
   });
 });

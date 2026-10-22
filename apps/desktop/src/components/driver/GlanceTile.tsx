@@ -1,5 +1,6 @@
-import type { JSX, KeyboardEvent, ReactNode } from 'react';
+import type { JSX, ReactNode } from 'react';
 import type { Level } from '../../lib/statusModel';
+import { levelGlyph } from './driverBoardModel';
 
 export interface GlanceTileProps {
   readonly id: 'lmu' | 'recording' | 'streaming' | 'engineers' | 'code';
@@ -12,23 +13,8 @@ export interface GlanceTileProps {
   readonly isCode?: boolean;
   readonly isSessionFull?: boolean;
   readonly testId?: string;
+  /** Opens the diagnostics for this tile. Rendered as a small "Details" button in the tile header (A02). */
   readonly onClick?: () => void;
-}
-
-function levelGlyph(level: Level): string {
-  switch (level) {
-    case 'ok':
-      return '●';
-    case 'warning':
-      return '◆';
-    case 'critical':
-      return '■';
-    case 'synthetic':
-      return '▨';
-    case 'off':
-    default:
-      return '□';
-  }
 }
 
 function getWordSizeModifier(word: string): string {
@@ -50,6 +36,11 @@ function getWordSizeModifier(word: string): string {
   return 'glance-word--xs';
 }
 
+/**
+ * One driver status tile. The tile is a plain labelled region (role="group", named by its label), so its own
+ * buttons (Remove, Copy code, New code) are never nested inside another interactive element (A02), and a
+ * screen reader reads the whole content, including the reason line.
+ */
 export function GlanceTile({
   id,
   label,
@@ -63,23 +54,8 @@ export function GlanceTile({
   testId,
   onClick,
 }: GlanceTileProps): JSX.Element {
-  const isInteractive = typeof onClick === 'function';
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (isInteractive && (e.key === 'Enter' || e.key === ' ')) {
-      e.preventDefault();
-      onClick();
-    }
-  };
-
-  const tileClasses = [
-    'glance-tile',
-    `glance-tile-${level}`,
-    `glance-tile-${id}`,
-    isInteractive ? 'glance-tile-interactive' : '',
-  ]
-    .filter(Boolean)
-    .join(' ');
+  const labelId = `glance-label-${id}`;
+  const tileClasses = ['glance-tile', `glance-tile-${level}`, `glance-tile-${id}`].join(' ');
 
   let wordContent: ReactNode;
   if (isCode) {
@@ -108,21 +84,31 @@ export function GlanceTile({
 
   const wordModifier = typeof word === 'string' && !isCode ? getWordSizeModifier(word) : '';
   const wordClasses = ['glance-word', wordModifier].filter(Boolean).join(' ');
+  const glyph = levelGlyph(level);
 
   return (
-    <div
-      className={tileClasses}
-      data-testid={testId ?? `tile-${id}`}
-      role={isInteractive ? 'button' : undefined}
-      tabIndex={isInteractive ? 0 : undefined}
-      onClick={onClick}
-      onKeyDown={isInteractive ? handleKeyDown : undefined}
-      aria-label={isInteractive ? `${label}: ${word}. Click for diagnostics details.` : undefined}
-    >
+    <div className={tileClasses} data-testid={testId ?? `tile-${id}`} role="group" aria-labelledby={labelId}>
       <div className="glance-header">
-        <span className="glance-label">{label}</span>
-        <span className="glance-glyph" aria-hidden="true">
-          {levelGlyph(level)}
+        <span className="glance-label" id={labelId}>
+          {label}
+        </span>
+        <span className="glance-header-end">
+          {glyph !== '' && (
+            <span className="glance-glyph" aria-hidden="true">
+              {glyph}
+            </span>
+          )}
+          {onClick && (
+            <button
+              type="button"
+              className="glance-details-btn"
+              onClick={onClick}
+              aria-label={`${label} details`}
+              data-testid={`tile-${id}-details`}
+            >
+              Details
+            </button>
+          )}
         </span>
       </div>
 
@@ -135,17 +121,7 @@ export function GlanceTile({
       <div className="glance-footer">
         {detail && <div className="glance-detail">{detail}</div>}
         {reason && <div className="glance-reason">{reason}</div>}
-        {children && (
-          <div
-            className="glance-extra"
-            onClick={(e) => {
-              // Prevent triggering tile click when interacting with child controls
-              e.stopPropagation();
-            }}
-          >
-            {children}
-          </div>
-        )}
+        {children && <div className="glance-extra">{children}</div>}
       </div>
     </div>
   );

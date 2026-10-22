@@ -123,29 +123,28 @@ function TimingPanelContent(): JSX.Element {
         </div>
       </div>
 
-      <div className="telemetry-grid-2x2">
-        <div className="card-row">
-          <span className="card-row-label">Current Lap</span>
-          <span className="card-row-value">{formatLapTime(lapTime)}</span>
+      {/* v1.3 V07: one label/value pair per row, never wrapping in the 280 px column */}
+      <dl className="tel-kv">
+        <div className="tel-kv-row">
+          <dt>Current lap</dt>
+          <dd>{formatLapTime(lapTime)}</dd>
         </div>
-        <div className="card-row">
-          <span className="card-row-label">Predicted</span>
-          <span className="card-row-value">{formatLapTime(predicted)}</span>
+        <div className="tel-kv-row">
+          <dt>Predicted</dt>
+          <dd>{formatLapTime(predicted)}</dd>
         </div>
-        <div className="card-row">
-          <span className="card-row-label">Last Lap</span>
-          <span className="card-row-value">{formatLapTime(lastLap)}</span>
+        <div className="tel-kv-row">
+          <dt>Last lap</dt>
+          <dd>{formatLapTime(lastLap)}</dd>
         </div>
-        <div className="card-row">
-          <span className="card-row-label">Best Lap</span>
-          <span className="card-row-value timing-best-val">
-            {formatLapTime(bestLap)}
-          </span>
+        <div className="tel-kv-row">
+          <dt>Best lap</dt>
+          <dd className="timing-best-val">{formatLapTime(bestLap)}</dd>
         </div>
-      </div>
+      </dl>
 
       <div className="sectors-bar">
-        <div className="card-row-label">LAST LAP SECTOR SPLITS</div>
+        <div className="tel-kv-caption">Last lap sector splits</div>
         <div className="sectors-grid">
           <div className={getSectorChipClass(lastS1, bestS1)}>
             <span className="meta-chip-label">S1</span>

@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import { MotecImportBar } from './MotecImportBar';
+import { MotecAddButton, MotecImportBar } from './MotecImportBar';
 import { motecStore } from './useMotecStore';
 import { generateMultiLapMotecBuffer, generateSyntheticDemoMotecBuffer } from './motecWriter';
 
@@ -31,7 +31,8 @@ describe('MoTeC Telemetry Store & UI Integration', () => {
     expect(screen.getByTestId('motec-lap-pill')).toHaveTextContent(/Quickest: Lap 3 \(2:14\.500\)/);
     expect(screen.getByTestId('motec-lap-pill')).toHaveTextContent(/2 valid laps/);
     expect(screen.getByTestId('motec-channel-pill')).toHaveTextContent('@ 10 Hz');
-    expect(screen.getByText(/Orange Line = MoTeC Reference/i)).toBeInTheDocument();
+    // The reference is drawn dashed in the graph's reference colour (graph/engine.ts), not orange.
+    expect(screen.getByText(/Dashed line = MoTeC reference/i)).toBeInTheDocument();
     expect(screen.queryByTestId('motec-synthetic-badge')).toBeNull();
   });
 
@@ -113,5 +114,37 @@ describe('MoTeC Telemetry Store & UI Integration', () => {
     loadMultiLap();
     render(<MotecImportBar currentLapDistanceM={1e9} currentSpeedMps={80} />);
     expect(screen.queryByText(/Δ Speed vs MoTeC:/i)).toBeNull();
+  });
+
+  it('compact (pitwall): nothing without a file; the toolbar button carries the import (V03)', () => {
+    const { container } = render(<MotecImportBar compact />);
+    expect(container.firstChild).toBeNull();
+    render(<MotecAddButton />);
+    expect(screen.getByTestId('motec-add-button')).toHaveTextContent('Add MoTeC .ld');
+  });
+
+  it('compact: the bar appears on drag-over, on an error and once a file is loaded', () => {
+    const { rerender } = render(<MotecImportBar compact dragActive />);
+    expect(screen.getByTestId('motec-import-bar')).toHaveTextContent(/Drop the \.ld file/);
+    rerender(<MotecImportBar compact />);
+    expect(screen.queryByTestId('motec-import-bar')).toBeNull();
+    act(() => {
+      motecStore.loadBuffer(new Uint8Array(4096), 'junk.ld');
+    });
+    expect(screen.getByTestId('motec-error')).toBeInTheDocument();
+    act(() => {
+      motecStore.clear();
+    });
+    loadMultiLap();
+    expect(screen.getByTestId('motec-lap-pill')).toBeInTheDocument();
+    render(<MotecAddButton />);
+    expect(screen.queryByTestId('motec-add-button')).toBeNull();
+  });
+
+  it('uses no emoji in its controls (V13)', () => {
+    render(<MotecImportBar />);
+    loadMultiLap();
+    const text = screen.getByTestId('motec-import-bar').textContent;
+    expect(text).not.toMatch(/\p{Extended_Pictographic}/u);
   });
 });

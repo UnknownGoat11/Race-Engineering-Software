@@ -5,14 +5,16 @@
 import type { Step } from './scenarios';
 
 const FIND_TIMEOUT_MS = 8000;
+/** How long an optional step looks for its target before it is skipped. */
+const OPTIONAL_TIMEOUT_MS = 600;
 const POLL_MS = 50;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitFor<T>(what: string, find: () => T | null): Promise<T> {
-  const deadline = performance.now() + FIND_TIMEOUT_MS;
+async function waitFor<T>(what: string, find: () => T | null, timeoutMs = FIND_TIMEOUT_MS): Promise<T> {
+  const deadline = performance.now() + timeoutMs;
   for (;;) {
     const found = find();
     if (found !== null) return found;
@@ -59,6 +61,13 @@ export async function runSteps(steps: readonly Step[], settleMs: number): Promis
         break;
       }
       case 'clickText': {
+        if (step.optional === true) {
+          const el = await waitFor(`button "${step.text}"`, () => byText(step.text), OPTIONAL_TIMEOUT_MS).catch(
+            () => null,
+          );
+          el?.click();
+          break;
+        }
         const el = await waitFor(`button "${step.text}"`, () => byText(step.text));
         el.click();
         break;
