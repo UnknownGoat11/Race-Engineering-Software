@@ -384,7 +384,6 @@ describe('pipelineHealth: any drop → not healthy; nothing running → not heal
     ['reader_overrun'],
     ['pipeline_overrun'],
     ['recorder_overrun'],
-    ['net_dropped_obsolete'],
     ['net_events_dropped'],
     ['ui_dropped'],
   ] as const)('a %s drop is never healthy', (key) => {
@@ -398,15 +397,20 @@ describe('pipelineHealth: any drop → not healthy; nothing running → not heal
     const p = pipelineHealth(driver({ drops: { recorder_overrun: 1_208 } }), h, NOW);
     expect(p).toMatchObject({ state: 'dropping_sustained', level: 'critical', dropsInWindow: 1_208 });
   });
+  it('superseded / offline stream frames (net_dropped_obsolete) never affect health (latest-wins by design)', () => {
+    const h = historyOf([NOW - 30_000, {}]);
+    expect(pipelineHealth(driver({ drops: { net_dropped_obsolete: 36_637 } }), h, NOW).state).toBe('healthy');
+    expect(pipelineHealth(driver({ drops: { net_dropped_obsolete: 36_637 } }), EMPTY_HISTORY, NOW).state).toBe('healthy');
+  });
   it('old drops with a full quiet window → healthy, totals kept', () => {
-    const h = historyOf([NOW - 70_000, { net_dropped_obsolete: 412 }], [NOW - 10_000, { net_dropped_obsolete: 412 }]);
-    const p = pipelineHealth(driver({ drops: { net_dropped_obsolete: 412 } }), h, NOW);
+    const h = historyOf([NOW - 70_000, { recorder_overrun: 412 }], [NOW - 10_000, { recorder_overrun: 412 }]);
+    const p = pipelineHealth(driver({ drops: { recorder_overrun: 412 } }), h, NOW);
     expect(p.state).toBe('healthy');
-    expect(p.totals?.net_dropped_obsolete).toBe(412);
+    expect(p.totals?.recorder_overrun).toBe(412);
   });
   it('old drops but the history is shorter than the window → still warning', () => {
-    const h = historyOf([NOW - 5_000, { net_dropped_obsolete: 412 }]);
-    expect(pipelineHealth(driver({ drops: { net_dropped_obsolete: 412 } }), h, NOW).state).toBe('dropping');
+    const h = historyOf([NOW - 5_000, { recorder_overrun: 412 }]);
+    expect(pipelineHealth(driver({ drops: { recorder_overrun: 412 } }), h, NOW).state).toBe('dropping');
   });
   it('a counter reset counts the new value as new drops', () => {
     const h = historyOf([NOW - 70_000, { ui_dropped: 50 }]);
@@ -632,8 +636,8 @@ describe('deriveDriverTiles (scenario rows)', () => {
   it('a partial history never prints "0 dropped" in the pipeline warning (U12)', () => {
     // History shorter than the window, no new drop since it started: the 412 earlier drops have no known time.
     const tiles = deriveDriverTiles(
-      driver({ drops: { net_dropped_obsolete: 412 } }),
-      historyOf([NOW - 5_000, { net_dropped_obsolete: 412 }]),
+      driver({ drops: { recorder_overrun: 412 } }),
+      historyOf([NOW - 5_000, { recorder_overrun: 412 }]),
       { nowMs: NOW, nowUnixS: 1_000 },
     );
     const row = tiles.attention.find((a) => a.id === 'pipeline');

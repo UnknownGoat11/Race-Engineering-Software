@@ -319,11 +319,15 @@ export function mayShowDriverIdentity(view: EngineerView): boolean {
 // Rolling history (for "in the last 60 s" rules)
 // ---------------------------------------------------------------------------------------------------------
 
+/**
+ * Counters of data actually lost. `net_dropped_obsolete` is deliberately excluded: live stream frames superseded by a
+ * newer value or snapshot (latest-wins, D-009), or discarded while the relay link is down (a fresh snapshot follows
+ * every reconnect). That is by design, not loss; Diagnostics still shows the counter.
+ */
 export const DROP_KEYS = [
   'reader_overrun',
   'pipeline_overrun',
   'recorder_overrun',
-  'net_dropped_obsolete',
   'net_events_dropped',
   'ui_dropped',
 ] as const satisfies readonly (keyof DropsDto)[];

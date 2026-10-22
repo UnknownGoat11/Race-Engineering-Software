@@ -30,6 +30,9 @@ pub const CONFIG_FILE_NAME: &str = "config.json";
 pub const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 pub const DEFAULT_RELAY_PORT: u16 = 443;
+/// Placeholder host that v1.2 wrote into configs as a "global relay". It has no DNS record and is not ours, so a
+/// stored copy is cleared on load (never contacted): the relay becomes "not configured" until the user sets one.
+pub const RETIRED_RELAY_HOST: &str = "relay.lmuracing.com";
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u32 = 5_000;
 pub const CONNECT_TIMEOUT_MS_RANGE: (u32, u32) = (500, 60_000);
 pub const DEFAULT_FUEL_WINDOW_LAPS: u32 = 5;
@@ -788,6 +791,20 @@ impl ConfigStore {
                     );
                     config.application.environment = environment;
                 }
+                if config
+                    .network
+                    .relay_host
+                    .trim()
+                    .eq_ignore_ascii_case(RETIRED_RELAY_HOST)
+                {
+                    tracing::warn!(
+                        component = component::CONFIG,
+                        host = RETIRED_RELAY_HOST,
+                        "stored relay host is the retired v1.2 placeholder (no DNS record); cleared, relay not configured"
+                    );
+                    config.network.relay_host = String::new();
+                    config.network.relay_port = DEFAULT_RELAY_PORT;
+                }
                 if config.network.extra_ca_file.is_some()
                     && config.network.trusted_extra_ca_file(environment).is_none()
                 {
@@ -1209,6 +1226,30 @@ mod tests {
             )
             .unwrap_or_else(|e| panic!("{address:?} rejected: {e}"));
         }
+    }
+
+    #[test]
+    fn retired_placeholder_relay_host_is_cleared_on_load() {
+        let (tmp, store) = store();
+        let json = r#"{
+            "schema_version": 1,
+            "application": { "mode": "driver", "environment": "production" },
+            "network": { "relay_host": "Relay.LMUracing.com", "relay_port": 443 }
+        }"#;
+        write_raw(&store, json);
+        let loaded = store.load(Environment::Production);
+        assert_eq!(loaded.config.network.relay_host, "");
+        assert_eq!(loaded.config.network.relay_address(), None);
+        assert!(loaded.issue.is_none());
+
+        write_raw(
+            &store,
+            r#"{ "schema_version": 1, "network": { "relay_host": "relay.example.com", "relay_port": 7443 } }"#,
+        );
+        let kept = store.load(Environment::Production);
+        assert_eq!(kept.config.network.relay_host, "relay.example.com");
+        assert_eq!(kept.config.network.relay_port, 7443);
+        drop(tmp);
     }
 
     #[test]
